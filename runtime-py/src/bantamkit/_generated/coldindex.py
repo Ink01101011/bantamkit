@@ -19,7 +19,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_is_array,
     _js_json_parse,
     _js_json_stringify,
-    _js_len,
     _js_list_at,
     _js_lt,
     _js_m_every,
@@ -37,16 +36,18 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_sort,
     _js_m_test,
     _js_m_values,
+    _js_map_entries,
     _js_max,
     _js_mul,
     _js_now,
     _js_num,
     _js_number,
     _js_number_is_integer,
-    _js_object_entries,
     _js_object_keys,
     _js_re,
+    _js_rows,
     _js_size,
+    _js_sort_keyed,
     _js_str,
     _js_strict_eq,
     _js_truthy,
@@ -118,11 +119,11 @@ def _read_json(p):
 def _is_segment(s):
     id_ = _js_get(s, "id")
     docs = _js_get(s, "docs")
-    return _js_typeof(id_) == "string" and _js_m_test(_ID, id_) and _js_is_array(docs) and _js_every_string(docs) and _js_typeof(_js_get(s, "created")) == "string"
+    return isinstance(id_, str) and _ID.search(_js_code_units(id_)) is not None and _js_is_array(docs) and _js_every_string(docs) and isinstance(_js_get(s, "created"), str)
 
 
 def _is_rows(v):
-    return _js_is_array(v) and _js_m_every(v, lambda r, *_: _js_is_array(r) and _js_strict_eq(_js_len(r), 4) and _js_typeof(_js_get(r, 0)) == "string" and _js_typeof(_js_get(r, 1)) == "string" and _js_typeof(_js_get(r, 2)) == "string" and _js_number_is_integer(_js_get(r, 3)))
+    return _js_is_array(v) and _js_m_every(v, lambda r, *_: _js_is_array(r) and len(r) == 4 and isinstance(_js_list_at(r, 0), str) and isinstance(_js_list_at(r, 1), str) and isinstance(_js_list_at(r, 2), str) and _js_number_is_integer(_js_list_at(r, 3)))
 
 
 def _iso_now(now_ms):
@@ -144,7 +145,7 @@ class ColdIndex(_JsObject):
         self.name = _JS_UNDEFINED
         self.dir = _JS_UNDEFINED
         self.manifestPath = _JS_UNDEFINED
-        if _js_typeof(name) != "string" or name == "" or name == "." or name == ".." or _js_m_test(_JS_RE_1, name):
+        if not isinstance(name, str) or name == "" or name == "." or name == ".." or _JS_RE_1.search(_js_code_units(name)) is not None:
             raise _JsError("unknown cold index name: " + _js_str(_js_json_stringify(name)))
         self.name = name
         base = cold_dir if cold_dir is not None else path_join(home, ".bantamkit", "cold")
@@ -196,7 +197,7 @@ class ColdIndex(_JsObject):
         docs = _js_get(top, "docs") if _is_obj(data) else _JS_UNDEFINED
         if not _is_obj(docs) or not _is_obj(data) or not _js_strict_eq(_js_get(top, "id"), id_):
             raise ColdIndexError("cold index segment " + _js_str(id_) + " is not this version's shape")
-        return _JsMap(_js_object_entries(docs))
+        return _js_map_entries(docs)
 
     def doc(self, name):
         seg = _js_m_get(self.owners(), name)
@@ -215,26 +216,24 @@ class ColdIndex(_JsObject):
         out = _JsMap()
         m = self.manifest()
         for seg in _js_get(m, "segments"):
-            for _js_item4 in self.segment(_js_get(seg, "id")):
-                n = _js_get(_js_item4, 0)
-                d = _js_get(_js_item4, 1)
+            for n, d in _js_rows(self.segment(_js_get(seg, "id")), 2, (0, 1)):
                 _js_m_set(out, n, d)
         return out
 
     def shard(self, i):
         data = _JS_UNDEFINED
-        _js_caught5 = None
+        _js_caught4 = None
         try:
             data = _read_json(self.shardPath(i))
-        except Exception as _js_error5:
-            _js_caught5 = _js_catch(_js_error5)
-        if _js_caught5 is not None:
-            raise ColdIndexError("cold index shard " + _js_m_padStart(_js_str(i), 2, "0") + " unreadable: " + _js_str(_err_message(_js_caught5)))
+        except Exception as _js_error4:
+            _js_caught4 = _js_catch(_js_error4)
+        if _js_caught4 is not None:
+            raise ColdIndexError("cold index shard " + _js_m_padStart(_js_str(i), 2, "0") + " unreadable: " + _js_str(_err_message(_js_caught4)))
         top = data
         terms = _js_get(top, "terms") if _is_obj(data) else _JS_UNDEFINED
         if not _is_obj(terms) or not _js_m_every(_js_object_keys(terms), lambda k, *_: _is_rows(_js_get(terms, k))):
             raise ColdIndexError("cold index shard " + _js_m_padStart(_js_str(i), 2, "0") + " is not this version's shape")
-        return _JsMap(_js_object_entries(terms))
+        return _js_map_entries(terms)
 
     def query(self, terms):
         owners = self.owners()
@@ -249,32 +248,29 @@ class ColdIndex(_JsObject):
                 _js_m_set(by_shard, i, list_)
             _js_m_push(list_, t)
         sums = _JsMap()
-        for i in _js_m_sort([*_js_m_keys(by_shard)], lambda a, b, *_: _js_num(_js_num(a) - _js_num(b))):
+        for i in _js_sort_keyed([*_js_m_keys(by_shard)], lambda a, *_: a, False, lambda a, b, *_: _js_num(_js_num(a) - _js_num(b))):
             table = self.shard(i)
             for t in _js_m_get(by_shard, i):
-                for _js_item6 in _js_coalesce_value(_js_m_get(table, t), []):
-                    name = _js_get(_js_item6, 0)
-                    seg = _js_get(_js_item6, 1)
-                    tf = _js_get(_js_item6, 3)
+                for name, seg, _js_hole, tf in _js_rows(_js_coalesce_value(_js_m_get(table, t), []), 4, (0, 1, 3)):
                     if _js_strict_eq(_js_m_get(owners, name), seg):
                         _js_m_set(sums, name, _js_add(_js_coalesce_value(_js_m_get(sums, name), 0), tf))
         ranked = _js_m_sort([*_js_m_keys(sums)], cmp_codepoint)
-        _js_m_sort(ranked, lambda a, b, *_: _js_num(_js_num(_js_m_get(sums, b)) - _js_num(_js_m_get(sums, a))))
+        _js_sort_keyed(ranked, lambda a, *_: _js_m_get(sums, a), True, lambda a, b, *_: _js_num(_js_num(_js_m_get(sums, b)) - _js_num(_js_m_get(sums, a))))
         return _js_m_map(ranked, lambda n, *_: [n, _js_m_get(owners, n), _js_m_get(sums, n)])
 
     def addDocs(self, docs):
-        def _js_fn7(*_):
+        def _js_fn5(*_):
             self.sweepTemps()
             manifest = self.manifest()
             id_ = _next_id(manifest)
             self.publish(manifest, id_, docs, False)
             return id_
-        return exclusive(self.lockPath(), _js_fn7)
+        return exclusive(self.lockPath(), _js_fn5)
 
     def compact(self, keep=_JS_UNDEFINED):
         if keep is _JS_UNDEFINED:
             keep = None
-        def _js_fn8(*_):
+        def _js_fn6(*_):
             self.sweepTemps()
             manifest = self.manifest()
             old = _js_m_map(_js_get(manifest, "segments"), lambda s, *_: _js_get(s, "id"))
@@ -282,45 +278,43 @@ class ColdIndex(_JsObject):
                 return None
             merged = _JsMap()
             for seg in old:
-                for _js_item9 in self.segment(seg):
-                    n = _js_get(_js_item9, 0)
-                    d = _js_get(_js_item9, 1)
+                for n, d in _js_rows(self.segment(seg), 2, (0, 1)):
                     _js_m_set(merged, n, d)
             if keep is not None:
-                kept = _JsMap(_js_m_filter([*merged], lambda _js_arg10, *_: (lambda _, d: keep(d))(*_js_destructure(_js_arg10, 2))))
+                kept = _JsMap(_js_m_filter([*merged], lambda _js_arg7, *_: (lambda _, d: keep(d))(*_js_destructure(_js_arg7, 2))))
                 if len(old) == 1 and _js_strict_eq(_js_size(kept), _js_size(merged)):
                     return None
                 merged = kept
             id_ = _next_id(manifest)
             self.publish(manifest, id_, merged, True)
             for seg in old:
-                _js_caught11 = None
+                _js_caught8 = None
                 try:
                     unlink_sync(self.segmentPath(seg))
-                except Exception as _js_error11:
-                    _js_caught11 = _js_catch(_js_error11)
-                if _js_caught11 is not None:
+                except Exception as _js_error8:
+                    _js_caught8 = _js_catch(_js_error8)
+                if _js_caught8 is not None:
                     pass
             return id_
-        return exclusive(self.lockPath(), _js_fn8)
+        return exclusive(self.lockPath(), _js_fn6)
 
     def reset(self):
         names = _JS_UNDEFINED
-        _js_caught12 = None
+        _js_caught9 = None
         try:
             names = readdir_sync(self.dir)
-        except Exception as _js_error12:
-            _js_caught12 = _js_catch(_js_error12)
-        if _js_caught12 is not None:
+        except Exception as _js_error9:
+            _js_caught9 = _js_catch(_js_error9)
+        if _js_caught9 is not None:
             return _JS_UNDEFINED
         for n in names:
             if _owns_name(n):
-                _js_caught13 = None
+                _js_caught10 = None
                 try:
                     unlink_sync(path_join(self.dir, n))
-                except Exception as _js_error13:
-                    _js_caught13 = _js_catch(_js_error13)
-                if _js_caught13 is not None:
+                except Exception as _js_error10:
+                    _js_caught10 = _js_catch(_js_error10)
+                if _js_caught10 is not None:
                     pass
         return _JS_UNDEFINED
 
@@ -344,14 +338,11 @@ class ColdIndex(_JsObject):
         for name in names:
             d = _js_m_get(docs, name)
             text = {"name": _js_get(d, "name"), "description": _js_get(d, "description"), "keywords": _js_m_join(_js_get(d, "keywords"), " ")}
-            for _js_item14 in FIELD_BOOST:
-                field = _js_get(_js_item14, 0)
+            for field, in _js_rows(FIELD_BOOST, 1, (0,)):
                 counts = _JsMap()
                 for t in tokenize_v2(_js_get(text, field)):
                     _js_m_set(counts, t, _js_add(_js_coalesce_value(_js_m_get(counts, t), 0), 1))
-                for _js_item15 in counts:
-                    term = _js_get(_js_item15, 0)
-                    tf = _js_get(_js_item15, 1)
+                for term, tf in _js_rows(counts, 2, (0, 1)):
                     table = _js_list_at(fresh, shard_of(term))
                     list_ = _js_m_get(table, term)
                     if list_ is _JS_UNDEFINED:
@@ -371,14 +362,14 @@ class ColdIndex(_JsObject):
         out = []
         i = 0
         while _js_lt(i, SHARDS):
-            _js_caught16 = None
+            _js_caught11 = None
             try:
                 out.append(self.shard(i))
-            except Exception as _js_error16:
-                _js_caught16 = _js_catch(_js_error16)
-            if _js_caught16 is not None:
-                if not isinstance(_js_caught16, ColdIndexError):
-                    raise _js_caught16
+            except Exception as _js_error11:
+                _js_caught11 = _js_catch(_js_error11)
+            if _js_caught11 is not None:
+                if not isinstance(_js_caught11, ColdIndexError):
+                    raise _js_caught11
                 out.append(_JsMap())
             i = _js_num(i + 1)
         return out
@@ -387,16 +378,12 @@ class ColdIndex(_JsObject):
         i = 0
         while _js_lt(i, SHARDS):
             terms = _JsMap()
-            for _js_item17 in _js_get(tables, i):
-                term = _js_get(_js_item17, 0)
-                rows = _js_get(_js_item17, 1)
+            for term, rows in _js_rows(_js_get(tables, i), 2, (0, 1)):
                 kept = _js_m_filter(rows, lambda r, *_: _js_m_has(keep, _js_get(r, 1)))
                 if _js_truthy(len(kept)):
                     _js_m_set(terms, term, kept)
             if add is not None:
-                for _js_item18 in _js_get(add, i):
-                    term = _js_get(_js_item18, 0)
-                    rows = _js_get(_js_item18, 1)
+                for term, rows in _js_rows(_js_get(add, i), 2, (0, 1)):
                     list_ = _js_m_get(terms, term)
                     if list_ is _JS_UNDEFINED:
                         _js_m_set(terms, term, [*rows])
@@ -424,21 +411,21 @@ def _next_id(manifest):
 
 def _write__typed(p, text):
     tmp = path_join(path_dirname(p), _js_str(path_basename(p)) + "." + _js_str(process_pid()) + ".tmp")
-    _js_caught19 = None
+    _js_caught12 = None
     try:
         write_file_sync(tmp, text, "utf8")
         rename_sync(tmp, p)
-    except Exception as _js_error19:
-        _js_caught19 = _js_catch(_js_error19)
-    if _js_caught19 is not None:
-        _js_caught20 = None
+    except Exception as _js_error12:
+        _js_caught12 = _js_catch(_js_error12)
+    if _js_caught12 is not None:
+        _js_caught13 = None
         try:
             rm_sync(tmp, {"force": True})
-        except Exception as _js_error20:
-            _js_caught20 = _js_catch(_js_error20)
-        if _js_caught20 is not None:
+        except Exception as _js_error13:
+            _js_caught13 = _js_catch(_js_error13)
+        if _js_caught13 is not None:
             pass
-        raise _js_caught19
+        raise _js_caught12
     return _JS_UNDEFINED
 
 
@@ -446,21 +433,21 @@ def _write(p, text):
     if type(p) is str and type(text) is str:
         return _write__typed(p, text)
     tmp = path_join(path_dirname(p), _js_str(path_basename(p)) + "." + _js_str(process_pid()) + ".tmp")
-    _js_caught21 = None
+    _js_caught14 = None
     try:
         write_file_sync(tmp, text, "utf8")
         rename_sync(tmp, p)
-    except Exception as _js_error21:
-        _js_caught21 = _js_catch(_js_error21)
-    if _js_caught21 is not None:
-        _js_caught22 = None
+    except Exception as _js_error14:
+        _js_caught14 = _js_catch(_js_error14)
+    if _js_caught14 is not None:
+        _js_caught15 = None
         try:
             rm_sync(tmp, {"force": True})
-        except Exception as _js_error22:
-            _js_caught22 = _js_catch(_js_error22)
-        if _js_caught22 is not None:
+        except Exception as _js_error15:
+            _js_caught15 = _js_catch(_js_error15)
+        if _js_caught15 is not None:
             pass
-        raise _js_caught21
+        raise _js_caught14
     return _JS_UNDEFINED
 
 

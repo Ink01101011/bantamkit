@@ -14,13 +14,13 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_in,
     _js_is_array,
     _js_is_double,
+    _js_is_number,
     _js_le,
     _js_list_at,
     _js_lt,
     _js_m_filter,
     _js_m_map,
     _js_m_reduce,
-    _js_m_sort,
     _js_m_splice,
     _js_max,
     _js_min,
@@ -28,6 +28,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_num,
     _js_number_is_finite,
     _js_put,
+    _js_sort_keyed,
     _js_str,
     _js_strict_eq,
     _js_trunc,
@@ -90,14 +91,14 @@ def _counted(lines):
 
 
 def _figure(value):
-    if _js_typeof(value) != "number" or not _js_number_is_finite(value) or not _js_ge(value, 0):
+    if not _js_is_number(value) or not _js_number_is_finite(value) or not _js_ge(value, 0):
         return 0
     whole = _js_trunc(value)
     return 0 if whole == 0 else whole
 
 
 def _lower_median(values):
-    ordered = _js_m_sort([*values], lambda a, b, *_: _js_num(_js_num(a) - _js_num(b)))
+    ordered = _js_sort_keyed([*values], lambda a, *_: a, False, lambda a, b, *_: _js_num(_js_num(a) - _js_num(b)))
     return _js_list_at(ordered, _js_floor(_js_div(_js_num(len(ordered) - 1), 2)))
 
 

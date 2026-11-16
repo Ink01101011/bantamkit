@@ -392,6 +392,17 @@ def _normalize_string(path, allow_above_root, separator, is_separator):
     return res
 
 
+def _posix_normalized(path, allow_above_root):
+    """`normalizeString(path, allowAboveRoot, '/', isPosixPathSeparator)`. J90-P: a path with no
+    `.` or `..` segment is its non-empty segments joined by one `/` (`normalizeString` skips an
+    empty segment and keeps every other one as it is; only `.` and `..` do anything else), in C;
+    any other path through the port."""
+    segments = path.split("/")
+    if "." not in segments and ".." not in segments:
+        return "/".join(filter(None, segments))
+    return _normalize_string(path, allow_above_root, "/", lambda c: c == "/")
+
+
 def _posix_join(parts):
     """`path.posix.join` (lib/path.js): the non-empty parts joined by `/`, then normalised."""
     joined = "/".join(part for part in parts if part)
@@ -399,7 +410,7 @@ def _posix_join(parts):
         return "."
     absolute = joined[0] == "/"
     trailing = joined[-1] == "/"
-    joined = _normalize_string(joined, not absolute, "/", lambda c: c == "/")
+    joined = _posix_normalized(joined, not absolute)
     if not joined:
         return "/" if absolute else ("./" if trailing else ".")
     if trailing:
@@ -1318,40 +1329,15 @@ class _JsReadMap(_JsMap):
     __slots__ = ()
 
     def __init__(self, data):
-        object.__setattr__(self, "_entries", _DictEntries(data))
+        # J90-P: a dict with string keys is already a Map's entries (each key its own tag).
+        object.__setattr__(self, "_entries", data)
+        object.__setattr__(self, "_keys", None)
 
     def set(self, key, value):
         raise TypeError("ts2py: writing a Map an index adapter answered is outside the subset")
 
     def delete(self, key):
         raise TypeError("ts2py: writing a Map an index adapter answered is outside the subset")
-
-
-class _DictEntries:
-    # `_JsMap._entries`' face over a dict: a string key is its own `_js_key`; any other key (a
-    # number, a bool) can equal none of the dict's string keys, as in a JS Map of string keys.
-    __slots__ = ("_data",)
-
-    def __init__(self, data):
-        self._data = data
-
-    def __contains__(self, tag):
-        return isinstance(tag, str) and tag in self._data
-
-    def get(self, tag, default=None):
-        if isinstance(tag, str) and tag in self._data:
-            return (tag, self._data[tag])
-        return default
-
-    def values(self):
-        return [(key, value) for key, value in self._data.items()]
-
-    def __iter__(self):
-        # J90-2: the tags, which `_JsMap.__iter__` walks (a string key is its own tag).
-        return iter(list(self._data))
-
-    def __len__(self):
-        return len(self._data)
 
 
 def _native_bantam_error(error):
@@ -1728,7 +1714,7 @@ class _TaggedDict:
 def _tagged_close(into, at):
     keys, values = into[at]
     held = _JsMap()
-    held._entries = {k: (k, v) for k, v in zip(keys, values, strict=True)}
+    held._entries = dict(zip(keys, values, strict=True))
     into[at] = {"t": "dict", "v": held}
 
 
@@ -2203,7 +2189,7 @@ def _posix_resolve(paths):
             continue
         resolved = f"{path}/{resolved}"
         absolute = path[0] == "/"
-    resolved = _normalize_string(resolved, not absolute, "/", lambda c: c == "/")
+    resolved = _posix_normalized(resolved, not absolute)
     if absolute:
         return "/" + resolved
     return resolved if resolved else "."
@@ -2522,6 +2508,15 @@ _SAFE_INT = 2**53 - 1
 _LIFT_SAME = frozenset({str, bool, type(None)})
 
 
+_LIFT_INT = frozenset({int})
+
+
+def _lift_ints_safe(ints):
+    """J90-P: Python ints only, each a safe integer: each is its own `_lifted` (an int kept as it
+    is), so the container is too."""
+    return -_SAFE_INT <= min(ints) and max(ints) <= _SAFE_INT
+
+
 def _lifted(value):
     """`value` as `fromJs` reads it (runtime-ts/src/pyjson.ts), as the Python value `json.dumps`
     is handed: a number that is a safe integer (`Number.isSafeInteger`) and not -0 is an int, any
@@ -2541,12 +2536,16 @@ def _lifted(value):
             return int(value)
         return value
     if kind is list:
-        if set(map(type, value)) <= _LIFT_SAME:
+        kinds = set(map(type, value))
+        if kinds <= _LIFT_SAME or (kinds == _LIFT_INT and _lift_ints_safe(value)):
             return value
         return [_lifted(item) for item in value]
     if kind is dict:
         keys = _js_own_keys(value)
-        if set(map(type, value.values())) <= _LIFT_SAME and keys == list(value):
+        kinds = set(map(type, value.values()))
+        if (
+            kinds <= _LIFT_SAME or (kinds == _LIFT_INT and _lift_ints_safe(value.values()))
+        ) and keys == list(value):
             return value
         return {key: _lifted(value[key]) for key in keys}
     if value is _JS_UNDEFINED:

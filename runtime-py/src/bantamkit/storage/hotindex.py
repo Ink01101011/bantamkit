@@ -101,7 +101,7 @@ def no_gc() -> Iterator[None]:
 
 def _dict(m: Any) -> dict[str, Any]:
     """A Map the generated index answers, as the dict the Python surface answers."""
-    return {key: value for key, value in m._entries.values()}
+    return dict(m)
 
 
 class HotIndex:

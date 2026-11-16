@@ -61,6 +61,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_put,
     _js_re,
     _js_re_exec,
+    _js_rows,
     _js_sar,
     _js_size,
     _js_spread,
@@ -70,7 +71,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_strict_eq,
     _js_throw,
     _js_truthy,
-    _js_typeof,
     _JsError,
     _JsGlobalRegExp,
     _JsMap,
@@ -116,17 +116,17 @@ def _py_error(kind, message):
 
 
 def _type_name(v):
-    return "NoneType" if v is None else "str" if _js_typeof(v) == "string" else _js_get(v, "pyType")
+    return "NoneType" if v is None else "str" if isinstance(v, str) else _js_get(v, "pyType")
 
 
 def _py_attr_strip(value):
-    if _js_typeof(value) != "string":
+    if not isinstance(value, str):
         raise _js_throw(_py_error("AttributeError", "'" + _js_str(_type_name(value)) + "' object has no attribute 'strip'"))
     return py_strip(value)
 
 
 def _py_re_text(value):
-    if _js_typeof(value) != "string":
+    if not isinstance(value, str):
         raise _js_throw(_py_error("TypeError", "expected string or bytes-like object, got '" + _js_str(_type_name(value)) + "'"))
     return value
 
@@ -509,7 +509,7 @@ def absolutise(body, basis, name, layer):
 
 
 def merge_descriptions(base, other):
-    if block_key(_py_re_text(base)) == block_key(_py_re_text(other)):
+    if _block_key__typed(_py_re_text(base)) == _block_key__typed(_py_re_text(other)):
         return py_strip(base)
     return _js_str(py_strip(base)) + "; " + _js_str(py_strip(other))
 
@@ -559,7 +559,7 @@ def merge_links(base, other):
 def _truthy(value):
     if value is None:
         return False
-    if _js_typeof(value) == "string":
+    if isinstance(value, str):
         return value != ""
     return _js_get(value, "truthy")
 
@@ -571,7 +571,7 @@ def _merge_bodies__typed(base_body, other_body, base_layer, other_layer, base_da
         slots = _JsMap()
         def _js_fn2(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_):
             slot = claim_slot(block)
-            if slot is not None and not _js_m_has(slots, _js_get(slot, 0)):
+            if slot is not None and not _js_m_has(slots, slot[0]):
                 _js_m_set(slots, slot[0], [index, slot[1]])
             return _JS_UNDEFINED
         _js_m_forEach(blocks, _js_fn2)
@@ -636,7 +636,7 @@ def merge_bodies(base_body, other_body, base_layer, other_layer, base_date, othe
         slots = _JsMap()
         def _js_fn5(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_):
             slot = claim_slot(block)
-            if slot is not None and not _js_m_has(slots, _js_get(slot, 0)):
+            if slot is not None and not _js_m_has(slots, slot[0]):
                 _js_m_set(slots, slot[0], [index, slot[1]])
             return _JS_UNDEFINED
         _js_m_forEach(blocks, _js_fn5)
@@ -839,9 +839,7 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
         return total
     fact_bytes_before = _js_add(sum(_js_m_values(project_sizes)), sum(_js_m_values(profile_sizes)))
     fact_bytes_after = _js_num(_js_num(fact_bytes_before) - _js_num(sum(_js_m_map(consumed, lambda n, *_: _js_m_get(profile_sizes, py_hash_key(n))))))
-    for _js_item14 in planned:
-        key = _js_get(_js_item14, 0)
-        fact = _js_get(_js_item14, 1)
+    for key, fact in _js_rows(planned, 2, (0, 1)):
         fact_bytes_after = _js_num(fact_bytes_after + _js_num(_js_num(bytes(format_fact(fact))) - _js_num(_js_m_get(project_sizes, key))))
     rewritten = _sorted_names__typed(_js_m_map([*_js_m_values(planned)], lambda fact, *_: _js_get(fact, "name")))
     all_superseded = []

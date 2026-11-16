@@ -64,6 +64,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_or,
     _js_re,
     _js_re_exec,
+    _js_rows,
     _js_str,
     _js_str_at,
     _js_str_includes,
@@ -488,9 +489,7 @@ def _safe_dump_mapping__typed(entries):
     e = _Emitter()
     seen = []
     _js_invoke(e, "increaseIndent", False, False)
-    for _js_item0 in entries:
-        key = _js_get(_js_item0, 0)
-        value = _js_get(_js_item0, 1)
+    for key, value in _js_rows(entries, 2, (0, 1)):
         _emit_mapping_entry(e, key, value, key, seen)
     _js_invoke(e, "popIndent")
     _js_invoke(e, "writeIndent")
@@ -503,9 +502,7 @@ def safe_dump_mapping(entries):
     e = _Emitter()
     seen = []
     _js_invoke(e, "increaseIndent", False, False)
-    for _js_item1 in entries:
-        key = _js_get(_js_item1, 0)
-        value = _js_get(_js_item1, 1)
+    for key, value in _js_rows(entries, 2, (0, 1)):
         _emit_mapping_entry(e, key, value, key, seen)
     _js_invoke(e, "popIndent")
     _js_invoke(e, "writeIndent")
@@ -591,7 +588,7 @@ def _emit_node__typed(e, value, mapping_context, path, seen):
         _js_invoke(e, "increaseIndent", False, False)
         _js_invoke(e, "writeScalar", "null", NULL_TAG, False)
         _js_invoke(e, "popIndent")
-    elif _js_typeof(value) == "string":
+    elif isinstance(value, str):
         _js_invoke(e, "increaseIndent", False, False)
         _js_invoke(e, "writeScalar", value, STR_TAG, False)
         _js_invoke(e, "popIndent")
@@ -622,10 +619,8 @@ def _emit_node__typed(e, value, mapping_context, path, seen):
             _js_invoke(e, "writeIndicator", "}", False)
         else:
             _js_invoke(e, "increaseIndent", False, False)
-            for _js_item2 in entries:
-                key = _js_get(_js_item2, 0)
-                item = _js_get(_js_item2, 1)
-                if _js_typeof(key) != "string":
+            for key, item in _js_rows(entries, 2, (0, 1)):
+                if not isinstance(key, str):
                     raise YamlEmitError("cannot emit " + _js_typeof(key) + " key under " + path)
                 if _is_array_index_key(key):
                     raise YamlEmitError("cannot emit key " + _js_str(key) + " under " + path + ": an array-index key is listed first by Object.entries, so the mapping no longer holds its own order")
@@ -643,7 +638,7 @@ def _emit_node(e, value, mapping_context, path, seen):
         _js_invoke(e, "increaseIndent", False, False)
         _js_invoke(e, "writeScalar", "null", NULL_TAG, False)
         _js_invoke(e, "popIndent")
-    elif _js_typeof(value) == "string":
+    elif isinstance(value, str):
         _js_invoke(e, "increaseIndent", False, False)
         _js_invoke(e, "writeScalar", value, STR_TAG, False)
         _js_invoke(e, "popIndent")
@@ -674,10 +669,8 @@ def _emit_node(e, value, mapping_context, path, seen):
             _js_invoke(e, "writeIndicator", "}", False)
         else:
             _js_invoke(e, "increaseIndent", False, False)
-            for _js_item3 in entries:
-                key = _js_get(_js_item3, 0)
-                item = _js_get(_js_item3, 1)
-                if _js_typeof(key) != "string":
+            for key, item in _js_rows(entries, 2, (0, 1)):
+                if not isinstance(key, str):
                     raise YamlEmitError("cannot emit " + _js_typeof(key) + " key under " + _js_str(path))
                 if _is_array_index_key(key):
                     raise YamlEmitError("cannot emit key " + _js_str(key) + " under " + _js_str(path) + ": an array-index key is listed first by Object.entries, so the mapping no longer holds its own order")

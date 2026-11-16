@@ -21,8 +21,10 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_invoke,
     _js_is_array,
     _js_is_double,
+    _js_is_number,
     _js_json_parse,
     _js_len,
+    _js_list_at,
     _js_list_join,
     _js_lt,
     _js_m_add,
@@ -46,6 +48,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_object_keys,
     _js_or_value,
     _js_re,
+    _js_rows,
     _js_str,
     _js_strict_eq,
     _js_throw,
@@ -183,9 +186,7 @@ def _entries_of(doc):
     if doc is None:
         return out
     facts = _js_dispatch(doc, "get", _js_m_get, "facts")
-    for _js_item3 in _js_get(facts, "v"):
-        name = _js_get(_js_item3, 0)
-        entry = _js_get(_js_item3, 1)
+    for name, entry in _js_rows(_js_get(facts, "v"), 2, (0, 1)):
         if _js_get(entry, "t") != "dict":
             continue
         qs = _js_dispatch(_js_get(entry, "v"), "get", _js_m_get, "queries")
@@ -240,10 +241,10 @@ class _CountsView(_JsObject):
     def scan(self, at, hit):
         seen = None
         i = 0
-        _js_first4 = True
+        _js_first3 = True
         while True:
-            if _js_first4:
-                _js_first4 = False
+            if _js_first3:
+                _js_first3 = False
             else:
                 i = _js_num(i + 2)
             if not (_js_lt(i, _js_len(self.flat))):
@@ -283,7 +284,7 @@ def terms_path(home, root):
 
 
 def _is_count(x):
-    return _js_typeof(x) == "number" and _js_number_is_integer(x) and _js_ge(x, 0) and _js_lt(x, _EXACT)
+    return _js_is_number(x) and _js_number_is_integer(x) and _js_ge(x, 0) and _js_lt(x, _EXACT)
 
 
 def _is_object(x):
@@ -291,6 +292,41 @@ def _is_object(x):
 
 
 def _cached__typed(p, sha):
+    doc = _JS_UNDEFINED
+    _js_caught4 = None
+    try:
+        doc = _js_json_parse(py_decode_utf8(read_file_sync(p)))
+    except Exception as _js_error4:
+        _js_caught4 = _js_catch(_js_error4)
+    if _js_caught4 is not None:
+        return None
+    if not _is_object(doc) or not _is_count(_js_get(doc, "v")) or not _js_strict_eq(_js_get(doc, "v"), TERMS_VERSION):
+        return None
+    top = doc
+    facts = _js_get(top, "facts")
+    if _js_get(doc, "sidecar") != sha or not _is_object(facts):
+        return None
+    out = _JsMap()
+    for name in _js_object_keys(facts):
+        entry = _js_get(facts, name)
+        if not _js_is_array(entry) or len(entry) != 2:
+            return None
+        dl = _js_list_at(entry, 0)
+        flat = _js_list_at(entry, 1)
+        if not _is_count(dl) or not _js_is_array(flat) or _js_mod(len(flat), 2) != 0:
+            return None
+        i = 0
+        while i < len(flat):
+            if not isinstance(_js_list_at(flat, i), str) or not _is_count(_js_list_at(flat, _js_num(i + 1))):
+                return None
+            i = _js_num(i + 2)
+        _js_m_set(out, name, [_CountsView(flat), _js_add(dl, 0)])
+    return out
+
+
+def _cached(p, sha):
+    if type(p) is str and type(sha) is str:
+        return _cached__typed(p, sha)
     doc = _JS_UNDEFINED
     _js_caught5 = None
     try:
@@ -303,55 +339,20 @@ def _cached__typed(p, sha):
         return None
     top = doc
     facts = _js_get(top, "facts")
-    if _js_get(doc, "sidecar") != sha or not _is_object(facts):
-        return None
-    out = _JsMap()
-    for name in _js_object_keys(facts):
-        entry = _js_get(facts, name)
-        if not _js_is_array(entry) or not _js_strict_eq(_js_len(entry), 2):
-            return None
-        dl = _js_get(entry, 0)
-        flat = _js_get(entry, 1)
-        if not _is_count(dl) or not _js_is_array(flat) or not _js_strict_eq(_js_mod(_js_len(flat), 2), 0):
-            return None
-        i = 0
-        while _js_lt(i, _js_len(flat)):
-            if _js_typeof(_js_get(flat, i)) != "string" or not _is_count(_js_get(flat, _js_num(i + 1))):
-                return None
-            i = _js_num(i + 2)
-        _js_m_set(out, name, [_CountsView(flat), _js_add(dl, 0)])
-    return out
-
-
-def _cached(p, sha):
-    if type(p) is str and type(sha) is str:
-        return _cached__typed(p, sha)
-    doc = _JS_UNDEFINED
-    _js_caught6 = None
-    try:
-        doc = _js_json_parse(py_decode_utf8(read_file_sync(p)))
-    except Exception as _js_error6:
-        _js_caught6 = _js_catch(_js_error6)
-    if _js_caught6 is not None:
-        return None
-    if not _is_object(doc) or not _is_count(_js_get(doc, "v")) or not _js_strict_eq(_js_get(doc, "v"), TERMS_VERSION):
-        return None
-    top = doc
-    facts = _js_get(top, "facts")
     if not _js_strict_eq(_js_get(doc, "sidecar"), sha) or not _is_object(facts):
         return None
     out = _JsMap()
     for name in _js_object_keys(facts):
         entry = _js_get(facts, name)
-        if not _js_is_array(entry) or not _js_strict_eq(_js_len(entry), 2):
+        if not _js_is_array(entry) or len(entry) != 2:
             return None
-        dl = _js_get(entry, 0)
-        flat = _js_get(entry, 1)
-        if not _is_count(dl) or not _js_is_array(flat) or not _js_strict_eq(_js_mod(_js_len(flat), 2), 0):
+        dl = _js_list_at(entry, 0)
+        flat = _js_list_at(entry, 1)
+        if not _is_count(dl) or not _js_is_array(flat) or _js_mod(len(flat), 2) != 0:
             return None
         i = 0
-        while _js_lt(i, _js_len(flat)):
-            if _js_typeof(_js_get(flat, i)) != "string" or not _is_count(_js_get(flat, _js_num(i + 1))):
+        while i < len(flat):
+            if not isinstance(_js_list_at(flat, i), str) or not _is_count(_js_list_at(flat, _js_num(i + 1))):
                 return None
             i = _js_num(i + 2)
         _js_m_set(out, name, [_CountsView(flat), _js_add(dl, 0)])
@@ -388,21 +389,21 @@ def _py_int(n):
 
 def _sidecar_entries(raw):
     text = _JS_UNDEFINED
-    _js_caught7 = None
+    _js_caught6 = None
     try:
         text = py_decode_utf8(raw)
-    except Exception as _js_error7:
-        _js_caught7 = _js_catch(_js_error7)
-    if _js_caught7 is not None:
+    except Exception as _js_error6:
+        _js_caught6 = _js_catch(_js_error6)
+    if _js_caught6 is not None:
         return _JsMap()
     if _js_m_endsWith(text, ",\"v\":1}") or _js_m_endsWith(text, "{\"v\":1}"):
         doc = _JS_UNDEFINED
-        _js_caught8 = None
+        _js_caught7 = None
         try:
             doc = _js_json_parse(text)
-        except Exception as _js_error8:
-            _js_caught8 = _js_catch(_js_error8)
-        if _js_caught8 is not None:
+        except Exception as _js_error7:
+            _js_caught7 = _js_catch(_js_error7)
+        if _js_caught7 is not None:
             doc = _JS_UNDEFINED
         if _is_object(doc) and _js_strict_eq(_js_get(doc, "v"), 1):
             out = _JsMap()
@@ -415,7 +416,7 @@ def _sidecar_entries(raw):
                 if not _is_object(entry) or not _js_object_has_own(entry, "queries"):
                     continue
                 qs = _js_get(entry, "queries")
-                if _js_is_array(qs) and _js_gt(_js_len(qs), 0) and _js_every_string(qs):
+                if _js_is_array(qs) and len(qs) > 0 and _js_every_string(qs):
                     _js_m_set(out, name, qs)
             return out
     return _entries_of(_doc_of_bytes(raw))
@@ -479,14 +480,14 @@ def _flat_terms(counts):
 
 
 def _dump_terms_slow__typed(facts, sha):
-    doc = {"t": "dict", "v": _JsMap([["facts", {"t": "dict", "v": _JsMap(_js_m_map([*facts], lambda _js_arg9, *_: (lambda n, row: [n, {"t": "list", "v": [_py_int(_js_get(row, 0)), {"t": "list", "v": _flat_terms(_js_get(row, 1))}]}])(*_js_destructure(_js_arg9, 2))))}], ["sidecar", {"t": "str", "v": sha}], ["v", _py_int__typed(TERMS_VERSION)]])}
+    doc = {"t": "dict", "v": _JsMap([["facts", {"t": "dict", "v": _JsMap(_js_m_map([*facts], lambda _js_arg8, *_: (lambda n, row: [n, {"t": "list", "v": [_py_int(_js_get(row, 0)), {"t": "list", "v": _flat_terms(_js_get(row, 1))}]}])(*_js_destructure(_js_arg8, 2))))}], ["sidecar", {"t": "str", "v": sha}], ["v", _py_int__typed(TERMS_VERSION)]])}
     return dump_json(doc, {"sortKeys": True, "ensureAscii": True, "separators": [",", ":"]})
 
 
 def dump_terms_slow(facts, sha):
     if type(sha) is str:
         return _dump_terms_slow__typed(facts, sha)
-    doc = {"t": "dict", "v": _JsMap([["facts", {"t": "dict", "v": _JsMap(_js_m_map([*facts], lambda _js_arg10, *_: (lambda n, row: [n, {"t": "list", "v": [_py_int(_js_get(row, 0)), {"t": "list", "v": _flat_terms(_js_get(row, 1))}]}])(*_js_destructure(_js_arg10, 2))))}], ["sidecar", {"t": "str", "v": sha}], ["v", _py_int__typed(TERMS_VERSION)]])}
+    doc = {"t": "dict", "v": _JsMap([["facts", {"t": "dict", "v": _JsMap(_js_m_map([*facts], lambda _js_arg9, *_: (lambda n, row: [n, {"t": "list", "v": [_py_int(_js_get(row, 0)), {"t": "list", "v": _flat_terms(_js_get(row, 1))}]}])(*_js_destructure(_js_arg9, 2))))}], ["sidecar", {"t": "str", "v": sha}], ["v", _py_int__typed(TERMS_VERSION)]])}
     return dump_json(doc, {"sortKeys": True, "ensureAscii": True, "separators": [",", ":"]})
 
 
@@ -496,12 +497,12 @@ def sidecar_entries_slow(raw):
 
 def _layer_terms__typed(home, root):
     raw = _JS_UNDEFINED
-    _js_caught11 = None
+    _js_caught10 = None
     try:
         raw = read_file_sync(_sidecar_path__typed(home, root))
-    except Exception as _js_error11:
-        _js_caught11 = _js_catch(_js_error11)
-    if _js_caught11 is not None:
+    except Exception as _js_error10:
+        _js_caught10 = _js_catch(_js_error10)
+    if _js_caught10 is not None:
         return _JsMap()
     sha = _js_invoke(_js_invoke(create_hash("sha1"), "update", raw), "digest", "hex")
     cache = _terms_path__typed(home, root)
@@ -509,30 +510,26 @@ def _layer_terms__typed(home, root):
     if got is not None:
         return got
     facts = _JsMap()
-    for _js_item12 in _sidecar_entries(raw):
-        name = _js_get(_js_item12, 0)
-        qs = _js_get(_js_item12, 1)
+    for name, qs in _js_rows(_sidecar_entries(raw), 2, (0, 1)):
         _js_m_set(facts, name, _counts_of(qs))
     tmp = path_join(path_dirname(cache), _js_str(path_basename(cache)) + "." + _js_str(process_pid()) + ".tmp")
-    _js_caught13 = None
+    _js_caught11 = None
     try:
         mkdir_sync(path_dirname(cache), {"recursive": True})
         write_file_sync(tmp, dump_terms(facts, sha), "utf8")
         rename_sync(tmp, cache)
-    except Exception as _js_error13:
-        _js_caught13 = _js_catch(_js_error13)
-    if _js_caught13 is not None:
-        _js_caught14 = None
+    except Exception as _js_error11:
+        _js_caught11 = _js_catch(_js_error11)
+    if _js_caught11 is not None:
+        _js_caught12 = None
         try:
             rm_sync(tmp, {"force": True})
-        except Exception as _js_error14:
-            _js_caught14 = _js_catch(_js_error14)
-        if _js_caught14 is not None:
+        except Exception as _js_error12:
+            _js_caught12 = _js_catch(_js_error12)
+        if _js_caught12 is not None:
             pass
     out = _JsMap()
-    for _js_item15 in facts:
-        n = _js_get(_js_item15, 0)
-        row = _js_get(_js_item15, 1)
+    for n, row in _js_rows(facts, 2, (0, 1)):
         _js_m_set(out, n, [_js_get(row, 1), _js_get(row, 0)])
     return out
 
@@ -541,12 +538,12 @@ def layer_terms(home, root):
     if type(home) is str and type(root) is str:
         return _layer_terms__typed(home, root)
     raw = _JS_UNDEFINED
-    _js_caught16 = None
+    _js_caught13 = None
     try:
         raw = read_file_sync(sidecar_path(home, root))
-    except Exception as _js_error16:
-        _js_caught16 = _js_catch(_js_error16)
-    if _js_caught16 is not None:
+    except Exception as _js_error13:
+        _js_caught13 = _js_catch(_js_error13)
+    if _js_caught13 is not None:
         return _JsMap()
     sha = _js_invoke(_js_invoke(create_hash("sha1"), "update", raw), "digest", "hex")
     cache = terms_path(home, root)
@@ -554,30 +551,26 @@ def layer_terms(home, root):
     if got is not None:
         return got
     facts = _JsMap()
-    for _js_item17 in _sidecar_entries(raw):
-        name = _js_get(_js_item17, 0)
-        qs = _js_get(_js_item17, 1)
+    for name, qs in _js_rows(_sidecar_entries(raw), 2, (0, 1)):
         _js_m_set(facts, name, _counts_of(qs))
     tmp = path_join(path_dirname(cache), _js_str(path_basename(cache)) + "." + _js_str(process_pid()) + ".tmp")
-    _js_caught18 = None
+    _js_caught14 = None
     try:
         mkdir_sync(path_dirname(cache), {"recursive": True})
         write_file_sync(tmp, dump_terms(facts, sha), "utf8")
         rename_sync(tmp, cache)
-    except Exception as _js_error18:
-        _js_caught18 = _js_catch(_js_error18)
-    if _js_caught18 is not None:
-        _js_caught19 = None
+    except Exception as _js_error14:
+        _js_caught14 = _js_catch(_js_error14)
+    if _js_caught14 is not None:
+        _js_caught15 = None
         try:
             rm_sync(tmp, {"force": True})
-        except Exception as _js_error19:
-            _js_caught19 = _js_catch(_js_error19)
-        if _js_caught19 is not None:
+        except Exception as _js_error15:
+            _js_caught15 = _js_catch(_js_error15)
+        if _js_caught15 is not None:
             pass
     out = _JsMap()
-    for _js_item20 in facts:
-        n = _js_get(_js_item20, 0)
-        row = _js_get(_js_item20, 1)
+    for n, row in _js_rows(facts, 2, (0, 1)):
         _js_m_set(out, n, [_js_get(row, 1), _js_get(row, 0)])
     return out
 
@@ -601,53 +594,49 @@ def _cps(s):
 def check_queries(queries):
     if not _js_is_array(queries) or not _js_every_string(queries):
         raise MemoryValidationError("queries must be a list of strings")
-    if _js_gt(_js_len(queries), MAX_QUERIES):
-        raise MemoryValidationError("queries: at most " + _js_str(MAX_QUERIES) + " per fact, got " + _js_str(_js_len(queries)))
-    def _js_fn21(x=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
+    if len(queries) > MAX_QUERIES:
+        raise MemoryValidationError("queries: at most " + _js_str(MAX_QUERIES) + " per fact, got " + _js_str(len(queries)))
+    def _js_fn16(x=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
         n = _cps(x)
         if n > MAX_QUERY_CHARS:
             raise MemoryValidationError("queries: each at most " + _js_str(MAX_QUERY_CHARS) + " characters; query " + _js_str(_js_add(i, 1)) + " has " + _js_str(n))
         return _JS_UNDEFINED
-    _js_m_forEach(queries, _js_fn21)
+    _js_m_forEach(queries, _js_fn16)
     return queries
 
 
 def fact_sha(p):
     if p is None or p is _JS_UNDEFINED:
         return ""
-    _js_caught22 = None
+    _js_caught17 = None
     try:
         return _js_invoke(_js_invoke(create_hash("sha1"), "update", read_file_sync(p)), "digest", "hex")
-    except Exception as _js_error22:
-        _js_caught22 = _js_catch(_js_error22)
-    if _js_caught22 is not None:
+    except Exception as _js_error17:
+        _js_caught17 = _js_catch(_js_error17)
+    if _js_caught17 is not None:
         return ""
 
 
 def _write_entries__typed(p, entries):
-    _js_caught23 = None
+    _js_caught18 = None
     try:
         mkdir_sync(path_dirname(p), {"recursive": True})
-    except Exception as _js_error23:
-        _js_caught23 = _js_catch(_js_error23)
-    if _js_caught23 is not None:
-        raise _js_throw(_write_failed(_js_caught23, path_dirname(p)))
-    def _js_fn24(*_):
+    except Exception as _js_error18:
+        _js_caught18 = _js_catch(_js_error18)
+    if _js_caught18 is not None:
+        raise _js_throw(_write_failed(_js_caught18, path_dirname(p)))
+    def _js_fn19(*_):
         doc = _js_coalesce(_doc_of__typed(p), lambda: _JsMap([["v", {"t": "int", "v": _js_bigint(SIDECAR_VERSION)}], ["facts", {"t": "dict", "v": _JsMap()}]]))
         facts = _JsMap()
-        for _js_item25 in _js_get(_js_dispatch(doc, "get", _js_m_get, "facts"), "v"):
-            name = _js_get(_js_item25, 0)
-            held = _js_get(_js_item25, 1)
+        for name, held in _js_rows(_js_get(_js_dispatch(doc, "get", _js_m_get, "facts"), "v"), 2, (0, 1)):
             if not _js_truthy(_js_dispatch(entries, "has", _js_m_has, name)):
                 _js_m_set(facts, name, held)
         _js_m_set(doc, "facts", {"t": "dict", "v": facts})
-        for _js_item26 in entries:
-            name = _js_get(_js_item26, 0)
-            entry = _js_get(_js_item26, 1)
+        for name, entry in _js_rows(entries, 2, (0, 1)):
             if entry is not None:
                 _js_m_set(facts, name, {"t": "dict", "v": _JsMap([["queries", {"t": "list", "v": _js_m_map(_js_get(entry, 0), lambda x, *_: {"t": "str", "v": x})}], ["sha", {"t": "str", "v": _js_get(entry, 1)}]])})
         tmp = path_join(path_dirname(p), _js_str(path_basename(p)) + "." + _js_str(process_pid()) + ".tmp")
-        _js_caught27 = None
+        _js_caught20 = None
         try:
             text = dump_json({"t": "dict", "v": doc}, {"sortKeys": True, "ensureAscii": False, "separators": [",", ":"]})
             bad = lone_surrogate(text)
@@ -655,50 +644,46 @@ def _write_entries__typed(p, entries):
                 raise SidecarWriteError("'utf-8' codec can't encode character " + _js_str(bad))
             write_file_sync(tmp, text, "utf8")
             rename_sync(tmp, p)
-        except Exception as _js_error27:
-            _js_caught27 = _js_catch(_js_error27)
-        if _js_caught27 is not None:
-            _js_caught28 = None
+        except Exception as _js_error20:
+            _js_caught20 = _js_catch(_js_error20)
+        if _js_caught20 is not None:
+            _js_caught21 = None
             try:
                 rm_sync(tmp, {"force": True})
-            except Exception as _js_error28:
-                _js_caught28 = _js_catch(_js_error28)
-            if _js_caught28 is not None:
+            except Exception as _js_error21:
+                _js_caught21 = _js_catch(_js_error21)
+            if _js_caught21 is not None:
                 pass
-            if isinstance(_js_caught27, SidecarWriteError):
-                raise _js_caught27
-            raise _js_throw(_write_failed(_js_caught27, tmp))
+            if isinstance(_js_caught20, SidecarWriteError):
+                raise _js_caught20
+            raise _js_throw(_write_failed(_js_caught20, tmp))
         return _JS_UNDEFINED
-    exclusive(p, _js_fn24)
+    exclusive(p, _js_fn19)
     return _JS_UNDEFINED
 
 
 def write_entries(p, entries):
     if type(p) is str:
         return _write_entries__typed(p, entries)
-    _js_caught29 = None
+    _js_caught22 = None
     try:
         mkdir_sync(path_dirname(p), {"recursive": True})
-    except Exception as _js_error29:
-        _js_caught29 = _js_catch(_js_error29)
-    if _js_caught29 is not None:
-        raise _js_throw(_write_failed(_js_caught29, path_dirname(p)))
-    def _js_fn30(*_):
+    except Exception as _js_error22:
+        _js_caught22 = _js_catch(_js_error22)
+    if _js_caught22 is not None:
+        raise _js_throw(_write_failed(_js_caught22, path_dirname(p)))
+    def _js_fn23(*_):
         doc = _js_coalesce(_doc_of(p), lambda: _JsMap([["v", {"t": "int", "v": _js_bigint(SIDECAR_VERSION)}], ["facts", {"t": "dict", "v": _JsMap()}]]))
         facts = _JsMap()
-        for _js_item31 in _js_get(_js_dispatch(doc, "get", _js_m_get, "facts"), "v"):
-            name = _js_get(_js_item31, 0)
-            held = _js_get(_js_item31, 1)
+        for name, held in _js_rows(_js_get(_js_dispatch(doc, "get", _js_m_get, "facts"), "v"), 2, (0, 1)):
             if not _js_truthy(_js_dispatch(entries, "has", _js_m_has, name)):
                 _js_m_set(facts, name, held)
         _js_m_set(doc, "facts", {"t": "dict", "v": facts})
-        for _js_item32 in entries:
-            name = _js_get(_js_item32, 0)
-            entry = _js_get(_js_item32, 1)
+        for name, entry in _js_rows(entries, 2, (0, 1)):
             if entry is not None:
                 _js_m_set(facts, name, {"t": "dict", "v": _JsMap([["queries", {"t": "list", "v": _js_m_map(_js_get(entry, 0), lambda x, *_: {"t": "str", "v": x})}], ["sha", {"t": "str", "v": _js_get(entry, 1)}]])})
         tmp = path_join(path_dirname(p), _js_str(path_basename(p)) + "." + _js_str(process_pid()) + ".tmp")
-        _js_caught33 = None
+        _js_caught24 = None
         try:
             text = dump_json({"t": "dict", "v": doc}, {"sortKeys": True, "ensureAscii": False, "separators": [",", ":"]})
             bad = lone_surrogate(text)
@@ -706,21 +691,21 @@ def write_entries(p, entries):
                 raise SidecarWriteError("'utf-8' codec can't encode character " + _js_str(bad))
             write_file_sync(tmp, text, "utf8")
             rename_sync(tmp, p)
-        except Exception as _js_error33:
-            _js_caught33 = _js_catch(_js_error33)
-        if _js_caught33 is not None:
-            _js_caught34 = None
+        except Exception as _js_error24:
+            _js_caught24 = _js_catch(_js_error24)
+        if _js_caught24 is not None:
+            _js_caught25 = None
             try:
                 rm_sync(tmp, {"force": True})
-            except Exception as _js_error34:
-                _js_caught34 = _js_catch(_js_error34)
-            if _js_caught34 is not None:
+            except Exception as _js_error25:
+                _js_caught25 = _js_catch(_js_error25)
+            if _js_caught25 is not None:
                 pass
-            if isinstance(_js_caught33, SidecarWriteError):
-                raise _js_caught33
-            raise _js_throw(_write_failed(_js_caught33, tmp))
+            if isinstance(_js_caught24, SidecarWriteError):
+                raise _js_caught24
+            raise _js_throw(_write_failed(_js_caught24, tmp))
         return _JS_UNDEFINED
-    exclusive(p, _js_fn30)
+    exclusive(p, _js_fn23)
     return _JS_UNDEFINED
 
 

@@ -26,6 +26,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_num,
     _js_or,
     _js_put,
+    _js_rows,
     _js_size,
     _js_str,
     _js_str_len,
@@ -184,22 +185,20 @@ def _size_of(p):
 def index_lines(memory):
     layers = _js_get(memory, "layers")
     out = []
-    for _js_item7 in layers:
-        label = _js_get(_js_item7, 0)
-        store = _js_get(_js_item7, 1)
+    for label, store in _js_rows(layers, 2, (0, 1)):
         if _kind_of(path_join(_js_get(store, "root"), "facts")) != "dir":
             continue
         kind = _js_list_at(_js_m_split(label, ":"), 0)
         docs = _JS_UNDEFINED
         idx = _JS_UNDEFINED
-        _js_caught8 = None
+        _js_caught7 = None
         try:
             idx = _js_invoke(store, "index")
             _js_invoke(idx, "refresh", "fast")
             docs = _js_size(_js_invoke(idx, "names"))
-        except Exception as _js_error8:
-            _js_caught8 = _js_catch(_js_error8)
-        if _js_caught8 is not None:
+        except Exception as _js_error7:
+            _js_caught7 = _js_catch(_js_error7)
+        if _js_caught7 is not None:
             out.append("index facts " + _js_str(kind) + ": unreadable")
             continue
         files = [_js_get(idx, "path")]
@@ -216,23 +215,23 @@ def index_lines(memory):
 def _logs__typed(base):
     found = [["hook-log", path_join(base, "hooks", "hook-log.jsonl")]]
     names = []
-    _js_caught9 = None
+    _js_caught8 = None
     try:
         names = _js_m_sort(readdir_sync(path_join(base, "usage")))
-    except Exception as _js_error9:
-        _js_caught9 = _js_catch(_js_error9)
-    if _js_caught9 is not None:
+    except Exception as _js_error8:
+        _js_caught8 = _js_catch(_js_error8)
+    if _js_caught8 is not None:
         pass
     for n in names:
         if _js_m_endsWith(n, ".jsonl"):
             found.append(["usage/" + _js_str(_js_m_slice(n, 0, _js_neg(_js_str_len(".jsonl")))), path_join(base, "usage", n)])
     touched = []
-    _js_caught10 = None
+    _js_caught9 = None
     try:
         touched = _js_m_sort(readdir_sync(path_join(base, "touch")))
-    except Exception as _js_error10:
-        _js_caught10 = _js_catch(_js_error10)
-    if _js_caught10 is not None:
+    except Exception as _js_error9:
+        _js_caught9 = _js_catch(_js_error9)
+    if _js_caught9 is not None:
         pass
     for n in touched:
         if _js_m_endsWith(n, ".jsonl"):
@@ -245,23 +244,23 @@ def _logs(base):
         return _logs__typed(base)
     found = [["hook-log", path_join(base, "hooks", "hook-log.jsonl")]]
     names = []
-    _js_caught11 = None
+    _js_caught10 = None
     try:
         names = _js_m_sort(readdir_sync(path_join(base, "usage")))
-    except Exception as _js_error11:
-        _js_caught11 = _js_catch(_js_error11)
-    if _js_caught11 is not None:
+    except Exception as _js_error10:
+        _js_caught10 = _js_catch(_js_error10)
+    if _js_caught10 is not None:
         pass
     for n in names:
         if _js_m_endsWith(n, ".jsonl"):
             found.append(["usage/" + _js_str(_js_m_slice(n, 0, _js_neg(_js_str_len(".jsonl")))), path_join(base, "usage", n)])
     touched = []
-    _js_caught12 = None
+    _js_caught11 = None
     try:
         touched = _js_m_sort(readdir_sync(path_join(base, "touch")))
-    except Exception as _js_error12:
-        _js_caught12 = _js_catch(_js_error12)
-    if _js_caught12 is not None:
+    except Exception as _js_error11:
+        _js_caught11 = _js_catch(_js_error11)
+    if _js_caught11 is not None:
         pass
     for n in touched:
         if _js_m_endsWith(n, ".jsonl"):
@@ -274,9 +273,7 @@ def _log_lines__typed(home, detail=_JS_UNDEFINED):
         detail = False
     out = []
     families = _JsMap([["usage", [0, 0, 0, 0]], ["touch", [0, 0, 0, 0]]])
-    for _js_item13 in _logs(path_join(home, ".bantamkit")):
-        name = _js_get(_js_item13, 0)
-        p = _js_get(_js_item13, 1)
+    for name, p in _js_rows(_logs(path_join(home, ".bantamkit")), 2, (0, 1)):
         seg = LogSegment(p)
         segments = _js_invoke(seg, "segments")
         if _kind_of(p) != "file" and _js_strict_eq(_js_len(segments), 0):
@@ -291,9 +288,7 @@ def _log_lines__typed(home, detail=_JS_UNDEFINED):
         _js_put(family, 1, _js_add(_js_get(family, 1), held))
         _js_put(family, 2, _js_add(_js_get(family, 2), _js_len(segments)))
         _js_put(family, 3, _js_add(_js_get(family, 3), _js_get(seg, "skipped")))
-    for _js_item14 in families:
-        family = _js_get(_js_item14, 0)
-        sums = _js_get(_js_item14, 1)
+    for family, sums in _js_rows(families, 2, (0, 1)):
         n = _js_get(sums, 0)
         if _js_strict_eq(n, 0):
             continue
@@ -308,9 +303,7 @@ def log_lines(home, detail=_JS_UNDEFINED):
         detail = False
     out = []
     families = _JsMap([["usage", [0, 0, 0, 0]], ["touch", [0, 0, 0, 0]]])
-    for _js_item15 in _logs(path_join(home, ".bantamkit")):
-        name = _js_get(_js_item15, 0)
-        p = _js_get(_js_item15, 1)
+    for name, p in _js_rows(_logs(path_join(home, ".bantamkit")), 2, (0, 1)):
         seg = LogSegment(p)
         segments = _js_invoke(seg, "segments")
         if _kind_of(p) != "file" and _js_strict_eq(_js_len(segments), 0):
@@ -325,9 +318,7 @@ def log_lines(home, detail=_JS_UNDEFINED):
         _js_put(family, 1, _js_add(_js_get(family, 1), held))
         _js_put(family, 2, _js_add(_js_get(family, 2), _js_len(segments)))
         _js_put(family, 3, _js_add(_js_get(family, 3), _js_get(seg, "skipped")))
-    for _js_item16 in families:
-        family = _js_get(_js_item16, 0)
-        sums = _js_get(_js_item16, 1)
+    for family, sums in _js_rows(families, 2, (0, 1)):
         n = _js_get(sums, 0)
         if _js_strict_eq(n, 0):
             continue
@@ -359,7 +350,7 @@ _STRICT = TextDecoder("utf-8", {"fatal": True, "ignoreBOM": True})
 def _retention_line__typed(home):
     ran = "never"
     refused = 0
-    _js_caught17 = None
+    _js_caught12 = None
     try:
         data = parse_json(_js_invoke(_STRICT, "decode", read_file_sync(state_path(home))))
         if _js_get(data, "t") == "dict":
@@ -371,9 +362,9 @@ def _retention_line__typed(home):
                 list_ = _js_m_get(_js_get(report, "v"), "refused")
                 if list_ is not _JS_UNDEFINED and _js_get(list_, "t") == "list":
                     refused = _js_len(_js_get(list_, "v"))
-    except Exception as _js_error17:
-        _js_caught17 = _js_catch(_js_error17)
-    if _js_caught17 is not None:
+    except Exception as _js_error12:
+        _js_caught12 = _js_catch(_js_error12)
+    if _js_caught12 is not None:
         pass
     return "retention: " + ("" if _js_truthy(enabled()) else "off; ") + "last ran " + _js_str(ran) + "; refused " + _js_str(refused)
 
@@ -383,7 +374,7 @@ def retention_line(home):
         return _retention_line__typed(home)
     ran = "never"
     refused = 0
-    _js_caught18 = None
+    _js_caught13 = None
     try:
         data = parse_json(_js_invoke(_STRICT, "decode", read_file_sync(state_path(home))))
         if _js_get(data, "t") == "dict":
@@ -395,9 +386,9 @@ def retention_line(home):
                 list_ = _js_m_get(_js_get(report, "v"), "refused")
                 if list_ is not _JS_UNDEFINED and _js_get(list_, "t") == "list":
                     refused = _js_len(_js_get(list_, "v"))
-    except Exception as _js_error18:
-        _js_caught18 = _js_catch(_js_error18)
-    if _js_caught18 is not None:
+    except Exception as _js_error13:
+        _js_caught13 = _js_catch(_js_error13)
+    if _js_caught13 is not None:
         pass
     return "retention: " + ("" if _js_truthy(enabled()) else "off; ") + "last ran " + _js_str(ran) + "; refused " + _js_str(refused)
 

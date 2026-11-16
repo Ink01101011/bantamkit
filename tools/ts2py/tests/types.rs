@@ -292,9 +292,11 @@ fn frozen_module_array_unpacks_and_an_escaped_one_does_not() {
         classify,
         "pattern.search(_js_code_units(value)) is not None",
     );
-    // SHARED is also pushed to, so its rows prove nothing.
+    // SHARED is also pushed to, so its rows prove nothing: each is read the general way
+    // (`_js_rows`, J90-P: `_js_get` of each name's index unless the row is a list that long).
     let loose = def_of(&module, "_loose");
-    has(loose, "for _js_item");
+    has(loose, "in _js_rows(_SHARED, 3, (0, 1, 2)):");
+    lacks(loose, "in _SHARED:");
     has(loose, "_js_m_includes(firsts, ");
     has(loose, "_js_m_test(pattern, value)");
     assert_eq!(

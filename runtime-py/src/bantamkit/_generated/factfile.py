@@ -56,6 +56,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_re_exec,
     _js_re_replace,
     _js_regexp_dynamic,
+    _js_rows,
     _js_spread,
     _js_str,
     _js_str_at,
@@ -105,13 +106,13 @@ OWNED_KEYS = ["name", "description", "type", "created", "last_recalled", "links"
 
 
 def _is_text_key__typed(key):
-    return _js_typeof(construct_plain(key)) == "string"
+    return isinstance(construct_plain(key), str)
 
 
 def is_text_key(key):
     if type(key) is str:
         return _is_text_key__typed(key)
-    return _js_typeof(construct_plain(key)) == "string"
+    return isinstance(construct_plain(key), str)
 
 
 def extra_of(meta):
@@ -130,7 +131,7 @@ def lifecycle_of(meta):
     outcome = nn(_js_get(meta, "outcome"))
     if outcome is None:
         loop = _js_get(nested, "loop")
-        outcome = loop if _js_typeof(loop) == "string" and _js_m_includes(VALID_OUTCOMES, loop) else None
+        outcome = loop if isinstance(loop, str) and loop in VALID_OUTCOMES else None
     status = nn(_js_get(meta, "status"))
     if status is None:
         ns = _js_get(nested, "status")
@@ -168,10 +169,10 @@ def _fact_of_parsed(parsed):
 def py_truthy(value):
     if value is _JS_UNDEFINED or value is None:
         return False
-    if _js_typeof(value) == "string":
+    if isinstance(value, str):
         return value != ""
     if _js_is_array(value):
-        return _js_gt(_js_len(value), 0)
+        return len(value) > 0
     return _js_get(value, "truthy")
 
 
@@ -180,7 +181,7 @@ def py_list(value):
         return []
     if _js_is_array(value):
         return [*value]
-    if _js_typeof(value) == "string":
+    if isinstance(value, str):
         return [*value]
     e = _JsTypeError("'" + _js_str(_js_get(value, "pyType")) + "' object is not iterable")
     _js_put(e, "name", "TypeError")
@@ -333,13 +334,11 @@ def well_formed(text):
 
 def _well_formed_meta(meta):
     out = []
-    for _js_item1 in _js_object_entries(meta):
-        k = _js_get(_js_item1, 0)
-        v = _js_get(_js_item1, 1)
-        if _js_typeof(v) == "string":
+    for k, v in _js_rows(_js_object_entries(meta), 2, (0, 1)):
+        if isinstance(v, str):
             out.append([k, well_formed(v)])
         elif _js_is_array(v):
-            out.append([k, _js_m_map(v, lambda x, *_: well_formed(x) if _js_typeof(x) == "string" else x)])
+            out.append([k, _js_m_map(v, lambda x, *_: _well_formed__typed(x) if isinstance(x, str) else x)])
         else:
             out.append([k, v])
     return _js_object_from_entries(out)

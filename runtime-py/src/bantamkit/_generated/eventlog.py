@@ -228,11 +228,11 @@ def _type_name_of(error):
         return os_error_class_name(_js_get(error, "code"))
     if _js_typeof(error) == "object" and error is not None:
         ctor = _js_constructor_of(error)
-        if _js_truthy(_js_and(_js_and(ctor, lambda: _js_typeof(_js_get(ctor, "name")) == "string"), lambda: _js_get(ctor, "name") != "")):
+        if _js_truthy(_js_and(_js_and(ctor, lambda: isinstance(_js_get(ctor, "name"), str)), lambda: _js_get(ctor, "name") != "")):
             return _js_get(ctor, "name")
         return "Object"
     return "thrown"
 
 
 def _is_system_error(error):
-    return _js_typeof(error) == "object" and error is not None and _js_typeof(_js_get(error, "code")) == "string"
+    return _js_typeof(error) == "object" and error is not None and isinstance(_js_get(error, "code"), str)

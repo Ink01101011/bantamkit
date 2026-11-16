@@ -15,6 +15,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_invoke,
     _js_is_array,
     _js_is_double,
+    _js_is_number,
     _js_json_parse,
     _js_json_stringify_with,
     _js_le,
@@ -34,6 +35,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_number_is_integer,
     _js_or,
     _js_put,
+    _js_rows,
     _js_size,
     _js_spread,
     _js_str,
@@ -89,7 +91,7 @@ class TokenLedgerError(BantamError):
 
 
 def _is_count(value):
-    return _js_typeof(value) == "number" and _js_number_is_integer(value) and _js_ge(value, 0) and _js_le(value, MAX_SAFE_INT)
+    return _js_is_number(value) and _js_number_is_integer(value) and _js_ge(value, 0) and _js_le(value, MAX_SAFE_INT)
 
 
 def _is_plain_object(value):
@@ -247,16 +249,14 @@ def _read__typed(root, options=_JS_UNDEFINED):
             _js_m_set(sites, subject, site)
         _js_m_set(counts, subject, _js_add(seen, 1))
         return _JS_UNDEFINED
-    for _js_item6 in files:
-        path = _js_get(_js_item6, 0)
-        relpath = _js_get(_js_item6, 1)
+    for path, relpath in _js_rows(files, 2, (0, 1)):
         text = _JS_UNDEFINED
-        _js_caught7 = None
+        _js_caught6 = None
         try:
             text = _read_utf8_strict(path)
-        except Exception as _js_error7:
-            _js_caught7 = _js_catch(_js_error7)
-        if _js_caught7 is not None:
+        except Exception as _js_error6:
+            _js_caught6 = _js_catch(_js_error6)
+        if _js_caught6 is not None:
             lines = _js_num(lines + 1)
             omit(OMIT_UNDECODABLE, _js_str(relpath) + ":1")
             continue
@@ -267,19 +267,19 @@ def _read__typed(root, options=_JS_UNDEFINED):
             lines = _js_num(lines + 1)
             site = _js_str(relpath) + ":" + _js_str(_js_add(index, 1))
             record = _JS_UNDEFINED
-            _js_caught8 = None
+            _js_caught7 = None
             try:
                 record = _decode_line(line)
-            except Exception as _js_error8:
-                _js_caught8 = _js_catch(_js_error8)
-            if _js_caught8 is not None:
+            except Exception as _js_error7:
+                _js_caught7 = _js_catch(_js_error7)
+            if _js_caught7 is not None:
                 omit(OMIT_UNPARSED, site)
                 continue
             if not _is_plain_object(record):
                 omit(OMIT_NOT_OBJECT, site)
                 continue
             session_id = _js_get(record, "sessionId")
-            if _js_typeof(session_id) != "string" or session_id == "":
+            if not isinstance(session_id, str) or session_id == "":
                 omit(OMIT_NO_SESSION, site)
                 continue
             if _js_get(record, "type") != "assistant":
@@ -293,7 +293,7 @@ def _read__typed(root, options=_JS_UNDEFINED):
                 omit(OMIT_MALFORMED_USAGE, site)
                 continue
             request_id = _js_get(record, "requestId")
-            if _js_typeof(request_id) != "string" or request_id == "":
+            if not isinstance(request_id, str) or request_id == "":
                 omit(OMIT_NO_REQUEST_ID, site)
                 continue
             if _js_m_has(seen_requests, request_id):
@@ -305,10 +305,10 @@ def _read__typed(root, options=_JS_UNDEFINED):
                 row = {"session": session_id, "cwd": "", "first": "", "last": "", "requests": 0, "sidechain_requests": 0, "input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0}
                 _js_m_set(sessions, session_id, row)
             cwd = _js_get(record, "cwd")
-            if _js_get(row, "cwd") == "" and _js_typeof(cwd) == "string":
+            if _js_get(row, "cwd") == "" and isinstance(cwd, str):
                 _js_put(row, "cwd", cwd)
             stamp = _js_get(record, "timestamp")
-            if _js_typeof(stamp) == "string" and stamp != "":
+            if isinstance(stamp, str) and stamp != "":
                 if _js_get(row, "first") == "" or _js_lt(cmp_codepoint(stamp, _js_get(row, "first")), 0):
                     _js_put(row, "first", stamp)
                 if _js_gt(cmp_codepoint(stamp, _js_get(row, "last")), 0):
@@ -362,16 +362,14 @@ def read(root, options=_JS_UNDEFINED):
             _js_m_set(sites, subject, site)
         _js_m_set(counts, subject, _js_add(seen, 1))
         return _JS_UNDEFINED
-    for _js_item9 in files:
-        path = _js_get(_js_item9, 0)
-        relpath = _js_get(_js_item9, 1)
+    for path, relpath in _js_rows(files, 2, (0, 1)):
         text = _JS_UNDEFINED
-        _js_caught10 = None
+        _js_caught8 = None
         try:
             text = _read_utf8_strict(path)
-        except Exception as _js_error10:
-            _js_caught10 = _js_catch(_js_error10)
-        if _js_caught10 is not None:
+        except Exception as _js_error8:
+            _js_caught8 = _js_catch(_js_error8)
+        if _js_caught8 is not None:
             lines = _js_num(lines + 1)
             omit(OMIT_UNDECODABLE, _js_str(relpath) + ":1")
             continue
@@ -382,19 +380,19 @@ def read(root, options=_JS_UNDEFINED):
             lines = _js_num(lines + 1)
             site = _js_str(relpath) + ":" + _js_str(_js_add(index, 1))
             record = _JS_UNDEFINED
-            _js_caught11 = None
+            _js_caught9 = None
             try:
                 record = _decode_line(line)
-            except Exception as _js_error11:
-                _js_caught11 = _js_catch(_js_error11)
-            if _js_caught11 is not None:
+            except Exception as _js_error9:
+                _js_caught9 = _js_catch(_js_error9)
+            if _js_caught9 is not None:
                 omit(OMIT_UNPARSED, site)
                 continue
             if not _is_plain_object(record):
                 omit(OMIT_NOT_OBJECT, site)
                 continue
             session_id = _js_get(record, "sessionId")
-            if _js_typeof(session_id) != "string" or session_id == "":
+            if not isinstance(session_id, str) or session_id == "":
                 omit(OMIT_NO_SESSION, site)
                 continue
             if _js_get(record, "type") != "assistant":
@@ -408,7 +406,7 @@ def read(root, options=_JS_UNDEFINED):
                 omit(OMIT_MALFORMED_USAGE, site)
                 continue
             request_id = _js_get(record, "requestId")
-            if _js_typeof(request_id) != "string" or request_id == "":
+            if not isinstance(request_id, str) or request_id == "":
                 omit(OMIT_NO_REQUEST_ID, site)
                 continue
             if _js_m_has(seen_requests, request_id):
@@ -420,10 +418,10 @@ def read(root, options=_JS_UNDEFINED):
                 row = {"session": session_id, "cwd": "", "first": "", "last": "", "requests": 0, "sidechain_requests": 0, "input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0}
                 _js_m_set(sessions, session_id, row)
             cwd = _js_get(record, "cwd")
-            if _js_get(row, "cwd") == "" and _js_typeof(cwd) == "string":
+            if _js_get(row, "cwd") == "" and isinstance(cwd, str):
                 _js_put(row, "cwd", cwd)
             stamp = _js_get(record, "timestamp")
-            if _js_typeof(stamp) == "string" and stamp != "":
+            if isinstance(stamp, str) and stamp != "":
                 if _js_get(row, "first") == "" or _js_lt(cmp_codepoint(stamp, _js_get(row, "first")), 0):
                     _js_put(row, "first", stamp)
                 if _js_gt(cmp_codepoint(stamp, _js_get(row, "last")), 0):
@@ -453,12 +451,12 @@ def as_dict(ledger):
     totals = {}
     for cls in TOKEN_CLASSES:
         _js_put(totals, cls, _js_get(_js_get(ledger, "totals"), cls))
-    def _js_fn12(s=_JS_UNDEFINED, *_):
+    def _js_fn10(s=_JS_UNDEFINED, *_):
         row = {"session": _js_get(s, "session"), "cwd": _js_get(s, "cwd"), "first": _js_get(s, "first"), "last": _js_get(s, "last"), "requests": _js_get(s, "requests"), "sidechain_requests": _js_get(s, "sidechain_requests")}
         for cls in TOKEN_CLASSES:
             _js_put(row, cls, _js_get(s, cls))
         return row
-    doc = {"root": _js_get(ledger, "root"), "transcripts": _js_get(ledger, "transcripts"), "lines": _js_get(ledger, "lines"), "requests": _js_get(ledger, "requests"), "totals": totals, "sessions": _js_m_map(_js_get(ledger, "sessions"), _js_fn12), "omissions": _js_m_map(_js_get(ledger, "omissions"), lambda o, *_: {"subject": _js_get(o, "subject"), "count": _js_get(o, "count"), "what": _js_get(o, "what")})}
+    doc = {"root": _js_get(ledger, "root"), "transcripts": _js_get(ledger, "transcripts"), "lines": _js_get(ledger, "lines"), "requests": _js_get(ledger, "requests"), "totals": totals, "sessions": _js_m_map(_js_get(ledger, "sessions"), _js_fn10), "omissions": _js_m_map(_js_get(ledger, "omissions"), lambda o, *_: {"subject": _js_get(o, "subject"), "count": _js_get(o, "count"), "what": _js_get(o, "what")})}
     if _js_get(ledger, "cost") is not _JS_UNDEFINED:
         _js_put(doc, "cost", _js_get(ledger, "cost"))
     return doc

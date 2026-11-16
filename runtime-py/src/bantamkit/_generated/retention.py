@@ -35,7 +35,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_endsWith,
     _js_m_equals,
     _js_m_every,
-    _js_m_exec,
     _js_m_get,
     _js_m_has,
     _js_m_join,
@@ -53,6 +52,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_toLowerCase,
     _js_m_toString,
     _js_m_trim,
+    _js_map_entries,
     _js_mod,
     _js_mul,
     _js_neg,
@@ -64,6 +64,8 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_object_keys,
     _js_put,
     _js_re,
+    _js_re_exec,
+    _js_rows,
     _js_size,
     _js_str,
     _js_str_len,
@@ -183,7 +185,7 @@ def audit_enabled():
 
 
 def parse_now(now):
-    m = _js_m_exec(_NOW, now) if _js_typeof(now) == "string" else None
+    m = _js_re_exec(_NOW, now) if isinstance(now, str) else None
     if m is None:
         raise _JsError("not a retention timestamp: " + _js_str(_js_json_stringify(now)))
     y = _js_number(_js_get(m, 1))
@@ -355,32 +357,30 @@ def _hook_log_reducer__typed(rows):
         return _JS_UNDEFINED
     for row in rows:
         ts = _js_get(row, "ts")
-        day = _js_m_join(_js_m_slice([*ts], 0, 10), "") if _js_typeof(ts) == "string" else "?"
+        day = _js_m_join(_js_m_slice([*ts], 0, 10), "") if isinstance(ts, str) else "?"
         c = _js_m_get(days, day)
         if c is _JS_UNDEFINED:
             c = _JsMap()
             _js_m_set(days, day, c)
         counts = _js_get(row, "counts")
         if _js_get(row, "event") == "Folded" and _is_obj(counts):
-            for _js_item8 in _js_object_entries(counts):
-                k = _js_get(_js_item8, 0)
-                v = _js_get(_js_item8, 1)
+            for k, v in _js_rows(_js_object_entries(counts), 2, (0, 1)):
                 if _js_number_is_integer(v):
                     bump(c, k, v)
             continue
         event = _js_get(row, "event")
-        key = event if _js_typeof(event) == "string" else "?"
+        key = event if isinstance(event, str) else "?"
         tool = _js_get(row, "tool")
-        if _js_typeof(tool) == "string":
-            key = _js_str(key) + "/" + tool
+        if isinstance(tool, str):
+            key = key + "/" + tool
         bump(c, key, 1)
-    def _js_fn9(day=_JS_UNDEFINED, *_):
+    def _js_fn8(day=_JS_UNDEFINED, *_):
         c = _js_m_get(days, day)
         counts = {}
         for k in _js_m_sort([*_js_m_keys(c)], cmp_codepoint):
             _js_put(counts, k, _js_m_get(c, k))
         return {"ts": _js_str(day) + "T00:00:00.000Z", "event": "Folded", "counts": counts}
-    return _js_m_map(_js_m_sort([*_js_m_keys(days)], cmp_codepoint), _js_fn9)
+    return _js_m_map(_js_m_sort([*_js_m_keys(days)], cmp_codepoint), _js_fn8)
 
 
 def hook_log_reducer(rows):
@@ -392,35 +392,77 @@ def hook_log_reducer(rows):
         return _JS_UNDEFINED
     for row in rows:
         ts = _js_get(row, "ts")
-        day = _js_m_join(_js_m_slice([*ts], 0, 10), "") if _js_typeof(ts) == "string" else "?"
+        day = _js_m_join(_js_m_slice([*ts], 0, 10), "") if isinstance(ts, str) else "?"
         c = _js_m_get(days, day)
         if c is _JS_UNDEFINED:
             c = _JsMap()
             _js_m_set(days, day, c)
         counts = _js_get(row, "counts")
         if _js_get(row, "event") == "Folded" and _is_obj(counts):
-            for _js_item10 in _js_object_entries(counts):
-                k = _js_get(_js_item10, 0)
-                v = _js_get(_js_item10, 1)
+            for k, v in _js_rows(_js_object_entries(counts), 2, (0, 1)):
                 if _js_number_is_integer(v):
                     bump(c, k, v)
             continue
         event = _js_get(row, "event")
-        key = event if _js_typeof(event) == "string" else "?"
+        key = event if isinstance(event, str) else "?"
         tool = _js_get(row, "tool")
-        if _js_typeof(tool) == "string":
-            key = _js_str(key) + "/" + tool
+        if isinstance(tool, str):
+            key = key + "/" + tool
         bump(c, key, 1)
-    def _js_fn11(day=_JS_UNDEFINED, *_):
+    def _js_fn9(day=_JS_UNDEFINED, *_):
         c = _js_m_get(days, day)
         counts = {}
         for k in _js_m_sort([*_js_m_keys(c)], cmp_codepoint):
             _js_put(counts, k, _js_m_get(c, k))
         return {"ts": _js_str(day) + "T00:00:00.000Z", "event": "Folded", "counts": counts}
-    return _js_m_map(_js_m_sort([*_js_m_keys(days)], cmp_codepoint), _js_fn11)
+    return _js_m_map(_js_m_sort([*_js_m_keys(days)], cmp_codepoint), _js_fn9)
 
 
 def _old_use__typed(p, cutoff):
+    data = _bytes_of__typed(p)
+    if data is None:
+        return False
+    for line in _js_m_split(_js_m_toString(data, "utf8"), "\n"):
+        row = _JS_UNDEFINED
+        _js_caught10 = None
+        try:
+            row = _js_json_parse(line)
+        except Exception as _js_error10:
+            _js_caught10 = _js_catch(_js_error10)
+        if _js_caught10 is not None:
+            continue
+        if not _is_obj(row):
+            continue
+        ts = _js_get(row, "ts")
+        if isinstance(ts, str) and _js_lt(ts, cutoff) and _js_get(row, "kind") != "save":
+            return True
+    return False
+
+
+def _old_use(p, cutoff):
+    if type(p) is str and type(cutoff) is str:
+        return _old_use__typed(p, cutoff)
+    data = _bytes_of(p)
+    if data is None:
+        return False
+    for line in _js_m_split(_js_m_toString(data, "utf8"), "\n"):
+        row = _JS_UNDEFINED
+        _js_caught11 = None
+        try:
+            row = _js_json_parse(line)
+        except Exception as _js_error11:
+            _js_caught11 = _js_catch(_js_error11)
+        if _js_caught11 is not None:
+            continue
+        if not _is_obj(row):
+            continue
+        ts = _js_get(row, "ts")
+        if isinstance(ts, str) and _js_lt(ts, cutoff) and _js_get(row, "kind") != "save":
+            return True
+    return False
+
+
+def _old_touch__typed(p, cutoff):
     data = _bytes_of__typed(p)
     if data is None:
         return False
@@ -436,14 +478,14 @@ def _old_use__typed(p, cutoff):
         if not _is_obj(row):
             continue
         ts = _js_get(row, "ts")
-        if _js_typeof(ts) == "string" and _js_lt(ts, cutoff) and _js_get(row, "kind") != "save":
+        if isinstance(ts, str) and _js_lt(ts, cutoff) and _js_get(row, "op") != "folded":
             return True
     return False
 
 
-def _old_use(p, cutoff):
+def _old_touch(p, cutoff):
     if type(p) is str and type(cutoff) is str:
-        return _old_use__typed(p, cutoff)
+        return _old_touch__typed(p, cutoff)
     data = _bytes_of(p)
     if data is None:
         return False
@@ -459,68 +501,24 @@ def _old_use(p, cutoff):
         if not _is_obj(row):
             continue
         ts = _js_get(row, "ts")
-        if _js_typeof(ts) == "string" and _js_lt(ts, cutoff) and _js_get(row, "kind") != "save":
-            return True
-    return False
-
-
-def _old_touch__typed(p, cutoff):
-    data = _bytes_of__typed(p)
-    if data is None:
-        return False
-    for line in _js_m_split(_js_m_toString(data, "utf8"), "\n"):
-        row = _JS_UNDEFINED
-        _js_caught14 = None
-        try:
-            row = _js_json_parse(line)
-        except Exception as _js_error14:
-            _js_caught14 = _js_catch(_js_error14)
-        if _js_caught14 is not None:
-            continue
-        if not _is_obj(row):
-            continue
-        ts = _js_get(row, "ts")
-        if _js_typeof(ts) == "string" and _js_lt(ts, cutoff) and _js_get(row, "op") != "folded":
-            return True
-    return False
-
-
-def _old_touch(p, cutoff):
-    if type(p) is str and type(cutoff) is str:
-        return _old_touch__typed(p, cutoff)
-    data = _bytes_of(p)
-    if data is None:
-        return False
-    for line in _js_m_split(_js_m_toString(data, "utf8"), "\n"):
-        row = _JS_UNDEFINED
-        _js_caught15 = None
-        try:
-            row = _js_json_parse(line)
-        except Exception as _js_error15:
-            _js_caught15 = _js_catch(_js_error15)
-        if _js_caught15 is not None:
-            continue
-        if not _is_obj(row):
-            continue
-        ts = _js_get(row, "ts")
-        if _js_typeof(ts) == "string" and _js_lt(ts, cutoff) and _js_get(row, "op") != "folded":
+        if isinstance(ts, str) and _js_lt(ts, cutoff) and _js_get(row, "op") != "folded":
             return True
     return False
 
 
 def _fold_usage__typed(seg, cutoff):
-    def _js_fn16(pairs=_JS_UNDEFINED, *_):
+    def _js_fn14(pairs=_JS_UNDEFINED, *_):
         return reduce_usage(pairs, cutoff)
-    _js_invoke(seg, "foldLines", cutoff, _js_fn16)
+    _js_invoke(seg, "foldLines", cutoff, _js_fn14)
     return _JS_UNDEFINED
 
 
 def _fold_usage(seg, cutoff):
     if type(cutoff) is str:
         return _fold_usage__typed(seg, cutoff)
-    def _js_fn17(pairs=_JS_UNDEFINED, *_):
+    def _js_fn15(pairs=_JS_UNDEFINED, *_):
         return reduce_usage(pairs, cutoff)
-    _js_invoke(seg, "foldLines", cutoff, _js_fn17)
+    _js_invoke(seg, "foldLines", cutoff, _js_fn15)
     return _JS_UNDEFINED
 
 
@@ -541,9 +539,7 @@ def _fold_logs__typed(home, now_ms, report):
             continue
         p = path_join(base, "touch", name)
         logs.append([p, "touch" if _old_touch(p, usage_cutoff) else "none"])
-    for _js_item18 in logs:
-        p = _js_get(_js_item18, 0)
-        how = _js_get(_js_item18, 1)
+    for p, how in _js_rows(logs, 2, (0, 1)):
         st = _regular(p)
         if st is None:
             continue
@@ -583,9 +579,7 @@ def _fold_logs(home, now_ms, report):
             continue
         p = path_join(base, "touch", name)
         logs.append([p, "touch" if _old_touch(p, usage_cutoff) else "none"])
-    for _js_item19 in logs:
-        p = _js_get(_js_item19, 0)
-        how = _js_get(_js_item19, 1)
+    for p, how in _js_rows(logs, 2, (0, 1)):
         st = _regular(p)
         if st is None:
             continue
@@ -609,30 +603,30 @@ def _fold_logs(home, now_ms, report):
 def _closed(data):
     plan = _js_get(data, "plan") if _is_obj(data) else None
     units = _js_get(plan, "units") if _is_obj(plan) else None
-    if not _js_is_array(units) or _js_strict_eq(_js_len(units), 0):
+    if not _js_is_array(units) or len(units) == 0:
         return False
-    return _js_m_every(units, lambda u, *_: _is_obj(u) and _js_typeof(_js_get(u, "status")) == "string" and _js_m_has(_CLOSED, _js_get(u, "status")))
+    return _js_m_every(units, lambda u, *_: _is_obj(u) and isinstance(_js_get(u, "status"), str) and _js_m_has(_CLOSED, _js_get(u, "status")))
 
 
 def _walk__typed(d):
-    _js_caught20 = None
+    _js_caught16 = None
     try:
         if not _js_truthy(_js_invoke(lstat_sync(d), "isDirectory")):
             return []
-    except Exception as _js_error20:
-        _js_caught20 = _js_catch(_js_error20)
-    if _js_caught20 is not None:
+    except Exception as _js_error16:
+        _js_caught16 = _js_catch(_js_error16)
+    if _js_caught16 is not None:
         return []
     out = []
     for name in _listdir__typed(d):
         p = path_join(d, name)
         st = _JS_UNDEFINED
-        _js_caught21 = None
+        _js_caught17 = None
         try:
             st = lstat_sync(p)
-        except Exception as _js_error21:
-            _js_caught21 = _js_catch(_js_error21)
-        if _js_caught21 is not None:
+        except Exception as _js_error17:
+            _js_caught17 = _js_catch(_js_error17)
+        if _js_caught17 is not None:
             continue
         if _js_truthy(_js_invoke(st, "isDirectory")):
             _js_m_push(out, *_walk(p))
@@ -644,24 +638,24 @@ def _walk__typed(d):
 def _walk(d):
     if type(d) is str:
         return _walk__typed(d)
-    _js_caught22 = None
+    _js_caught18 = None
     try:
         if not _js_truthy(_js_invoke(lstat_sync(d), "isDirectory")):
             return []
-    except Exception as _js_error22:
-        _js_caught22 = _js_catch(_js_error22)
-    if _js_caught22 is not None:
+    except Exception as _js_error18:
+        _js_caught18 = _js_catch(_js_error18)
+    if _js_caught18 is not None:
         return []
     out = []
     for name in _listdir(d):
         p = path_join(d, name)
         st = _JS_UNDEFINED
-        _js_caught23 = None
+        _js_caught19 = None
         try:
             st = lstat_sync(p)
-        except Exception as _js_error23:
-            _js_caught23 = _js_catch(_js_error23)
-        if _js_caught23 is not None:
+        except Exception as _js_error19:
+            _js_caught19 = _js_catch(_js_error19)
+        if _js_caught19 is not None:
             continue
         if _js_truthy(_js_invoke(st, "isDirectory")):
             _js_m_push(out, *_walk(p))
@@ -707,34 +701,34 @@ def bundle_bytes(bundle):
 
 
 def _entry(data):
-    _js_caught24 = None
+    _js_caught20 = None
     try:
         return _js_invoke(_STRICT, "decode", data)
-    except Exception as _js_error24:
-        _js_caught24 = _js_catch(_js_error24)
-    if _js_caught24 is not None:
+    except Exception as _js_error20:
+        _js_caught20 = _js_catch(_js_error20)
+    if _js_caught20 is not None:
         return {"base64": _js_m_toString(data, "base64")}
 
 
 def _gunzip__typed(p):
-    _js_caught25 = None
+    _js_caught21 = None
     try:
         return gunzip_sync(read_file_sync(p))
-    except Exception as _js_error25:
-        _js_caught25 = _js_catch(_js_error25)
-    if _js_caught25 is not None:
+    except Exception as _js_error21:
+        _js_caught21 = _js_catch(_js_error21)
+    if _js_caught21 is not None:
         return None
 
 
 def _gunzip(p):
     if type(p) is str:
         return _gunzip__typed(p)
-    _js_caught26 = None
+    _js_caught22 = None
     try:
         return gunzip_sync(read_file_sync(p))
-    except Exception as _js_error26:
-        _js_caught26 = _js_catch(_js_error26)
-    if _js_caught26 is not None:
+    except Exception as _js_error22:
+        _js_caught22 = _js_catch(_js_error22)
+    if _js_caught22 is not None:
         return None
 
 
@@ -745,20 +739,20 @@ def _sha(data):
 def _remove_empty_dirs__typed(d):
     for name in _listdir__typed(d):
         p = path_join(d, name)
-        _js_caught27 = None
+        _js_caught23 = None
         try:
             if _js_truthy(_js_invoke(lstat_sync(p), "isDirectory")):
                 _remove_empty_dirs(p)
-        except Exception as _js_error27:
-            _js_caught27 = _js_catch(_js_error27)
-        if _js_caught27 is not None:
+        except Exception as _js_error23:
+            _js_caught23 = _js_catch(_js_error23)
+        if _js_caught23 is not None:
             pass
-    _js_caught28 = None
+    _js_caught24 = None
     try:
         rmdir_sync(d)
-    except Exception as _js_error28:
-        _js_caught28 = _js_catch(_js_error28)
-    if _js_caught28 is not None:
+    except Exception as _js_error24:
+        _js_caught24 = _js_catch(_js_error24)
+    if _js_caught24 is not None:
         pass
     return _JS_UNDEFINED
 
@@ -768,20 +762,20 @@ def _remove_empty_dirs(d):
         return _remove_empty_dirs__typed(d)
     for name in _listdir(d):
         p = path_join(d, name)
-        _js_caught29 = None
+        _js_caught25 = None
         try:
             if _js_truthy(_js_invoke(lstat_sync(p), "isDirectory")):
                 _remove_empty_dirs(p)
-        except Exception as _js_error29:
-            _js_caught29 = _js_catch(_js_error29)
-        if _js_caught29 is not None:
+        except Exception as _js_error25:
+            _js_caught25 = _js_catch(_js_error25)
+        if _js_caught25 is not None:
             pass
-    _js_caught30 = None
+    _js_caught26 = None
     try:
         rmdir_sync(d)
-    except Exception as _js_error30:
-        _js_caught30 = _js_catch(_js_error30)
-    if _js_caught30 is not None:
+    except Exception as _js_error26:
+        _js_caught26 = _js_catch(_js_error26)
+    if _js_caught26 is not None:
         pass
     return _JS_UNDEFINED
 
@@ -794,23 +788,23 @@ def _job_doc__typed(job, rel_archive, data, bundle):
         for t in tokenize_v2(r):
             _js_m_add(terms, t)
         value = _js_m_get(bundle, r)
-        if _js_typeof(value) == "string":
+        if isinstance(value, str):
             for t in tokenize_v2(value):
                 _js_m_add(terms, t)
     for r in keys:
         value = _js_m_get(bundle, r)
-        if _js_typeof(value) != "string" or not _is_top_checkpoint(r):
+        if not isinstance(value, str) or not _is_top_checkpoint(r):
             continue
         doc = _JS_UNDEFINED
-        _js_caught31 = None
+        _js_caught27 = None
         try:
             doc = _load_json(buffer_from(value, "utf8"))
-        except Exception as _js_error31:
-            _js_caught31 = _js_catch(_js_error31)
-        if _js_caught31 is not None:
+        except Exception as _js_error27:
+            _js_caught27 = _js_catch(_js_error27)
+        if _js_caught27 is not None:
             continue
         job_obj = _js_get(doc, "job") if _is_obj(doc) else None
-        if _is_obj(job_obj) and _js_typeof(_js_get(job_obj, "goal")) == "string":
+        if _is_obj(job_obj) and isinstance(_js_get(job_obj, "goal"), str):
             goal = _js_get(job_obj, "goal")
     return {"file": rel_archive, "name": job, "description": goal, "type": "shiftwork", "keywords": _js_m_sort([*terms], cmp_codepoint), "links": [], "tags": [], "refs": [], "mtime_ns": "0", "size": _js_len(data)}
 
@@ -825,23 +819,23 @@ def job_doc(job, rel_archive, data, bundle):
         for t in tokenize_v2(r):
             _js_m_add(terms, t)
         value = _js_m_get(bundle, r)
-        if _js_typeof(value) == "string":
+        if isinstance(value, str):
             for t in tokenize_v2(value):
                 _js_m_add(terms, t)
     for r in keys:
         value = _js_m_get(bundle, r)
-        if _js_typeof(value) != "string" or not _is_top_checkpoint(r):
+        if not isinstance(value, str) or not _is_top_checkpoint(r):
             continue
         doc = _JS_UNDEFINED
-        _js_caught32 = None
+        _js_caught28 = None
         try:
             doc = _load_json(buffer_from(value, "utf8"))
-        except Exception as _js_error32:
-            _js_caught32 = _js_catch(_js_error32)
-        if _js_caught32 is not None:
+        except Exception as _js_error28:
+            _js_caught28 = _js_catch(_js_error28)
+        if _js_caught28 is not None:
             continue
         job_obj = _js_get(doc, "job") if _is_obj(doc) else None
-        if _is_obj(job_obj) and _js_typeof(_js_get(job_obj, "goal")) == "string":
+        if _is_obj(job_obj) and isinstance(_js_get(job_obj, "goal"), str):
             goal = _js_get(job_obj, "goal")
     return {"file": rel_archive, "name": job, "description": goal, "type": "shiftwork", "keywords": _js_m_sort([*terms], cmp_codepoint), "links": [], "tags": [], "refs": [], "mtime_ns": "0", "size": _js_len(data)}
 
@@ -849,18 +843,18 @@ def job_doc(job, rel_archive, data, bundle):
 def _archive_jobs__typed(root, now_ns, report):
     sw = path_join(root, ".shiftwork")
     added = _JsMap()
-    _js_caught33 = None
+    _js_caught29 = None
     try:
         if not _js_truthy(_js_invoke(lstat_sync(sw), "isDirectory")):
             return added
-    except Exception as _js_error33:
-        _js_caught33 = _js_catch(_js_error33)
-    if _js_caught33 is not None:
+    except Exception as _js_error29:
+        _js_caught29 = _js_catch(_js_error29)
+    if _js_caught29 is not None:
         return added
     arch_dir = path_join(sw, "archive")
-    def _js_fn34(b=_JS_UNDEFINED, *_):
+    def _js_fn30(b=_JS_UNDEFINED, *_):
         return _js_m_endsWith(b, ".json.gz")
-    for n in remove_stale_temps(arch_dir, _js_fn34):
+    for n in remove_stale_temps(arch_dir, _js_fn30):
         _js_m_push(_js_get(report, "deleted"), path_join(arch_dir, n))
     cutoff = _js_num(_js_num(now_ns) - _js_mul(_js_bigint(JOB_DAYS), _DAY_NS))
     for name in _listdir(sw):
@@ -868,12 +862,12 @@ def _archive_jobs__typed(root, now_ns, report):
         if job is None or _regular(path_join(sw, name)) is None:
             continue
         data = _JS_UNDEFINED
-        _js_caught35 = None
+        _js_caught31 = None
         try:
             data = _load_json(read_file_sync(path_join(sw, name)))
-        except Exception as _js_error35:
-            _js_caught35 = _js_catch(_js_error35)
-        if _js_caught35 is not None:
+        except Exception as _js_error31:
+            _js_caught31 = _js_catch(_js_error31)
+        if _js_caught31 is not None:
             continue
         if not _closed(data):
             continue
@@ -886,25 +880,25 @@ def _archive_jobs__typed(root, now_ns, report):
             continue
         archive = path_join(sw, "archive", _js_str(job) + ".json.gz")
         raw = _JsMap()
-        _js_caught36 = None
+        _js_caught32 = None
         try:
             for p in files:
                 _js_m_set(raw, _rel(root, p), read_file_sync(p))
-        except Exception as _js_error36:
-            _js_caught36 = _js_catch(_js_error36)
-        if _js_caught36 is not None:
+        except Exception as _js_error32:
+            _js_caught32 = _js_catch(_js_error32)
+        if _js_caught32 is not None:
             _js_m_push(_js_get(report, "refused"), {"path": path_join(sw, name), "reason": "unreadable"})
             continue
-        bundle = _JsMap(_js_m_map([*raw], lambda _js_arg37, *_: (lambda r, b: [r, _entry(b)])(*_js_destructure(_js_arg37, 2))))
+        bundle = _JsMap(_js_m_map([*raw], lambda _js_arg33, *_: (lambda r, b: [r, _entry(b)])(*_js_destructure(_js_arg33, 2))))
         data_out = bundle_bytes(bundle)
         exists = False
-        _js_caught38 = None
+        _js_caught34 = None
         try:
             lstat_sync(archive)
             exists = True
-        except Exception as _js_error38:
-            _js_caught38 = _js_catch(_js_error38)
-        if _js_caught38 is not None:
+        except Exception as _js_error34:
+            _js_caught34 = _js_catch(_js_error34)
+        if _js_caught34 is not None:
             exists = False
         wrote = _JS_UNDEFINED
         if exists:
@@ -914,12 +908,12 @@ def _archive_jobs__typed(root, now_ns, report):
                 continue
             wrote = False
         else:
-            _js_caught39 = None
+            _js_caught35 = None
             try:
                 retentionFs.writeArchive(archive, data_out)
-            except Exception as _js_error39:
-                _js_caught39 = _js_catch(_js_error39)
-            if _js_caught39 is not None:
+            except Exception as _js_error35:
+                _js_caught35 = _js_catch(_js_error35)
+            if _js_caught35 is not None:
                 _js_m_push(_js_get(report, "refused"), {"path": path_join(sw, name), "reason": "archive write failed"})
                 continue
             wrote = True
@@ -940,23 +934,23 @@ def _archive_jobs__typed(root, now_ns, report):
             continue
         failed = False
         for p in files:
-            _js_caught40 = None
+            _js_caught36 = None
             try:
                 unlink_sync(p)
-            except Exception as _js_error40:
-                _js_caught40 = _js_catch(_js_error40)
-            if _js_caught40 is not None:
+            except Exception as _js_error36:
+                _js_caught36 = _js_catch(_js_error36)
+            if _js_caught36 is not None:
                 failed = True
                 _js_m_push(_js_get(report, "refused"), {"path": p, "reason": "delete failed"})
         if job != "checkpoint":
             for d in [path_join(sw, "briefs-" + _js_str(job)), path_join(sw, "notes-" + _js_str(job))]:
-                _js_caught41 = None
+                _js_caught37 = None
                 try:
                     if _js_truthy(_js_invoke(lstat_sync(d), "isDirectory")):
                         _remove_empty_dirs(d)
-                except Exception as _js_error41:
-                    _js_caught41 = _js_catch(_js_error41)
-                if _js_caught41 is not None:
+                except Exception as _js_error37:
+                    _js_caught37 = _js_catch(_js_error37)
+                if _js_caught37 is not None:
                     pass
         if not failed:
             _js_m_push(_js_get(report, "archived"), archive)
@@ -969,18 +963,18 @@ def _archive_jobs(root, now_ns, report):
         return _archive_jobs__typed(root, now_ns, report)
     sw = path_join(root, ".shiftwork")
     added = _JsMap()
-    _js_caught42 = None
+    _js_caught38 = None
     try:
         if not _js_truthy(_js_invoke(lstat_sync(sw), "isDirectory")):
             return added
-    except Exception as _js_error42:
-        _js_caught42 = _js_catch(_js_error42)
-    if _js_caught42 is not None:
+    except Exception as _js_error38:
+        _js_caught38 = _js_catch(_js_error38)
+    if _js_caught38 is not None:
         return added
     arch_dir = path_join(sw, "archive")
-    def _js_fn43(b=_JS_UNDEFINED, *_):
+    def _js_fn39(b=_JS_UNDEFINED, *_):
         return _js_m_endsWith(b, ".json.gz")
-    for n in remove_stale_temps(arch_dir, _js_fn43):
+    for n in remove_stale_temps(arch_dir, _js_fn39):
         _js_m_push(_js_get(report, "deleted"), path_join(arch_dir, n))
     cutoff = _js_num(_js_num(now_ns) - _js_mul(_js_bigint(JOB_DAYS), _DAY_NS))
     for name in _listdir(sw):
@@ -988,12 +982,12 @@ def _archive_jobs(root, now_ns, report):
         if job is None or _regular(path_join(sw, name)) is None:
             continue
         data = _JS_UNDEFINED
-        _js_caught44 = None
+        _js_caught40 = None
         try:
             data = _load_json(read_file_sync(path_join(sw, name)))
-        except Exception as _js_error44:
-            _js_caught44 = _js_catch(_js_error44)
-        if _js_caught44 is not None:
+        except Exception as _js_error40:
+            _js_caught40 = _js_catch(_js_error40)
+        if _js_caught40 is not None:
             continue
         if not _closed(data):
             continue
@@ -1006,25 +1000,25 @@ def _archive_jobs(root, now_ns, report):
             continue
         archive = path_join(sw, "archive", _js_str(job) + ".json.gz")
         raw = _JsMap()
-        _js_caught45 = None
+        _js_caught41 = None
         try:
             for p in files:
                 _js_m_set(raw, _rel(root, p), read_file_sync(p))
-        except Exception as _js_error45:
-            _js_caught45 = _js_catch(_js_error45)
-        if _js_caught45 is not None:
+        except Exception as _js_error41:
+            _js_caught41 = _js_catch(_js_error41)
+        if _js_caught41 is not None:
             _js_m_push(_js_get(report, "refused"), {"path": path_join(sw, name), "reason": "unreadable"})
             continue
-        bundle = _JsMap(_js_m_map([*raw], lambda _js_arg46, *_: (lambda r, b: [r, _entry(b)])(*_js_destructure(_js_arg46, 2))))
+        bundle = _JsMap(_js_m_map([*raw], lambda _js_arg42, *_: (lambda r, b: [r, _entry(b)])(*_js_destructure(_js_arg42, 2))))
         data_out = bundle_bytes(bundle)
         exists = False
-        _js_caught47 = None
+        _js_caught43 = None
         try:
             lstat_sync(archive)
             exists = True
-        except Exception as _js_error47:
-            _js_caught47 = _js_catch(_js_error47)
-        if _js_caught47 is not None:
+        except Exception as _js_error43:
+            _js_caught43 = _js_catch(_js_error43)
+        if _js_caught43 is not None:
             exists = False
         wrote = _JS_UNDEFINED
         if exists:
@@ -1034,12 +1028,12 @@ def _archive_jobs(root, now_ns, report):
                 continue
             wrote = False
         else:
-            _js_caught48 = None
+            _js_caught44 = None
             try:
                 retentionFs.writeArchive(archive, data_out)
-            except Exception as _js_error48:
-                _js_caught48 = _js_catch(_js_error48)
-            if _js_caught48 is not None:
+            except Exception as _js_error44:
+                _js_caught44 = _js_catch(_js_error44)
+            if _js_caught44 is not None:
                 _js_m_push(_js_get(report, "refused"), {"path": path_join(sw, name), "reason": "archive write failed"})
                 continue
             wrote = True
@@ -1060,23 +1054,23 @@ def _archive_jobs(root, now_ns, report):
             continue
         failed = False
         for p in files:
-            _js_caught49 = None
+            _js_caught45 = None
             try:
                 unlink_sync(p)
-            except Exception as _js_error49:
-                _js_caught49 = _js_catch(_js_error49)
-            if _js_caught49 is not None:
+            except Exception as _js_error45:
+                _js_caught45 = _js_catch(_js_error45)
+            if _js_caught45 is not None:
                 failed = True
                 _js_m_push(_js_get(report, "refused"), {"path": p, "reason": "delete failed"})
         if job != "checkpoint":
             for d in [path_join(sw, "briefs-" + _js_str(job)), path_join(sw, "notes-" + _js_str(job))]:
-                _js_caught50 = None
+                _js_caught46 = None
                 try:
                     if _js_truthy(_js_invoke(lstat_sync(d), "isDirectory")):
                         _remove_empty_dirs(d)
-                except Exception as _js_error50:
-                    _js_caught50 = _js_catch(_js_error50)
-                if _js_caught50 is not None:
+                except Exception as _js_error46:
+                    _js_caught46 = _js_catch(_js_error46)
+                if _js_caught46 is not None:
                     pass
         if not failed:
             _js_m_push(_js_get(report, "archived"), archive)
@@ -1097,14 +1091,14 @@ def shiftwork_cold(home, root):
 def _sync_jobs__typed(home, root):
     cold = _shiftwork_cold__typed(home, root)
     held = _JS_UNDEFINED
-    _js_caught51 = None
+    _js_caught47 = None
     try:
         held = _JsSet(_js_m_map(_js_invoke(cold, "allDocs"), lambda d, *_: _js_get(d, "file")))
-    except Exception as _js_error51:
-        _js_caught51 = _js_catch(_js_error51)
-    if _js_caught51 is not None:
-        if not isinstance(_js_caught51, ColdIndexError):
-            raise _js_caught51
+    except Exception as _js_error47:
+        _js_caught47 = _js_catch(_js_error47)
+    if _js_caught47 is not None:
+        if not isinstance(_js_caught47, ColdIndexError):
+            raise _js_caught47
         _js_invoke(cold, "reset")
         held = _JsSet()
     adds = _JsMap()
@@ -1119,17 +1113,17 @@ def _sync_jobs__typed(home, root):
         if data is None:
             continue
         bundle = _JS_UNDEFINED
-        _js_caught52 = None
+        _js_caught48 = None
         try:
             bundle = _load_json(data)
-        except Exception as _js_error52:
-            _js_caught52 = _js_catch(_js_error52)
-        if _js_caught52 is not None:
+        except Exception as _js_error48:
+            _js_caught48 = _js_catch(_js_error48)
+        if _js_caught48 is not None:
             continue
         if not _is_obj(bundle):
             continue
         job = _js_m_slice(name, 0, _js_neg(_js_str_len(".json.gz")))
-        _js_m_set(adds, job, job_doc(job, r, data, _JsMap(_js_object_entries(bundle))))
+        _js_m_set(adds, job, job_doc(job, r, data, _js_map_entries(bundle)))
     if _js_gt(_js_size(adds), 0):
         _js_invoke(cold, "addDocs", adds)
     return cold
@@ -1140,14 +1134,14 @@ def sync_jobs(home, root):
         return _sync_jobs__typed(home, root)
     cold = shiftwork_cold(home, root)
     held = _JS_UNDEFINED
-    _js_caught53 = None
+    _js_caught49 = None
     try:
         held = _JsSet(_js_m_map(_js_invoke(cold, "allDocs"), lambda d, *_: _js_get(d, "file")))
-    except Exception as _js_error53:
-        _js_caught53 = _js_catch(_js_error53)
-    if _js_caught53 is not None:
-        if not isinstance(_js_caught53, ColdIndexError):
-            raise _js_caught53
+    except Exception as _js_error49:
+        _js_caught49 = _js_catch(_js_error49)
+    if _js_caught49 is not None:
+        if not isinstance(_js_caught49, ColdIndexError):
+            raise _js_caught49
         _js_invoke(cold, "reset")
         held = _JsSet()
     adds = _JsMap()
@@ -1162,86 +1156,86 @@ def sync_jobs(home, root):
         if data is None:
             continue
         bundle = _JS_UNDEFINED
-        _js_caught54 = None
+        _js_caught50 = None
         try:
             bundle = _load_json(data)
-        except Exception as _js_error54:
-            _js_caught54 = _js_catch(_js_error54)
-        if _js_caught54 is not None:
+        except Exception as _js_error50:
+            _js_caught50 = _js_catch(_js_error50)
+        if _js_caught50 is not None:
             continue
         if not _is_obj(bundle):
             continue
         job = _js_m_slice(name, 0, _js_neg(_js_str_len(".json.gz")))
-        _js_m_set(adds, job, job_doc(job, r, data, _JsMap(_js_object_entries(bundle))))
+        _js_m_set(adds, job, job_doc(job, r, data, _js_map_entries(bundle)))
     if _js_gt(_js_size(adds), 0):
         _js_invoke(cold, "addDocs", adds)
     return cold
 
 
 def _is_file__typed(p):
-    _js_caught55 = None
+    _js_caught51 = None
     try:
         return _js_invoke(stat_sync(p), "isFile")
-    except Exception as _js_error55:
-        _js_caught55 = _js_catch(_js_error55)
-    if _js_caught55 is not None:
+    except Exception as _js_error51:
+        _js_caught51 = _js_catch(_js_error51)
+    if _js_caught51 is not None:
         return False
 
 
 def _is_file(p):
     if type(p) is str:
         return _is_file__typed(p)
-    _js_caught56 = None
+    _js_caught52 = None
     try:
         return _js_invoke(stat_sync(p), "isFile")
-    except Exception as _js_error56:
-        _js_caught56 = _js_catch(_js_error56)
-    if _js_caught56 is not None:
+    except Exception as _js_error52:
+        _js_caught52 = _js_catch(_js_error52)
+    if _js_caught52 is not None:
         return False
 
 
 def _is_dir__typed(p):
-    _js_caught57 = None
+    _js_caught53 = None
     try:
         return _js_invoke(stat_sync(p), "isDirectory")
-    except Exception as _js_error57:
-        _js_caught57 = _js_catch(_js_error57)
-    if _js_caught57 is not None:
+    except Exception as _js_error53:
+        _js_caught53 = _js_catch(_js_error53)
+    if _js_caught53 is not None:
         return False
 
 
 def _is_dir(p):
     if type(p) is str:
         return _is_dir__typed(p)
-    _js_caught58 = None
+    _js_caught54 = None
     try:
         return _js_invoke(stat_sync(p), "isDirectory")
-    except Exception as _js_error58:
-        _js_caught58 = _js_catch(_js_error58)
-    if _js_caught58 is not None:
+    except Exception as _js_error54:
+        _js_caught54 = _js_catch(_js_error54)
+    if _js_caught54 is not None:
         return False
 
 
 def _keep_under__typed(dir, sub):
     if sub is None:
-        def _js_fn59(d=_JS_UNDEFINED, *_):
+        def _js_fn55(d=_JS_UNDEFINED, *_):
             return _is_file(path_join(dir, _js_get(d, "file")))
-        return _js_fn59
-    def _js_fn60(d=_JS_UNDEFINED, *_):
+        return _js_fn55
+    def _js_fn56(d=_JS_UNDEFINED, *_):
         return _is_file(path_join(dir, sub, _js_get(d, "file")))
-    return _js_fn60
+    return _js_fn56
 
 
 def _keep_under(dir, sub):
     if type(dir) is str:
         return _keep_under__typed(dir, sub)
     if sub is None:
-        def _js_fn61(d=_JS_UNDEFINED, *_):
+        def _js_fn57(d=_JS_UNDEFINED, *_):
             return _is_file(path_join(dir, _js_get(d, "file")))
-        return _js_fn61
-    def _js_fn62(d=_JS_UNDEFINED, *_):
+        return _js_fn57
+    def _js_fn58(d=_JS_UNDEFINED, *_):
         return _is_file(path_join(dir, sub, _js_get(d, "file")))
-    return _js_fn62
+    return _js_fn58
 
 
 def _compact_cold__typed(home, roots, report):
@@ -1258,14 +1252,14 @@ def _compact_cold__typed(home, roots, report):
             continue
         cold = ColdIndex(name, home, base)
         held = _js_m_get(keeps, name)
-        _js_caught63 = None
+        _js_caught59 = None
         try:
             if _js_invoke(cold, "compact", None if held is _JS_UNDEFINED else _keep_under(_js_get(held, 0), _js_get(held, 1))) is not None:
                 _js_m_push(_js_get(report, "compacted"), name)
-        except Exception as _js_error63:
-            _js_caught63 = _js_catch(_js_error63)
-        if _js_caught63 is not None:
-            if isinstance(_js_caught63, ColdIndexError):
+        except Exception as _js_error59:
+            _js_caught59 = _js_catch(_js_error59)
+        if _js_caught59 is not None:
+            if isinstance(_js_caught59, ColdIndexError):
                 _js_invoke(cold, "reset")
     return _JS_UNDEFINED
 
@@ -1286,14 +1280,14 @@ def _compact_cold(home, roots, report):
             continue
         cold = ColdIndex(name, home, base)
         held = _js_m_get(keeps, name)
-        _js_caught64 = None
+        _js_caught60 = None
         try:
             if _js_invoke(cold, "compact", None if held is _JS_UNDEFINED else _keep_under(_js_get(held, 0), _js_get(held, 1))) is not None:
                 _js_m_push(_js_get(report, "compacted"), name)
-        except Exception as _js_error64:
-            _js_caught64 = _js_catch(_js_error64)
-        if _js_caught64 is not None:
-            if isinstance(_js_caught64, ColdIndexError):
+        except Exception as _js_error60:
+            _js_caught60 = _js_catch(_js_error60)
+        if _js_caught60 is not None:
+            if isinstance(_js_caught60, ColdIndexError):
                 _js_invoke(cold, "reset")
     return _JS_UNDEFINED
 
@@ -1305,9 +1299,9 @@ def _run_retention__typed(home, roots, now):
     now_ms = parse_now(now)
     now_ns = _js_mul(_js_bigint(now_ms), _JsBigInt(1000000))
     state_dir = path_dirname(_state_path__typed(home))
-    def _js_fn65(b=_JS_UNDEFINED, *_):
+    def _js_fn61(b=_JS_UNDEFINED, *_):
         return b == STATE_NAME
-    for n in remove_stale_temps(state_dir, _js_fn65):
+    for n in remove_stale_temps(state_dir, _js_fn61):
         _js_m_push(_js_get(report, "deleted"), path_join(state_dir, n))
     _prune_ledgers__typed(home, now_ns, report)
     _fold_logs(home, now_ms, report)
@@ -1315,12 +1309,12 @@ def _run_retention__typed(home, roots, now):
     for root in root_paths:
         added = _archive_jobs(root, now_ns, report)
         if _js_gt(_js_size(added), 0):
-            _js_caught66 = None
+            _js_caught62 = None
             try:
                 sync_jobs(home, root)
-            except Exception as _js_error66:
-                _js_caught66 = _js_catch(_js_error66)
-            if _js_caught66 is not None:
+            except Exception as _js_error62:
+                _js_caught62 = _js_catch(_js_error62)
+            if _js_caught62 is not None:
                 pass
     _compact_cold__typed(home, root_paths, report)
     return report
@@ -1335,9 +1329,9 @@ def run_retention(home, roots, now):
     now_ms = parse_now(now)
     now_ns = _js_mul(_js_bigint(now_ms), _JsBigInt(1000000))
     state_dir = path_dirname(state_path(home))
-    def _js_fn67(b=_JS_UNDEFINED, *_):
+    def _js_fn63(b=_JS_UNDEFINED, *_):
         return b == STATE_NAME
-    for n in remove_stale_temps(state_dir, _js_fn67):
+    for n in remove_stale_temps(state_dir, _js_fn63):
         _js_m_push(_js_get(report, "deleted"), path_join(state_dir, n))
     _prune_ledgers(home, now_ns, report)
     _fold_logs(home, now_ms, report)
@@ -1345,12 +1339,12 @@ def run_retention(home, roots, now):
     for root in root_paths:
         added = _archive_jobs(root, now_ns, report)
         if _js_gt(_js_size(added), 0):
-            _js_caught68 = None
+            _js_caught64 = None
             try:
                 sync_jobs(home, root)
-            except Exception as _js_error68:
-                _js_caught68 = _js_catch(_js_error68)
-            if _js_caught68 is not None:
+            except Exception as _js_error64:
+                _js_caught64 = _js_catch(_js_error64)
+            if _js_caught64 is not None:
                 pass
     _compact_cold(home, root_paths, report)
     return report
@@ -1368,15 +1362,15 @@ def state_path(home):
 
 def _due__typed(home, now):
     age = _JS_UNDEFINED
-    _js_caught69 = None
+    _js_caught65 = None
     try:
         data = _js_json_parse(py_read_text(_state_path__typed(home)))
         if not _is_obj(data) or not _js_in("ran_at", data):
             return True
         age = _js_num(_js_num(parse_now(now)) - _js_num(parse_now(_js_get(data, "ran_at"))))
-    except Exception as _js_error69:
-        _js_caught69 = _js_catch(_js_error69)
-    if _js_caught69 is not None:
+    except Exception as _js_error65:
+        _js_caught65 = _js_catch(_js_error65)
+    if _js_caught65 is not None:
         return True
     return not (_js_ge(age, 0) and _js_lt(age, _js_mul(TTL_S, 1000)))
 
@@ -1385,27 +1379,27 @@ def due(home, now):
     if type(home) is str and type(now) is str:
         return _due__typed(home, now)
     age = _JS_UNDEFINED
-    _js_caught70 = None
+    _js_caught66 = None
     try:
         data = _js_json_parse(py_read_text(state_path(home)))
         if not _is_obj(data) or not _js_in("ran_at", data):
             return True
         age = _js_num(_js_num(parse_now(now)) - _js_num(parse_now(_js_get(data, "ran_at"))))
-    except Exception as _js_error70:
-        _js_caught70 = _js_catch(_js_error70)
-    if _js_caught70 is not None:
+    except Exception as _js_error66:
+        _js_caught66 = _js_catch(_js_error66)
+    if _js_caught66 is not None:
         return True
     return not (_js_ge(age, 0) and _js_lt(age, _js_mul(TTL_S, 1000)))
 
 
 def _hooked__typed(home, now):
     mtime_ms = _JS_UNDEFINED
-    _js_caught71 = None
+    _js_caught67 = None
     try:
         mtime_ms = _js_number(_js_div(_js_get(stat_sync(path_join(home, ".bantamkit", "hooks", "hook-log.jsonl"), {"bigint": True}), "mtimeNs"), _JsBigInt(1000000)))
-    except Exception as _js_error71:
-        _js_caught71 = _js_catch(_js_error71)
-    if _js_caught71 is not None:
+    except Exception as _js_error67:
+        _js_caught67 = _js_catch(_js_error67)
+    if _js_caught67 is not None:
         return False
     age = _js_num(_js_num(parse_now(now)) - _js_num(mtime_ms))
     return age >= 0 and age < _js_mul(TTL_S, 1000)
@@ -1415,12 +1409,12 @@ def _hooked(home, now):
     if type(home) is str and type(now) is str:
         return _hooked__typed(home, now)
     mtime_ms = _JS_UNDEFINED
-    _js_caught72 = None
+    _js_caught68 = None
     try:
         mtime_ms = _js_number(_js_div(_js_get(stat_sync(path_join(home, ".bantamkit", "hooks", "hook-log.jsonl"), {"bigint": True}), "mtimeNs"), _JsBigInt(1000000)))
-    except Exception as _js_error72:
-        _js_caught72 = _js_catch(_js_error72)
-    if _js_caught72 is not None:
+    except Exception as _js_error68:
+        _js_caught68 = _js_catch(_js_error68)
+    if _js_caught68 is not None:
         return False
     age = _js_num(_js_num(parse_now(now)) - _js_num(mtime_ms))
     return age >= 0 and age < _js_mul(TTL_S, 1000)
@@ -1429,7 +1423,7 @@ def _hooked(home, now):
 def _maybe_spawn__typed(home, cwd, options=_JS_UNDEFINED):
     if options is _JS_UNDEFINED:
         options = {}
-    _js_caught73 = None
+    _js_caught69 = None
     try:
         if not enabled() and not audit_enabled():
             return "off"
@@ -1443,9 +1437,9 @@ def _maybe_spawn__typed(home, cwd, options=_JS_UNDEFINED):
         if not _js_truthy(spawn_retention_child(cwd, home)):
             return "failed"
         return "spawned"
-    except Exception as _js_error73:
-        _js_caught73 = _js_catch(_js_error73)
-    if _js_caught73 is not None:
+    except Exception as _js_error69:
+        _js_caught69 = _js_catch(_js_error69)
+    if _js_caught69 is not None:
         return "failed"
 
 
@@ -1454,7 +1448,7 @@ def maybe_spawn(home, cwd, options=_JS_UNDEFINED):
         return _maybe_spawn__typed(home, cwd, options)
     if options is _JS_UNDEFINED:
         options = {}
-    _js_caught74 = None
+    _js_caught70 = None
     try:
         if not enabled() and not audit_enabled():
             return "off"
@@ -1468,30 +1462,30 @@ def maybe_spawn(home, cwd, options=_JS_UNDEFINED):
         if not _js_truthy(spawn_retention_child(cwd, home)):
             return "failed"
         return "spawned"
-    except Exception as _js_error74:
-        _js_caught74 = _js_catch(_js_error74)
-    if _js_caught74 is not None:
+    except Exception as _js_error70:
+        _js_caught70 = _js_catch(_js_error70)
+    if _js_caught70 is not None:
         return "failed"
 
 
 def _write_state__typed(home, obj):
     p = _state_path__typed(home)
     tmp = _js_str(p) + "." + _js_str(process_pid()) + ".tmp"
-    _js_caught75 = None
+    _js_caught71 = None
     try:
         write_file_sync(tmp, _js_str(dump_index(obj)) + "\n", "utf8")
         rename_sync(tmp, p)
-    except Exception as _js_error75:
-        _js_caught75 = _js_catch(_js_error75)
-    if _js_caught75 is not None:
-        _js_caught76 = None
+    except Exception as _js_error71:
+        _js_caught71 = _js_catch(_js_error71)
+    if _js_caught71 is not None:
+        _js_caught72 = None
         try:
             rm_sync(tmp, {"force": True})
-        except Exception as _js_error76:
-            _js_caught76 = _js_catch(_js_error76)
-        if _js_caught76 is not None:
+        except Exception as _js_error72:
+            _js_caught72 = _js_catch(_js_error72)
+        if _js_caught72 is not None:
             pass
-        raise _js_caught75
+        raise _js_caught71
     return _JS_UNDEFINED
 
 
@@ -1500,21 +1494,21 @@ def _write_state(home, obj):
         return _write_state__typed(home, obj)
     p = state_path(home)
     tmp = _js_str(p) + "." + _js_str(process_pid()) + ".tmp"
-    _js_caught77 = None
+    _js_caught73 = None
     try:
         write_file_sync(tmp, _js_str(dump_index(obj)) + "\n", "utf8")
         rename_sync(tmp, p)
-    except Exception as _js_error77:
-        _js_caught77 = _js_catch(_js_error77)
-    if _js_caught77 is not None:
-        _js_caught78 = None
+    except Exception as _js_error73:
+        _js_caught73 = _js_catch(_js_error73)
+    if _js_caught73 is not None:
+        _js_caught74 = None
         try:
             rm_sync(tmp, {"force": True})
-        except Exception as _js_error78:
-            _js_caught78 = _js_catch(_js_error78)
-        if _js_caught78 is not None:
+        except Exception as _js_error74:
+            _js_caught74 = _js_catch(_js_error74)
+        if _js_caught74 is not None:
             pass
-        raise _js_caught77
+        raise _js_caught73
     return _JS_UNDEFINED
 
 
@@ -1529,28 +1523,28 @@ def _child_sweep__typed(argv, now=_JS_UNDEFINED):
     if not _js_truthy(_is_dir(path_join(home, ".bantamkit"))):
         return None
     stamp = _js_coalesce(now, lambda: now_stamp())
-    _js_caught79 = None
+    _js_caught75 = None
     try:
-        def _js_fn80(held=_JS_UNDEFINED, *_):
+        def _js_fn76(held=_JS_UNDEFINED, *_):
             if not _js_truthy(held) or not due(home, stamp):
                 return False
             _write_state(home, {"ran_at": stamp})
             return True
-        claimed = exclusive(state_path(home), _js_fn80)
+        claimed = exclusive(state_path(home), _js_fn76)
         if not _js_truthy(claimed):
             return None
         if sweep:
-            _js_caught81 = None
+            _js_caught77 = None
             try:
                 report = run_retention(home, _js_m_slice(argv, 0, 1), stamp)
                 _write_state(home, {"ran_at": stamp, "report": report})
-            except Exception as _js_error81:
-                _js_caught81 = _js_catch(_js_error81)
-            if _js_caught81 is not None:
-                _write_state(home, {"ran_at": stamp, "error": _js_get(_js_constructor_of(_js_caught81), "name") if isinstance(_js_caught81, _JsError) else "Error"})
-    except Exception as _js_error79:
-        _js_caught79 = _js_catch(_js_error79)
-    if _js_caught79 is not None:
+            except Exception as _js_error77:
+                _js_caught77 = _js_catch(_js_error77)
+            if _js_caught77 is not None:
+                _write_state(home, {"ran_at": stamp, "error": _js_get(_js_constructor_of(_js_caught77), "name") if isinstance(_js_caught77, _JsError) else "Error"})
+    except Exception as _js_error75:
+        _js_caught75 = _js_catch(_js_error75)
+    if _js_caught75 is not None:
         return None
     return stamp if audit else None
 
@@ -1568,28 +1562,28 @@ def child_sweep(argv, now=_JS_UNDEFINED):
     if not _js_truthy(_is_dir(path_join(home, ".bantamkit"))):
         return None
     stamp = _js_coalesce(now, lambda: now_stamp())
-    _js_caught82 = None
+    _js_caught78 = None
     try:
-        def _js_fn83(held=_JS_UNDEFINED, *_):
+        def _js_fn79(held=_JS_UNDEFINED, *_):
             if not _js_truthy(held) or not due(home, stamp):
                 return False
             _write_state(home, {"ran_at": stamp})
             return True
-        claimed = exclusive(state_path(home), _js_fn83)
+        claimed = exclusive(state_path(home), _js_fn79)
         if not _js_truthy(claimed):
             return None
         if sweep:
-            _js_caught84 = None
+            _js_caught80 = None
             try:
                 report = run_retention(home, _js_m_slice(argv, 0, 1), stamp)
                 _write_state(home, {"ran_at": stamp, "report": report})
-            except Exception as _js_error84:
-                _js_caught84 = _js_catch(_js_error84)
-            if _js_caught84 is not None:
-                _write_state(home, {"ran_at": stamp, "error": _js_get(_js_constructor_of(_js_caught84), "name") if isinstance(_js_caught84, _JsError) else "Error"})
-    except Exception as _js_error82:
-        _js_caught82 = _js_catch(_js_error82)
-    if _js_caught82 is not None:
+            except Exception as _js_error80:
+                _js_caught80 = _js_catch(_js_error80)
+            if _js_caught80 is not None:
+                _write_state(home, {"ran_at": stamp, "error": _js_get(_js_constructor_of(_js_caught80), "name") if isinstance(_js_caught80, _JsError) else "Error"})
+    except Exception as _js_error78:
+        _js_caught78 = _js_catch(_js_error78)
+    if _js_caught78 is not None:
         return None
     return stamp if audit else None
 
@@ -1602,29 +1596,28 @@ def _search_archived__typed(checkpoint, search, home):
     root = path_dirname(path_dirname(checkpoint))
     cold = _JS_UNDEFINED
     rows = _JS_UNDEFINED
-    _js_caught85 = None
+    _js_caught81 = None
     try:
-        _js_caught86 = None
+        _js_caught82 = None
         try:
             cold = sync_jobs(home, root)
             rows = _js_invoke(cold, "query", terms)
-        except Exception as _js_error86:
-            _js_caught86 = _js_catch(_js_error86)
-        if _js_caught86 is not None:
-            if not isinstance(_js_caught86, ColdIndexError):
-                raise _js_caught86
+        except Exception as _js_error82:
+            _js_caught82 = _js_catch(_js_error82)
+        if _js_caught82 is not None:
+            if not isinstance(_js_caught82, ColdIndexError):
+                raise _js_caught82
             _js_invoke(shiftwork_cold(home, root), "reset")
             cold = sync_jobs(home, root)
             rows = _js_invoke(cold, "query", terms)
-    except Exception as _js_error85:
-        _js_caught85 = _js_catch(_js_error85)
-    if _js_caught85 is not None:
-        if _js_typeof(_js_get(_js_caught85, "code")) == "string":
+    except Exception as _js_error81:
+        _js_caught81 = _js_catch(_js_error81)
+    if _js_caught81 is not None:
+        if isinstance(_js_get(_js_caught81, "code"), str):
             return []
-        raise _js_caught85
+        raise _js_caught81
     hits = []
-    for _js_item87 in rows:
-        job = _js_get(_js_item87, 0)
+    for job, in _js_rows(rows, 1, (0,)):
         doc = _js_invoke(cold, "doc", job)
         if doc is None:
             continue
@@ -1632,18 +1625,18 @@ def _search_archived__typed(checkpoint, search, home):
         if data is None:
             continue
         bundle = _JS_UNDEFINED
-        _js_caught88 = None
+        _js_caught83 = None
         try:
             bundle = _load_json(data)
-        except Exception as _js_error88:
-            _js_caught88 = _js_catch(_js_error88)
-        if _js_caught88 is not None:
+        except Exception as _js_error83:
+            _js_caught83 = _js_catch(_js_error83)
+        if _js_caught83 is not None:
             continue
         if not _is_obj(bundle):
             continue
         for r in _js_m_sort(_js_object_keys(bundle), cmp_codepoint):
             value = _js_get(bundle, r)
-            if _js_typeof(value) != "string":
+            if not isinstance(value, str):
                 continue
             lines = _js_m_split(value, "\n")
             i = 0
@@ -1667,29 +1660,28 @@ def search_archived(checkpoint, search, home):
     root = path_dirname(path_dirname(checkpoint))
     cold = _JS_UNDEFINED
     rows = _JS_UNDEFINED
-    _js_caught89 = None
+    _js_caught84 = None
     try:
-        _js_caught90 = None
+        _js_caught85 = None
         try:
             cold = sync_jobs(home, root)
             rows = _js_invoke(cold, "query", terms)
-        except Exception as _js_error90:
-            _js_caught90 = _js_catch(_js_error90)
-        if _js_caught90 is not None:
-            if not isinstance(_js_caught90, ColdIndexError):
-                raise _js_caught90
+        except Exception as _js_error85:
+            _js_caught85 = _js_catch(_js_error85)
+        if _js_caught85 is not None:
+            if not isinstance(_js_caught85, ColdIndexError):
+                raise _js_caught85
             _js_invoke(shiftwork_cold(home, root), "reset")
             cold = sync_jobs(home, root)
             rows = _js_invoke(cold, "query", terms)
-    except Exception as _js_error89:
-        _js_caught89 = _js_catch(_js_error89)
-    if _js_caught89 is not None:
-        if _js_typeof(_js_get(_js_caught89, "code")) == "string":
+    except Exception as _js_error84:
+        _js_caught84 = _js_catch(_js_error84)
+    if _js_caught84 is not None:
+        if isinstance(_js_get(_js_caught84, "code"), str):
             return []
-        raise _js_caught89
+        raise _js_caught84
     hits = []
-    for _js_item91 in rows:
-        job = _js_get(_js_item91, 0)
+    for job, in _js_rows(rows, 1, (0,)):
         doc = _js_invoke(cold, "doc", job)
         if doc is None:
             continue
@@ -1697,18 +1689,18 @@ def search_archived(checkpoint, search, home):
         if data is None:
             continue
         bundle = _JS_UNDEFINED
-        _js_caught92 = None
+        _js_caught86 = None
         try:
             bundle = _load_json(data)
-        except Exception as _js_error92:
-            _js_caught92 = _js_catch(_js_error92)
-        if _js_caught92 is not None:
+        except Exception as _js_error86:
+            _js_caught86 = _js_catch(_js_error86)
+        if _js_caught86 is not None:
             continue
         if not _is_obj(bundle):
             continue
         for r in _js_m_sort(_js_object_keys(bundle), cmp_codepoint):
             value = _js_get(bundle, r)
-            if _js_typeof(value) != "string":
+            if not isinstance(value, str):
                 continue
             lines = _js_m_split(value, "\n")
             i = 0

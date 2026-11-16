@@ -46,6 +46,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_or_value,
     _js_put,
     _js_re,
+    _js_rows,
     _js_sort_by_f64,
     _js_str_at,
     _js_strict_eq,
@@ -259,9 +260,7 @@ def doc_terms(d):
     f = _fields(d)
     weights = _JsMap()
     length = 0
-    for _js_item0 in FIELD_BOOST:
-        field = _js_get(_js_item0, 0)
-        boost = _js_get(_js_item0, 1)
+    for field, boost in _js_rows(FIELD_BOOST, 2, (0, 1)):
         toks = _js_get(f, field)
         for t in toks:
             _js_m_set(weights, t, _js_add(_js_coalesce_value(_js_m_get(weights, t), 0), boost))
@@ -312,9 +311,7 @@ def _bm25_postings__typed(q, n, total, df, lengths, postings):
             continue
         d = _js_coalesce_value(_js_m_get(df, t), 0)
         idf = py_log(_js_add(1, _js_div(_js_num(n - _js_num(d)) + 0.5, _js_add(d, 0.5))))
-        for _js_item1 in hits:
-            i = _js_get(_js_item1, 0)
-            w = _js_get(_js_item1, 1)
+        for i, w in _js_rows(hits, 2, (0, 1)):
             if not _js_strict_eq(w, 0):
                 _js_put(s, i, _js_add(_js_list_at(s, i), _js_div(_js_mul(idf, _js_mul(w, k1)), _js_add(w, _js_list_at(norm, i)))))
     return _js_m_map(s, lambda _js_a0=_JS_UNDEFINED, *_: py_round9(_js_a0))
@@ -335,9 +332,7 @@ def bm25_postings(q, n, total, df, lengths, postings):
             continue
         d = _js_coalesce_value(_js_m_get(df, t), 0)
         idf = py_log(_js_add(1, _js_div(_js_num(_js_num(n) - _js_num(d)) + 0.5, _js_add(d, 0.5))))
-        for _js_item2 in hits:
-            i = _js_get(_js_item2, 0)
-            w = _js_get(_js_item2, 1)
+        for i, w in _js_rows(hits, 2, (0, 1)):
             if not _js_strict_eq(w, 0):
                 _js_put(s, i, _js_add(_js_list_at(s, i), _js_div(_js_mul(idf, _js_mul(w, k1)), _js_add(w, _js_list_at(norm, i)))))
     return _js_m_map(s, lambda _js_a0=_JS_UNDEFINED, *_: py_round9(_js_a0))
@@ -459,7 +454,7 @@ def _bm25_pooled__typed(q, n, total, df, rows):
             if w is not _JS_UNDEFINED:
                 _js_m_push(_js_m_get(postings, t), [i, w])
         i = _js_num(i + 1)
-    return _bm25_postings__typed(q, n, total, df, _js_m_map(rows, lambda _js_arg3, *_: (lambda _, dl: dl)(*_js_destructure(_js_arg3, 2))), postings)
+    return _bm25_postings__typed(q, n, total, df, _js_m_map(rows, lambda _js_arg0, *_: (lambda _, dl: dl)(*_js_destructure(_js_arg0, 2))), postings)
 
 
 def bm25_pooled(q, n, total, df, rows):
@@ -474,7 +469,7 @@ def bm25_pooled(q, n, total, df, rows):
             if w is not _JS_UNDEFINED:
                 _js_m_push(_js_m_get(postings, t), [i, w])
         i = _js_num(i + 1)
-    return bm25_postings(q, n, total, df, _js_m_map(rows, lambda _js_arg4, *_: (lambda _, dl: dl)(*_js_destructure(_js_arg4, 2))), postings)
+    return bm25_postings(q, n, total, df, _js_m_map(rows, lambda _js_arg1, *_: (lambda _, dl: dl)(*_js_destructure(_js_arg1, 2))), postings)
 
 
 def _bm25_scores__typed(query, docs):
@@ -798,8 +793,8 @@ def _rank_columns__typed(scores, weights, ratio=_JS_UNDEFINED, floor=_JS_UNDEFIN
             x = scores[i]
             if x > 0 and x >= least:
                 admitted.append(i)
-                _js_t6 = py_round_float9(_js_mul(x, weights[i]))
-                final[i] = _js_t6 if type(_js_t6) is float else _js_to_f64(_js_t6)
+                _js_t3 = py_round_float9(_js_mul(x, weights[i]))
+                final[i] = _js_t3 if type(_js_t3) is float else _js_to_f64(_js_t3)
     else:
         while i < m:
             x = _js_list_at(scores, i)
@@ -840,8 +835,8 @@ def rank_columns(scores, weights, ratio=_JS_UNDEFINED, floor=_JS_UNDEFINED):
             x = scores[i]
             if x > 0 and x >= least:
                 admitted.append(i)
-                _js_t7 = py_round_float9(_js_mul(x, weights[i]))
-                final[i] = _js_t7 if type(_js_t7) is float else _js_to_f64(_js_t7)
+                _js_t4 = py_round_float9(_js_mul(x, weights[i]))
+                final[i] = _js_t4 if type(_js_t4) is float else _js_to_f64(_js_t4)
     else:
         while _js_lt(i, m):
             x = _js_get(scores, i)

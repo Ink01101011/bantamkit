@@ -6,12 +6,14 @@
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
     _js_coalesce_value,
+    _js_code_units,
     _js_every_string,
     _js_get,
     _js_is_array,
     _js_is_nullish,
+    _js_is_number,
     _js_json_stringify,
-    _js_len,
+    _js_list_at,
     _js_list_join,
     _js_lt,
     _js_m_add,
@@ -20,15 +22,12 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_find,
     _js_m_get,
     _js_m_has,
-    _js_m_includes,
     _js_m_map,
     _js_m_set,
     _js_m_slice,
     _js_m_some,
     _js_m_sort,
     _js_m_split,
-    _js_m_startsWith,
-    _js_m_test,
     _js_num,
     _js_number_is_integer,
     _js_or,
@@ -36,6 +35,8 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_re,
     _js_size,
     _js_str,
+    _js_str_includes,
+    _js_str_starts_with,
     _js_typeof,
     _JsMap,
     _JsSet,
@@ -52,13 +53,13 @@ def _refuse(reason):
 
 
 def _is_integer(value):
-    return _js_typeof(value) == "number" and _js_number_is_integer(value)
+    return _js_is_number(value) and _js_number_is_integer(value)
 
 
 def _plain_path(path):
-    if _js_typeof(path) != "string" or path == "" or _js_m_includes(path, "\\"):
+    if not isinstance(path, str) or path == "" or _js_str_includes(path, "\\"):
         return False
-    if _js_m_startsWith(path, "/") or _js_m_test(_JS_RE_0, path):
+    if _js_str_starts_with(path, "/") or _JS_RE_0.search(_js_code_units(path)) is not None:
         return False
     return _js_m_every(_js_m_split(path, "/"), lambda segment, *_: segment != "" and segment != "." and segment != "..")
 
@@ -90,7 +91,7 @@ def _read_nodes__typed(nodes):
             return _refuse("nodes[" + _js_str(index) + "] must be an object")
         node = raw
         id_ = _js_get(node, "id")
-        if _js_typeof(id_) != "string":
+        if not isinstance(id_, str):
             return _refuse("nodes[" + _js_str(index) + "].id must be a string")
         depends_on = _js_get(node, "depends_on")
         if not _js_is_nullish(depends_on) and not (_js_is_array(depends_on) and _js_every_string(depends_on)):
@@ -115,7 +116,7 @@ def _read_nodes(nodes):
             return _refuse("nodes[" + _js_str(index) + "] must be an object")
         node = raw
         id_ = _js_get(node, "id")
-        if _js_typeof(id_) != "string":
+        if not isinstance(id_, str):
             return _refuse("nodes[" + _js_str(index) + "].id must be a string")
         depends_on = _js_get(node, "depends_on")
         if not _js_is_nullish(depends_on) and not (_js_is_array(depends_on) and _js_every_string(depends_on)):
@@ -131,25 +132,7 @@ def _read_nodes(nodes):
     return read
 
 
-def _cycle_path__typed(nodes, emitted):
-    by_id = _JsMap(_js_m_map(nodes, lambda node, *_: [_js_get(node, "id"), node]))
-    path = []
-    at = _JsMap()
-    current = _js_m_find(nodes, lambda node, *_: not _js_m_has(emitted, _js_get(node, "id")))
-    while current is not _JS_UNDEFINED:
-        repeat = _js_m_get(at, _js_get(current, "id"))
-        if repeat is not _JS_UNDEFINED:
-            return [*_js_m_slice(path, repeat), _js_get(current, "id")]
-        _js_m_set(at, _js_get(current, "id"), len(path))
-        path.append(_js_get(current, "id"))
-        next = _js_m_find(_js_get(current, "depends_on"), lambda dep, *_: not _js_m_has(emitted, dep))
-        current = _JS_UNDEFINED if next is _JS_UNDEFINED else _js_m_get(by_id, next)
-    return path
-
-
 def _cycle_path(nodes, emitted):
-    if type(nodes) is list:
-        return _cycle_path__typed(nodes, emitted)
     by_id = _JsMap(_js_m_map(nodes, lambda node, *_: [_js_get(node, "id"), node]))
     path = []
     at = _JsMap()
@@ -183,7 +166,7 @@ def _plan__typed(input):
     sequence = []
     held = []
     width = 0
-    while _js_lt(_js_size(emitted), _js_len(nodes)):
+    while _js_lt(_js_size(emitted), len(nodes)):
         ready = []
         for index, node in _js_m_entries(nodes):
             if _js_m_has(emitted, _js_get(node, "id")):
@@ -196,7 +179,7 @@ def _plan__typed(input):
         batch = []
         owner = _JsMap()
         for entry in ready:
-            touches = _js_coalesce_value(_js_get(_js_get(nodes, _js_get(entry, "index")), "touches"), [])
+            touches = _js_coalesce_value(_js_get(_js_list_at(nodes, _js_get(entry, "index")), "touches"), [])
             clash = _js_m_find(touches, lambda path, *_: _js_m_has(owner, path))
             if clash is not _JS_UNDEFINED:
                 held.append({"id": _js_get(entry, "id"), "batch": len(batches), "by": _js_m_get(owner, clash), "path": clash})
@@ -237,7 +220,7 @@ def plan(input):
     sequence = []
     held = []
     width = 0
-    while _js_lt(_js_size(emitted), _js_len(nodes)):
+    while _js_lt(_js_size(emitted), len(nodes)):
         ready = []
         for index, node in _js_m_entries(nodes):
             if _js_m_has(emitted, _js_get(node, "id")):
@@ -250,7 +233,7 @@ def plan(input):
         batch = []
         owner = _JsMap()
         for entry in ready:
-            touches = _js_coalesce_value(_js_get(_js_get(nodes, _js_get(entry, "index")), "touches"), [])
+            touches = _js_coalesce_value(_js_get(_js_list_at(nodes, _js_get(entry, "index")), "touches"), [])
             clash = _js_m_find(touches, lambda path, *_: _js_m_has(owner, path))
             if clash is not _JS_UNDEFINED:
                 held.append({"id": _js_get(entry, "id"), "batch": len(batches), "by": _js_m_get(owner, clash), "path": clash})

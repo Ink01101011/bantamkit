@@ -18,6 +18,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_invoke,
     _js_is_array,
     _js_is_double,
+    _js_is_number,
     _js_json_stringify,
     _js_le,
     _js_len,
@@ -45,6 +46,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_put,
     _js_re,
     _js_re_exec,
+    _js_rows,
     _js_size,
     _js_str,
     _js_strict_eq,
@@ -101,7 +103,7 @@ def _used_at(e):
         return _js_get(e, "ts")
     if _js_get(e, "kind") == "folded":
         last = _js_get(e, "last")
-        if _js_typeof(last) == "string" and not _js_number_is_nan(parse_ts(last)):
+        if isinstance(last, str) and not _js_number_is_nan(_parse_ts__typed(last)):
             return last
     return None
 
@@ -268,12 +270,12 @@ def _valid(e):
         return False
     o = e
     ts = _js_get(o, "ts")
-    if _js_typeof(_js_get(o, "fact")) != "string" or _js_typeof(ts) != "string":
+    if not isinstance(_js_get(o, "fact"), str) or not isinstance(ts, str):
         return False
     if _js_number_is_nan(_parse_ts__typed(ts)):
         return False
     if _js_get(o, "kind") == "folded":
-        return _js_typeof(_js_get(o, "weight")) == "number" and _js_number_is_finite(_js_get(o, "weight"))
+        return _js_is_number(_js_get(o, "weight")) and _js_number_is_finite(_js_get(o, "weight"))
     return True
 
 
@@ -388,7 +390,7 @@ class UsageLedger(_JsObject):
             if not _js_strict_eq(_js_get(e, "fact"), fact) or _js_get(e, "kind") != "save":
                 continue
             if _js_is_array(_js_get(e, "keywords")):
-                found = _js_m_filter(_js_get(e, "keywords"), lambda k, *_: _js_typeof(k) == "string")
+                found = _js_m_filter(_js_get(e, "keywords"), lambda k, *_: isinstance(k, str))
         return found
 
     def append(self, fact, kind, ts, keywords=_JS_UNDEFINED):
@@ -443,15 +445,13 @@ def _reduce_usage__typed(pairs, now):
     latest_save = _JsMap()
     order = []
     seen = _JsSet()
-    for _js_item5 in read:
-        e = _js_get(_js_item5, 0)
-        line = _js_get(_js_item5, 1)
+    for e, line in _js_rows(read, 2, (0, 1)):
         if not _js_m_has(seen, _js_get(e, "fact")):
             _js_m_add(seen, _js_get(e, "fact"))
             order.append(_js_get(e, "fact"))
         if _js_get(e, "kind") == "save":
             _js_m_set(latest_save, _js_get(e, "fact"), line)
-    last = _last_used_of__typed(_js_m_map(read, lambda _js_arg6, *_: (lambda e: e)(*_js_destructure(_js_arg6, 1))))
+    last = _last_used_of__typed(_js_m_map(read, lambda _js_arg5, *_: (lambda e: e)(*_js_destructure(_js_arg5, 1))))
     out = []
     for fact in order:
         weight = _js_m_get(w, fact)
@@ -469,19 +469,17 @@ def reduce_usage(pairs, now):
     if type(pairs) is list and type(now) is str:
         return _reduce_usage__typed(pairs, now)
     read = _js_m_filter(pairs, lambda p, *_: _valid(_js_get(p, 0)))
-    w = _weights_of(_js_m_map(read, lambda _js_arg7, *_: (lambda e: e)(*_js_destructure(_js_arg7, 1))), now)
+    w = _weights_of(_js_m_map(read, lambda _js_arg6, *_: (lambda e: e)(*_js_destructure(_js_arg6, 1))), now)
     latest_save = _JsMap()
     order = []
     seen = _JsSet()
-    for _js_item8 in read:
-        e = _js_get(_js_item8, 0)
-        line = _js_get(_js_item8, 1)
+    for e, line in _js_rows(read, 2, (0, 1)):
         if not _js_m_has(seen, _js_get(e, "fact")):
             _js_m_add(seen, _js_get(e, "fact"))
             order.append(_js_get(e, "fact"))
         if _js_get(e, "kind") == "save":
             _js_m_set(latest_save, _js_get(e, "fact"), line)
-    last = _last_used_of__typed(_js_m_map(read, lambda _js_arg9, *_: (lambda e: e)(*_js_destructure(_js_arg9, 1))))
+    last = _last_used_of__typed(_js_m_map(read, lambda _js_arg7, *_: (lambda e: e)(*_js_destructure(_js_arg7, 1))))
     out = []
     for fact in order:
         weight = _js_m_get(w, fact)

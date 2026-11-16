@@ -15,6 +15,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_destructure,
     _js_dispatch,
     _js_div,
+    _js_doubles,
     _js_every_integer,
     _js_every_string,
     _js_floor,
@@ -57,6 +58,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_test,
     _js_m_toString,
     _js_m_values,
+    _js_map_entries,
     _js_mod,
     _js_mul,
     _js_now,
@@ -73,7 +75,9 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_put,
     _js_re,
     _js_re_exec,
+    _js_rows,
     _js_size,
+    _js_sort_keyed,
     _js_str,
     _js_strict_eq,
     _js_truthy,
@@ -149,12 +153,19 @@ def _is_cols(v):
     if not _js_strict_eq(_js_len(file), n) or not _js_strict_eq(_js_len(length), n) or not _js_strict_eq(_js_len(type_), n):
         return False
     i = 0
-    while _js_lt(i, n):
-        len_ = _js_get(length, i)
-        t = _js_get(type_, i)
-        if _js_lt(len_, 0) or _js_lt(t, 0) or _js_ge(t, _js_len(types)):
-            return False
-        i = _js_num(i + 1)
+    if type(i) is int and 0 <= i and type(n) is int and type(length) is list and n <= len(length) and _js_doubles(length, i, n) and type(type_) is list and n <= len(type_) and _js_doubles(type_, i, n) and type(types) is list:
+        for i in range(i, n):  # noqa: B020
+            len_ = length[i]
+            t = type_[i]
+            if len_ < 0 or t < 0 or t >= len(types):
+                return False
+    else:
+        while _js_lt(i, n):
+            len_ = _js_get(length, i)
+            t = _js_get(type_, i)
+            if _js_lt(len_, 0) or _js_lt(t, 0) or _js_ge(t, _js_len(types)):
+                return False
+            i = _js_num(i + 1)
     for x in stale_ids:
         if _js_lt(x, 0) or _js_ge(x, n):
             return False
@@ -162,21 +173,21 @@ def _is_cols(v):
 
 
 def _decode_segments__typed(names, seg):
-    if not _js_is_array(seg) or not _js_strict_eq(_js_mod(_js_len(seg), SEG), 0) or not _js_every_integer(seg):
+    if not _js_is_array(seg) or _js_mod(len(seg), SEG) != 0 or not _js_every_integer(seg):
         raise _JsError("malformed postings")
     fields = _js_m_map(FIELD_BOOST, lambda _js_arg1, *_: (lambda f: f)(*_js_destructure(_js_arg1, 1)))
     out = []
     j = 0
-    while _js_lt(j, _js_len(seg)):
-        start = _js_get(seg, j)
-        count = _js_get(seg, _js_num(j + 1))
+    while j < len(seg):
+        start = _js_list_at(seg, j)
+        count = _js_list_at(seg, _js_num(j + 1))
         if _js_lt(count, 1) or _js_lt(start, 0) or _js_gt(_js_add(start, count), len(names)):
             raise _JsError("malformed postings")
         i = start
         while _js_lt(i, _js_add(start, count)):
             k = 0
             while k < len(fields):
-                tf = _js_get(seg, _js_num(_js_num(j + 2) + k))
+                tf = _js_list_at(seg, _js_num(_js_num(j + 2) + k))
                 if _js_truthy(tf):
                     out.append([_js_list_at(names, i), _js_list_at(fields, k), tf])
                 k = _js_num(k + 1)
@@ -188,21 +199,21 @@ def _decode_segments__typed(names, seg):
 def decode_segments(names, seg):
     if type(names) is list:
         return _decode_segments__typed(names, seg)
-    if not _js_is_array(seg) or not _js_strict_eq(_js_mod(_js_len(seg), SEG), 0) or not _js_every_integer(seg):
+    if not _js_is_array(seg) or _js_mod(len(seg), SEG) != 0 or not _js_every_integer(seg):
         raise _JsError("malformed postings")
     fields = _js_m_map(FIELD_BOOST, lambda _js_arg2, *_: (lambda f: f)(*_js_destructure(_js_arg2, 1)))
     out = []
     j = 0
-    while _js_lt(j, _js_len(seg)):
-        start = _js_get(seg, j)
-        count = _js_get(seg, _js_num(j + 1))
+    while j < len(seg):
+        start = _js_list_at(seg, j)
+        count = _js_list_at(seg, _js_num(j + 1))
         if _js_lt(count, 1) or _js_lt(start, 0) or _js_gt(_js_add(start, count), _js_len(names)):
             raise _JsError("malformed postings")
         i = start
         while _js_lt(i, _js_add(start, count)):
             k = 0
             while k < len(fields):
-                tf = _js_get(seg, _js_num(_js_num(j + 2) + k))
+                tf = _js_list_at(seg, _js_num(_js_num(j + 2) + k))
                 if _js_truthy(tf):
                     out.append([_js_get(names, i), _js_list_at(fields, k), tf])
                 k = _js_num(k + 1)
@@ -213,11 +224,7 @@ def decode_segments(names, seg):
 
 def _encode_segments__typed(rows):
     out = []
-    for _js_item3 in rows:
-        i = _js_get(_js_item3, 0)
-        a = _js_get(_js_item3, 1)
-        b = _js_get(_js_item3, 2)
-        c = _js_get(_js_item3, 3)
+    for i, a, b, c in _js_rows(rows, 4, (0, 1, 2, 3)):
         m = len(out)
         if m > 0 and _js_strict_eq(_js_add(_js_list_at(out, _js_num(m - 5)), _js_list_at(out, _js_num(m - 4))), i) and _js_strict_eq(_js_list_at(out, _js_num(m - 3)), a) and _js_strict_eq(_js_list_at(out, _js_num(m - 2)), b) and _js_strict_eq(_js_list_at(out, _js_num(m - 1)), c):
             _js_put(out, _js_num(m - 4), _js_add(_js_list_at(out, _js_num(m - 4)), 1))
@@ -230,11 +237,7 @@ def encode_segments(rows):
     if type(rows) is list:
         return _encode_segments__typed(rows)
     out = []
-    for _js_item4 in rows:
-        i = _js_get(_js_item4, 0)
-        a = _js_get(_js_item4, 1)
-        b = _js_get(_js_item4, 2)
-        c = _js_get(_js_item4, 3)
+    for i, a, b, c in _js_rows(rows, 4, (0, 1, 2, 3)):
         m = len(out)
         if m > 0 and _js_strict_eq(_js_add(_js_list_at(out, _js_num(m - 5)), _js_list_at(out, _js_num(m - 4))), i) and _js_strict_eq(_js_list_at(out, _js_num(m - 3)), a) and _js_strict_eq(_js_list_at(out, _js_num(m - 2)), b) and _js_strict_eq(_js_list_at(out, _js_num(m - 1)), c):
             _js_put(out, _js_num(m - 4), _js_add(_js_list_at(out, _js_num(m - 4)), 1))
@@ -250,7 +253,7 @@ def head_text(d):
 
 
 def _is_lens(v):
-    return _js_is_array(v) and _js_strict_eq(_js_len(v), 3) and _js_m_every(v, lambda x, *_: _js_number_is_integer(x) and _js_ge(x, 0))
+    return _js_is_array(v) and len(v) == 3 and _js_m_every(v, lambda x, *_: _js_number_is_integer(x) and _js_ge(x, 0))
 
 
 _WIKI = _JS_RE_0
@@ -293,7 +296,7 @@ def _fingerprint(value):
 
 
 def _is_fps(v):
-    return _js_is_array(v) and _js_strict_eq(_js_len(v), SHARDS) and _js_every_string(v)
+    return _js_is_array(v) and len(v) == SHARDS and _js_every_string(v)
 
 
 def dump_index(value):
@@ -414,30 +417,30 @@ def _front_of(text):
 
 
 def _secondary__typed(p, pattern):
-    _js_caught5 = None
+    _js_caught3 = None
     try:
         front = _front_of(py_read_text(p))
         if not _js_m_test(pattern, front):
             return {}
         return parse_frontmatter(front)
-    except Exception as _js_error5:
-        _js_caught5 = _js_catch(_js_error5)
-    if _js_caught5 is not None:
+    except Exception as _js_error3:
+        _js_caught3 = _js_catch(_js_error3)
+    if _js_caught3 is not None:
         return {}
 
 
 def _secondary(p, pattern):
     if type(p) is str:
         return _secondary__typed(p, pattern)
-    _js_caught6 = None
+    _js_caught4 = None
     try:
         front = _front_of(py_read_text(p))
         if not _js_m_test(pattern, front):
             return {}
         return parse_frontmatter(front)
-    except Exception as _js_error6:
-        _js_caught6 = _js_catch(_js_error6)
-    if _js_caught6 is not None:
+    except Exception as _js_error4:
+        _js_caught4 = _js_catch(_js_error4)
+    if _js_caught4 is not None:
         return {}
 
 
@@ -459,7 +462,7 @@ def _doc_of(v):
     if not _is_obj(v):
         raise _Shape("doc")
     for k in ["file", "name", "description", "type", "mtime_ns"]:
-        if _js_typeof(_js_get(v, k)) != "string":
+        if not isinstance(_js_get(v, k), str):
             raise _Shape(k)
     for k in ["keywords", "links", "tags", "refs"]:
         if not _is_str_list(_js_get(v, k)):
@@ -470,16 +473,16 @@ def _doc_of(v):
 
 
 def _is_doc(v):
-    _js_caught7 = None
+    _js_caught5 = None
     try:
         _doc_of(v)
         return True
-    except Exception as _js_error7:
-        _js_caught7 = _js_catch(_js_error7)
-    if _js_caught7 is not None:
-        if isinstance(_js_caught7, _Shape):
+    except Exception as _js_error5:
+        _js_caught5 = _js_catch(_js_error5)
+    if _js_caught5 is not None:
+        if isinstance(_js_caught5, _Shape):
             return False
-        raise _js_caught7
+        raise _js_caught5
 
 
 def _all_docs(docs):
@@ -578,9 +581,7 @@ class HotIndex(_JsObject):
         out = _JsMap()
         i = 0
         while i < SHARDS:
-            for _js_item8 in self.shard("postings", i):
-                t = _js_get(_js_item8, 0)
-                v = _js_get(_js_item8, 1)
+            for t, v in _js_rows(self.shard("postings", i), 2, (0, 1)):
                 _js_m_set(out, t, decode_segments(names, v))
             i = _js_num(i + 1)
         return out
@@ -588,9 +589,7 @@ class HotIndex(_JsObject):
     def query(self, terms):
         names = _js_get(self.cols(), "name")
         out = _JsMap()
-        for _js_item9 in self.lookup("postings", terms):
-            t = _js_get(_js_item9, 0)
-            v = _js_get(_js_item9, 1)
+        for t, v in _js_rows(self.lookup("postings", terms), 2, (0, 1)):
             _js_m_set(out, t, decode_segments(names, v))
         return out
 
@@ -603,7 +602,7 @@ class HotIndex(_JsObject):
     def df(self):
         data = self.whole()
         if _js_get(data, "dfRaw") is not None:
-            _js_put(data, "df", _JsMap(_entries(_js_get(data, "dfRaw"))))
+            _js_put(data, "df", _js_map_entries(_js_get(data, "dfRaw")))
             _js_put(data, "dfRaw", None)
         return _js_get(data, "df")
 
@@ -635,13 +634,13 @@ class HotIndex(_JsObject):
     def exists(self):
         if self.data is not None:
             return True
-        _js_caught10 = None
+        _js_caught6 = None
         try:
             lstat_sync(self.path)
             return True
-        except Exception as _js_error10:
-            _js_caught10 = _js_catch(_js_error10)
-        if _js_caught10 is not None:
+        except Exception as _js_error6:
+            _js_caught6 = _js_catch(_js_error6)
+        if _js_caught6 is not None:
             return False
 
     def headPrint(self):
@@ -685,7 +684,7 @@ class HotIndex(_JsObject):
                 _js_m_set(by_shard, i, list_)
             _js_m_push(list_, t)
         out = _JsMap()
-        for i in _js_m_sort([*_js_m_keys(by_shard)], lambda a, b, *_: _js_num(_js_num(a) - _js_num(b))):
+        for i in _js_sort_keyed([*_js_m_keys(by_shard)], lambda a, *_: a, False, lambda a, b, *_: _js_num(_js_num(a) - _js_num(b))):
             table = self.shard(family, i)
             for t in _js_m_get(by_shard, i):
                 if _js_m_has(table, t):
@@ -707,16 +706,16 @@ class HotIndex(_JsObject):
 
     def readShard(self, family, i, fp):
         got = _JS_UNDEFINED
-        _js_caught11 = None
+        _js_caught7 = None
         try:
             got = _js_json_parse(py_read_text(self.shardPath(family, i)))
-        except Exception as _js_error11:
-            _js_caught11 = _js_catch(_js_error11)
-        if _js_caught11 is not None:
+        except Exception as _js_error7:
+            _js_caught7 = _js_catch(_js_error7)
+        if _js_caught7 is not None:
             return None
         if not _is_obj(got) or not _js_strict_eq(_js_get(got, "fingerprint"), fp) or not _is_obj(_js_get(got, "terms")):
             return None
-        return _JsMap(_entries(_js_get(got, "terms")))
+        return _js_map_entries(_js_get(got, "terms"))
 
     def refresh(self, mode=_JS_UNDEFINED):
         if mode is _JS_UNDEFINED:
@@ -769,13 +768,13 @@ class HotIndex(_JsObject):
         return _all_docs(_js_get(data, "docs"))
 
     def statHead(self):
-        _js_caught12 = None
+        _js_caught8 = None
         try:
             st = stat_sync(self.path, {"bigint": True})
             return _js_str(_js_get(st, "mtimeNs")) + ":" + _js_str(_js_size(st)) + ":" + _js_str(_js_get(st, "ino"))
-        except Exception as _js_error12:
-            _js_caught12 = _js_catch(_js_error12)
-        if _js_caught12 is not None:
+        except Exception as _js_error8:
+            _js_caught8 = _js_catch(_js_error8)
+        if _js_caught8 is not None:
             return None
 
     def current(self):
@@ -791,36 +790,36 @@ class HotIndex(_JsObject):
 
     def load(self):
         raw = _JS_UNDEFINED
-        _js_caught13 = None
+        _js_caught9 = None
         try:
             raw = read_file_sync(self.path)
-        except Exception as _js_error13:
-            _js_caught13 = _js_catch(_js_error13)
-        if _js_caught13 is not None:
+        except Exception as _js_error9:
+            _js_caught9 = _js_catch(_js_error9)
+        if _js_caught9 is not None:
             return None
         top = None
         tail_bytes = None
         tail_obj = None
         cut = _js_m_indexOf(raw, 10)
         if cut > 0 and _js_strict_eq(_js_get(raw, _js_num(cut - 1)), 44):
-            _js_caught14 = None
+            _js_caught10 = None
             try:
                 got = _js_json_parse(_js_str(py_decode_utf8(_js_m_subarray(raw, 0, _js_num(cut - 1)))) + "}")
                 if _is_obj(got) and _same_keys(got, HEAD_KEYS):
                     top = got
                     tail_bytes = _js_m_subarray(raw, _js_num(cut + 1))
-            except Exception as _js_error14:
-                _js_caught14 = _js_catch(_js_error14)
-            if _js_caught14 is not None:
+            except Exception as _js_error10:
+                _js_caught10 = _js_catch(_js_error10)
+            if _js_caught10 is not None:
                 top = None
         if top is None:
             whole = _JS_UNDEFINED
-            _js_caught15 = None
+            _js_caught11 = None
             try:
                 whole = _js_json_parse(py_decode_utf8(raw))
-            except Exception as _js_error15:
-                _js_caught15 = _js_catch(_js_error15)
-            if _js_caught15 is not None:
+            except Exception as _js_error11:
+                _js_caught11 = _js_catch(_js_error11)
+            if _js_caught11 is not None:
                 return None
             if not _is_obj(whole) or not _same_keys(whole, [*HEAD_KEYS, *TAIL_KEYS]):
                 return None
@@ -834,16 +833,16 @@ class HotIndex(_JsObject):
         for key in ["skipped", "shards"]:
             if not _is_obj(_js_get(top, key)):
                 return None
-        if _js_typeof(_js_get(top, "full_at")) != "string" or _js_typeof(_js_get(top, "fingerprint")) != "string":
+        if not isinstance(_js_get(top, "full_at"), str) or not isinstance(_js_get(top, "fingerprint"), str):
             return None
         dm = _js_get(top, "dir_mtime_ns")
-        if not (dm is None or _js_typeof(dm) == "string"):
+        if not (dm is None or isinstance(dm, str)):
             return None
         if not _is_str_list(_js_get(top, "loose")) or not _is_lens(_js_get(top, "lens_total")):
             return None
         boost = _js_get(top, "boost")
         want = _boost_ints()
-        if not (_js_is_array(boost) and _js_strict_eq(_js_len(boost), len(want)) and _js_m_every(boost, lambda b, i, *_: _js_strict_eq(b, _js_list_at(want, i)))):
+        if not (_js_is_array(boost) and len(boost) == len(want) and _js_m_every(boost, lambda b, i, *_: _js_strict_eq(b, _js_list_at(want, i)))):
             return None
         parts = top
         if not _is_cols(_js_get(parts, "cols")):
@@ -856,10 +855,8 @@ class HotIndex(_JsObject):
         if not _js_m_every(FAMILIES, lambda f, *_: _is_fps(_js_get(sh, f))):
             return None
         skipped = _JsMap()
-        for _js_item16 in _entries(_js_get(top, "skipped")):
-            k = _js_get(_js_item16, 0)
-            v = _js_get(_js_item16, 1)
-            if _js_typeof(v) != "string":
+        for k, v in _js_rows(_entries(_js_get(top, "skipped")), 2, (0, 1)):
+            if not isinstance(v, str):
                 return None
             _js_m_set(skipped, k, v)
         data = {"version": INDEX_VERSION, "kind": self.kind, "source": self.real, "dir_mtime_ns": dm, "full_at": _js_get(top, "full_at"), "files": _JsMap(), "docs": _JsMap(), "skipped": skipped, "loose": [*_js_get(top, "loose")], "df": _JsMap(), "dfRaw": None, "avgdl": _js_get(parts, "avgdl"), "lens": _JsMap(), "lensRaw": None, "lensTotal": [*_js_get(top, "lens_total")], "boost": want, "cols": _js_get(parts, "cols"), "fingerprint": _js_get(top, "fingerprint"), "shards": {"postings": [*_js_get(prints, "postings")], "words": [*_js_get(prints, "words")]}, "tailBytes": tail_bytes, "tailObj": tail_obj}
@@ -872,10 +869,10 @@ class HotIndex(_JsObject):
         texts = []
         for family in FAMILIES:
             i = 0
-            _js_first17 = True
+            _js_first12 = True
             while True:
-                if _js_first17:
-                    _js_first17 = False
+                if _js_first12:
+                    _js_first12 = False
                 else:
                     i = _js_num(i + 1)
                 if not (i < SHARDS):
@@ -888,42 +885,40 @@ class HotIndex(_JsObject):
                     raise _JsError("hotindex: shard " + _js_str(family) + "-" + _js_str(i) + " not held")
                 texts.append([self.shardPath(family, i), dump_index({"fingerprint": fp, "terms": _js_get(held, 1)})])
         texts.append([self.path, head_text({"version": _js_get(d, "version"), "kind": _js_get(d, "kind"), "source": _js_get(d, "source"), "dir_mtime_ns": _js_get(d, "dir_mtime_ns"), "full_at": _js_get(d, "full_at"), "files": _js_get(d, "files"), "docs": _js_get(d, "docs"), "skipped": _js_get(d, "skipped"), "loose": _js_get(d, "loose"), "df": _js_coalesce(_js_get(d, "dfRaw"), lambda: _js_get(d, "df")), "avgdl": _js_get(d, "avgdl"), "lens": _js_coalesce(_js_get(d, "lensRaw"), lambda: _js_get(d, "lens")), "lens_total": _js_get(d, "lensTotal"), "boost": _js_get(d, "boost"), "cols": _js_get(d, "cols"), "fingerprint": _js_get(d, "fingerprint"), "shards": _js_get(d, "shards")})])
-        _js_caught18 = None
+        _js_caught13 = None
         try:
             mkdir_sync(path_dirname(self.path), {"recursive": True})
-            def _js_fn19(*_):
-                def _js_fn20(b=_JS_UNDEFINED, *_):
+            def _js_fn14(*_):
+                def _js_fn15(b=_JS_UNDEFINED, *_):
                     return self.writesName(b)
-                remove_stale_temps(path_dirname(self.path), _js_fn20)
-                for _js_item21 in texts:
-                    p = _js_get(_js_item21, 0)
-                    text = _js_get(_js_item21, 1)
+                remove_stale_temps(path_dirname(self.path), _js_fn15)
+                for p, text in _js_rows(texts, 2, (0, 1)):
                     tmp = path_join(path_dirname(p), _js_str(path_basename(p)) + "." + _js_str(process_pid()) + ".tmp")
-                    _js_caught22 = None
+                    _js_caught16 = None
                     try:
                         write_file_sync(tmp, text, "utf8")
                         rename_sync(tmp, p)
-                    except Exception as _js_error22:
-                        _js_caught22 = _js_catch(_js_error22)
-                    if _js_caught22 is not None:
-                        _js_caught23 = None
+                    except Exception as _js_error16:
+                        _js_caught16 = _js_catch(_js_error16)
+                    if _js_caught16 is not None:
+                        _js_caught17 = None
                         try:
                             rm_sync(tmp, {"force": True})
-                        except Exception as _js_error23:
-                            _js_caught23 = _js_catch(_js_error23)
-                        if _js_caught23 is not None:
+                        except Exception as _js_error17:
+                            _js_caught17 = _js_catch(_js_error17)
+                        if _js_caught17 is not None:
                             pass
-                        raise _js_caught22
+                        raise _js_caught16
                 return _JS_UNDEFINED
-            exclusive(self.path, _js_fn19)
-        except Exception as _js_error18:
-            _js_caught18 = _js_catch(_js_error18)
-        if _js_caught18 is not None:
-            if _js_typeof(_js_get(_js_caught18, "code")) == "string":
+            exclusive(self.path, _js_fn14)
+        except Exception as _js_error13:
+            _js_caught13 = _js_catch(_js_error13)
+        if _js_caught13 is not None:
+            if isinstance(_js_get(_js_caught13, "code"), str):
                 self.persisted = False
                 self.headStat = None
                 return _JS_UNDEFINED
-            raise _js_caught18
+            raise _js_caught13
         self.persisted = True
         self.headStat = self.statHead()
         return _JS_UNDEFINED
@@ -934,39 +929,39 @@ class HotIndex(_JsObject):
         return self.reader
 
     def dirMtime(self):
-        _js_caught24 = None
+        _js_caught18 = None
         try:
             return _js_m_toString(_js_get(stat_sync(self.dir, {"bigint": True}), "mtimeNs"))
-        except Exception as _js_error24:
-            _js_caught24 = _js_catch(_js_error24)
-        if _js_caught24 is not None:
+        except Exception as _js_error18:
+            _js_caught18 = _js_catch(_js_error18)
+        if _js_caught18 is not None:
             return None
 
     def listing(self):
         if self.kind == "facts":
             return _js_invoke(self.store(), "factPaths")
         names = _JS_UNDEFINED
-        _js_caught25 = None
+        _js_caught19 = None
         try:
             names = readdir_sync(self.dir)
-        except Exception as _js_error25:
-            _js_caught25 = _js_catch(_js_error25)
-        if _js_caught25 is not None:
-            if _js_get(_js_caught25, "code") == "ENOENT":
+        except Exception as _js_error19:
+            _js_caught19 = _js_catch(_js_error19)
+        if _js_caught19 is not None:
+            if _js_get(_js_caught19, "code") == "ENOENT":
                 return []
-            raise _js_caught25
+            raise _js_caught19
         return _js_m_map(_js_m_sort(_js_m_filter(names, lambda n, *_: _js_and(_js_m_endsWith(n, ".md") and n != "MEMORY.md", lambda: _is_file(py_join(self.dir, n)))), cmp_codepoint), lambda n, *_: py_join(self.dir, n))
 
     def statListing(self):
         out = []
         for p in self.listing():
             st = _JS_UNDEFINED
-            _js_caught26 = None
+            _js_caught20 = None
             try:
                 st = stat_sync(p, {"bigint": True})
-            except Exception as _js_error26:
-                _js_caught26 = _js_catch(_js_error26)
-            if _js_caught26 is not None:
+            except Exception as _js_error20:
+                _js_caught20 = _js_catch(_js_error20)
+            if _js_caught20 is not None:
                 continue
             out.append([path_basename(p), _js_m_toString(_js_get(st, "mtimeNs")), _js_number(_js_size(st))])
         return out
@@ -984,12 +979,10 @@ class HotIndex(_JsObject):
         docs = _js_get(data, "docs")
         skipped = _js_get(data, "skipped")
         loose = _JsSet(_js_get(data, "loose"))
-        order = _JsMap(_js_m_map(stats, lambda _js_arg27, i, *_: (lambda n: [n, i])(*_js_destructure(_js_arg27, 1))))
-        now_files = _JsMap(_js_m_map(stats, lambda _js_arg28, *_: (lambda n, m, s: [n, [m, s]])(*_js_destructure(_js_arg28, 3))))
+        order = _JsMap(_js_m_map(stats, lambda _js_arg21, i, *_: (lambda n: [n, i])(*_js_destructure(_js_arg21, 1))))
+        now_files = _JsMap(_js_m_map(stats, lambda _js_arg22, *_: (lambda n, m, s: [n, [m, s]])(*_js_destructure(_js_arg22, 3))))
         redo = _JsSet()
-        for _js_item29 in now_files:
-            name = _js_get(_js_item29, 0)
-            now = _js_get(_js_item29, 1)
+        for name, now in _js_rows(now_files, 2, (0, 1)):
             was = _js_m_get(files, name)
             if was is _JS_UNDEFINED or not _js_strict_eq(_js_get(was, 0), _js_get(now, 0)) or not _js_strict_eq(_js_get(was, 1), _js_get(now, 1)):
                 _js_m_add(redo, name)
@@ -1000,18 +993,16 @@ class HotIndex(_JsObject):
         for name in _js_m_keys(now_files):
             if _js_m_startsWith(_js_coalesce_value(_js_m_get(skipped, name), ""), DUPLICATE):
                 _js_m_add(redo, name)
-        for _js_item30 in docs:
-            name = _js_get(_js_item30, 0)
-            doc = _js_get(_js_item30, 1)
+        for name, doc in _js_rows(docs, 2, (0, 1)):
             if _js_m_has(redo, _js_get(doc, "file")) or _js_m_has(gone, _js_get(doc, "file")):
                 _js_m_delete(docs, name)
         for file in [*redo, *gone]:
             _js_m_delete(skipped, file)
             _js_m_delete(loose, file)
-        for file in _js_m_sort([*redo], lambda a, b, *_: _js_num(_js_num(_js_m_get(order, a)) - _js_num(_js_m_get(order, b)))):
+        for file in _js_sort_keyed([*redo], lambda a, *_: _js_m_get(order, a), False, lambda a, b, *_: _js_num(_js_num(_js_m_get(order, a)) - _js_num(_js_m_get(order, b)))):
             mtime_ns, size = _js_destructure(_js_m_get(now_files, file), 2)
             parsed = self.parse(py_join(self.dir, file))
-            if _js_typeof(parsed) == "string":
+            if isinstance(parsed, str):
                 _js_m_set(skipped, file, parsed)
                 continue
             if _js_truthy(_js_get(parsed, "loose")):
@@ -1035,7 +1026,7 @@ class HotIndex(_JsObject):
 
     def parseFile(self, p, mtime_ns, size):
         got = self.parse(p)
-        if _js_typeof(got) == "string":
+        if isinstance(got, str):
             return got
         if _js_truthy(_js_get(got, "loose")):
             return "name is not a string"
@@ -1045,29 +1036,29 @@ class HotIndex(_JsObject):
         file = path_basename(p)
         if self.kind == "facts":
             fact = _JS_UNDEFINED
-            _js_caught31 = None
+            _js_caught23 = None
             try:
                 fact = _js_invoke(self.store(), "readFact", p)
-            except Exception as _js_error31:
-                _js_caught31 = _js_catch(_js_error31)
-            if _js_caught31 is not None:
-                if isinstance(_js_caught31, PyOSError):
-                    return py_os_error_text(_js_caught31)
-                if isinstance(_js_caught31, BantamError):
-                    return _js_get(_js_caught31, "message")
-                raise _js_caught31
+            except Exception as _js_error23:
+                _js_caught23 = _js_catch(_js_error23)
+            if _js_caught23 is not None:
+                if isinstance(_js_caught23, PyOSError):
+                    return py_os_error_text(_js_caught23)
+                if isinstance(_js_caught23, BantamError):
+                    return _js_get(_js_caught23, "message")
+                raise _js_caught23
             extra = _secondary(p, _TAGS_LINE)
-            return {"file": file, "name": py_text(_js_get(fact, "name")), "description": py_text(_js_get(fact, "description")), "type": py_text(_js_get(fact, "type")), "keywords": [*_js_coalesce_value(_js_get(fact, "keywords"), [])], "links": _dedupe([*_js_m_map(_js_get(fact, "links"), lambda x, *_: py_text(x)), *_wiki_links(_js_get(fact, "body"))]), "tags": _str_list(_js_get(extra, "tags")), "refs": fact_refs(py_text(_js_get(fact, "description")), _js_m_map([*_js_coalesce_value(_js_get(fact, "keywords"), [])], lambda x, *_: py_text(x)), py_text(_js_get(fact, "body"))), "loose": _js_typeof(_js_get(fact, "name")) != "string"}
+            return {"file": file, "name": py_text(_js_get(fact, "name")), "description": py_text(_js_get(fact, "description")), "type": py_text(_js_get(fact, "type")), "keywords": [*_js_coalesce_value(_js_get(fact, "keywords"), [])], "links": _dedupe([*_js_m_map(_js_get(fact, "links"), lambda x, *_: py_text(x)), *_wiki_links(_js_get(fact, "body"))]), "tags": _str_list(_js_get(extra, "tags")), "refs": fact_refs(py_text(_js_get(fact, "description")), _js_m_map([*_js_coalesce_value(_js_get(fact, "keywords"), [])], lambda x, *_: py_text(x)), py_text(_js_get(fact, "body"))), "loose": not isinstance(_js_get(fact, "name"), str)}
         stored = _JS_UNDEFINED
-        _js_caught32 = None
+        _js_caught24 = None
         try:
             stored = parse_native(p)
-        except Exception as _js_error32:
-            _js_caught32 = _js_catch(_js_error32)
-        if _js_caught32 is not None:
-            if isinstance(_js_caught32, BantamError):
-                return _js_get(_js_caught32, "message")
-            raise _js_caught32
+        except Exception as _js_error24:
+            _js_caught24 = _js_catch(_js_error24)
+        if _js_caught24 is not None:
+            if isinstance(_js_caught24, BantamError):
+                return _js_get(_js_caught24, "message")
+            raise _js_caught24
         extra = _js_get(stored, "meta") if _js_m_test(_NATIVE_EXTRA_LINE, _front_of(_safe_read(p))) else {}
         md = _js_get(extra, "metadata")
         nested = md if md is not None and _js_typeof(md) == "object" and not _js_is_array(md) else {}
@@ -1096,7 +1087,7 @@ class HotIndex(_JsObject):
         lens = _JsMap()
         lens_total = [0, 0, 0]
         names = _js_m_sort([*_js_m_keys(_js_get(data, "docs"))], cmp_codepoint)
-        def _js_fn33(name=_JS_UNDEFINED, doc_id=_JS_UNDEFINED, *_):
+        def _js_fn25(name=_JS_UNDEFINED, doc_id=_JS_UNDEFINED, *_):
             nonlocal total
             d = _js_m_get(_js_get(data, "docs"), name)
             text = {"name": _js_get(d, "name"), "description": _js_get(d, "description"), "keywords": _js_m_join(_js_get(d, "keywords"), " ")}
@@ -1118,9 +1109,7 @@ class HotIndex(_JsObject):
                         _js_m_set(tfs, t, c)
                     _js_put(c, fi, _js_add(_js_get(c, fi), 1))
                 fi = _js_num(fi + 1)
-            for _js_item34 in tfs:
-                term = _js_get(_js_item34, 0)
-                counts = _js_get(_js_item34, 1)
+            for term, counts in _js_rows(tfs, 2, (0, 1)):
                 table = _js_list_at(rows, shard_at(term))
                 list_ = _js_m_get(table, term)
                 if list_ is _JS_UNDEFINED:
@@ -1136,8 +1125,8 @@ class HotIndex(_JsObject):
                     _js_m_set(table, w, list_)
                 _js_m_push(list_, name)
             return _JS_UNDEFINED
-        _js_m_forEach(names, _js_fn33)
-        postings = _js_m_map(rows, lambda table, *_: _JsMap(_js_m_map([*table], lambda _js_arg35, *_: (lambda t, r: [t, encode_segments(r)])(*_js_destructure(_js_arg35, 2)))))
+        _js_m_forEach(names, _js_fn25)
+        postings = _js_m_map(rows, lambda table, *_: _JsMap(_js_m_map([*table], lambda _js_arg26, *_: (lambda t, r: [t, encode_segments(r)])(*_js_destructure(_js_arg26, 2)))))
         _js_put(data, "df", df)
         _js_put(data, "dfRaw", None)
         _js_put(data, "lens", lens)
@@ -1164,7 +1153,7 @@ def _columns(docs, data):
     types = _js_m_sort([*_JsSet(_js_m_map(names, lambda n, *_: _js_get(_js_m_get(docs, n), "type")))], cmp_codepoint)
     code = _JsMap(_js_m_map(types, lambda t, i, *_: [t, i]))
     cols = {"name": names, "file": [], "length": [], "type": [], "types": types, "stale": []}
-    def _js_fn36(name=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
+    def _js_fn27(name=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
         d = _js_m_get(docs, name)
         l = _js_m_get(_js_get(data, "lens"), name) if raw is None else _js_get(raw, name)
         _js_m_push(_js_get(cols, "file"), "" if _js_get(d, "file") == _js_str(name) + ".md" else _js_get(d, "file"))
@@ -1173,7 +1162,7 @@ def _columns(docs, data):
         if _js_truthy(stale(_js_get(d, "description"))):
             _js_m_push(_js_get(cols, "stale"), i)
         return _JS_UNDEFINED
-    _js_m_forEach(names, _js_fn36)
+    _js_m_forEach(names, _js_fn27)
     return cols
 
 
@@ -1185,12 +1174,12 @@ def _complete_tail(data):
     _js_put(data, "tailBytes", None)
     _js_put(data, "tailObj", None)
     if bytes is not None:
-        _js_caught37 = None
+        _js_caught28 = None
         try:
             got = _js_json_parse("{" + _js_str(py_decode_utf8(bytes)))
-        except Exception as _js_error37:
-            _js_caught37 = _js_catch(_js_error37)
-        if _js_caught37 is not None:
+        except Exception as _js_error28:
+            _js_caught28 = _js_catch(_js_error28)
+        if _js_caught28 is not None:
             return False
     if not _is_obj(got) or not _same_keys(got, TAIL_KEYS):
         return False
@@ -1199,14 +1188,12 @@ def _complete_tail(data):
             return False
     tail = got
     files = _JsMap()
-    for _js_item38 in _entries(_js_get(tail, "files")):
-        k = _js_get(_js_item38, 0)
-        v = _js_get(_js_item38, 1)
-        if not (_js_is_array(v) and _js_strict_eq(_js_len(v), 2) and _js_typeof(_js_get(v, 0)) == "string" and _js_number_is_integer(_js_get(v, 1))):
+    for k, v in _js_rows(_entries(_js_get(tail, "files")), 2, (0, 1)):
+        if not (_js_is_array(v) and _js_strict_eq(_js_len(v), 2) and isinstance(_js_get(v, 0), str) and _js_number_is_integer(_js_get(v, 1))):
             return False
         _js_m_set(files, k, [_js_get(v, 0), _js_get(v, 1)])
     _js_put(data, "files", files)
-    _js_put(data, "docs", _JsMap(_entries(_js_get(tail, "docs"))))
+    _js_put(data, "docs", _js_map_entries(_js_get(tail, "docs")))
     _js_put(data, "dfRaw", _js_get(tail, "df"))
     _js_put(data, "lensRaw", _js_get(tail, "lens"))
     return True
@@ -1219,55 +1206,53 @@ def _same_keys(v, keys):
 
 def _derived_key(docs):
     rows = []
-    for _js_item39 in docs:
-        n = _js_get(_js_item39, 0)
-        d = _js_get(_js_item39, 1)
+    for n, d in _js_rows(docs, 2, (0, 1)):
         rows.append([n, _js_get(d, "description"), _js_get(d, "keywords")])
     _js_m_sort(rows, lambda a, b, *_: cmp_codepoint(_js_get(a, 0), _js_get(b, 0)))
     return _js_json_stringify(rows)
 
 
 def _safe_read__typed(p):
-    _js_caught40 = None
+    _js_caught29 = None
     try:
         return py_read_text(p)
-    except Exception as _js_error40:
-        _js_caught40 = _js_catch(_js_error40)
-    if _js_caught40 is not None:
+    except Exception as _js_error29:
+        _js_caught29 = _js_catch(_js_error29)
+    if _js_caught29 is not None:
         return ""
 
 
 def _safe_read(p):
     if type(p) is str:
         return _safe_read__typed(p)
-    _js_caught41 = None
+    _js_caught30 = None
     try:
         return py_read_text(p)
-    except Exception as _js_error41:
-        _js_caught41 = _js_catch(_js_error41)
-    if _js_caught41 is not None:
+    except Exception as _js_error30:
+        _js_caught30 = _js_catch(_js_error30)
+    if _js_caught30 is not None:
         return ""
 
 
 def _is_file__typed(p):
-    _js_caught42 = None
+    _js_caught31 = None
     try:
         return _js_invoke(stat_sync(p), "isFile")
-    except Exception as _js_error42:
-        _js_caught42 = _js_catch(_js_error42)
-    if _js_caught42 is not None:
+    except Exception as _js_error31:
+        _js_caught31 = _js_catch(_js_error31)
+    if _js_caught31 is not None:
         return False
 
 
 def _is_file(p):
     if type(p) is str:
         return _is_file__typed(p)
-    _js_caught43 = None
+    _js_caught32 = None
     try:
         return _js_invoke(stat_sync(p), "isFile")
-    except Exception as _js_error43:
-        _js_caught43 = _js_catch(_js_error43)
-    if _js_caught43 is not None:
+    except Exception as _js_error32:
+        _js_caught32 = _js_catch(_js_error32)
+    if _js_caught32 is not None:
         return False
 
 

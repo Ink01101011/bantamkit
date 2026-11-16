@@ -454,6 +454,24 @@ are V8's order at C speed; otherwise V8's own sort runs with the comparator (`_j
 `Array.prototype.sort` step for step, so even a NaN key's inconsistent comparator leaves V8's
 order). Any other comparator is the general `.sort`.
 
+## Storage speed (J90-P, #316 G4)
+
+Each lowering below is pinned TAKEN and answering as Node does in `tests/j90p.rs` (the probe and a
+30,000-input digest of `tests/fixtures/j90p_probe.ts`); each runtime fast path is held to the
+general path it shortcuts by that file's seeded fuzz.
+
+| Construct | Lowering | Otherwise |
+|---|---|---|
+| `Array.isArray(x)` true, `x` a `const`, a callback parameter, or a parameter or local no assignment rebinds | narrows `x` to a list (in an `if`, the right side of `&&` / `\|\|`, a `?:` branch) | no narrowing |
+| `typeof x === 'string'` / `'boolean'` / `'number'` / `'undefined'` (or `!==`) | `isinstance(x, str)` / `isinstance(x, bool)` / `_js_is_number(x)` / `x is _JS_UNDEFINED`: the one test `_js_typeof` answers that name for | `_js_typeof(x) == ...` |
+| `xs.sort((a, b) => k(a) - k(b))` or `k(b) - k(a)`, `k` reads only its parameter, other bindings, members and `.get()` (no compiled class declares `get`), never a Float64Array | `_js_sort_keyed`: a stable sort by the keys when every key is a number JS holds exactly and none is NaN | the general `.sort` with the comparator |
+| `new Map(Object.entries(x))`, or through a module `const` arrow `(v) => Object.entries(v)` | `_js_map_entries(x)`: a plain object's entries copied at once; when a key may be an array index, the order is settled at the first walk or write | `_JsMap(_js_object_entries(x))` |
+| `for (const [a, b, , d] of xs)` (rows not proven) | `for a, b, _js_hole, d in _js_rows(xs, 4, (0, 1, 3))`: a list that long sliced at once, anything else `_js_get` of each named index | — |
+| a counted loop that reads another array's `.length` (and is proven for another reason) | that array checked a list in the guard; `len(x)` in the proven copy | the general loop |
+
+A `Map` keeps each key's `_js_key` tag mapped to its value; a key that is not its own tag (a bool,
+NaN, an object, an int past 2^53) is kept beside it in `_keys`.
+
 ## Classes (J86)
 
 | Construct | Lowering | Preserved |

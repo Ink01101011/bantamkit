@@ -15,9 +15,9 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_in,
     _js_is_array,
     _js_is_double,
+    _js_is_number,
     _js_json_parse,
     _js_le,
-    _js_len,
     _js_list_at,
     _js_list_join,
     _js_lt,
@@ -25,7 +25,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_includes,
     _js_m_map,
     _js_m_padStart,
-    _js_m_slice,
     _js_m_some,
     _js_m_sort,
     _js_mod,
@@ -39,6 +38,9 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_put,
     _js_spread,
     _js_str,
+    _js_str_at,
+    _js_str_len,
+    _js_str_slice,
     _js_strict_eq,
     _js_truthy,
     _js_typeof,
@@ -98,7 +100,7 @@ class PriceTableError(BantamError):
 
 
 def _is_count(value):
-    return _js_typeof(value) == "number" and _js_number_is_integer(value) and _js_ge(value, 0) and _js_le(value, MAX_SAFE_INT)
+    return _js_is_number(value) and _js_number_is_integer(value) and _js_ge(value, 0) and _js_le(value, MAX_SAFE_INT)
 
 
 def _as_count(value):
@@ -110,16 +112,16 @@ def _sorted_by_code_point(names):
 
 
 def _is_date(value):
-    if _js_typeof(value) != "string" or not _js_strict_eq(_js_len(value), 10):
+    if not isinstance(value, str) or _js_str_len(value) != 10:
         return False
-    if _js_get(value, 4) != "-" or _js_get(value, 7) != "-":
+    if _js_str_at(value, 4) != "-" or _js_str_at(value, 7) != "-":
         return False
-    for part in [_js_m_slice(value, 0, 4), _js_m_slice(value, 5, 7), _js_m_slice(value, 8, 10)]:
+    for part in [_js_str_slice(value, 0, 4), _js_str_slice(value, 5, 7), _js_str_slice(value, 8, 10)]:
         for ch in part:
             if _js_lt(ch, "0") or _js_gt(ch, "9"):
                 return False
-    month = _js_number(_js_m_slice(value, 5, 7))
-    day = _js_number(_js_m_slice(value, 8, 10))
+    month = _js_number(_js_str_slice(value, 5, 7))
+    day = _js_number(_js_str_slice(value, 8, 10))
     return month >= 1 and month <= 12 and day >= 1 and day <= 31
 
 
@@ -172,7 +174,7 @@ def validate_price_table(raw):
         raise PriceTableError("price table currency must be the string 'USD'")
     if _js_get(raw, "unit") != RATE_UNIT:
         raise PriceTableError("price table unit must be the string 'micro_usd_per_million_tokens'")
-    if _js_in("note", raw) and _js_typeof(_js_get(raw, "note")) != "string":
+    if _js_in("note", raw) and not isinstance(_js_get(raw, "note"), str):
         raise PriceTableError("price table note must be a string")
     rates = _js_get(raw, "rates")
     if not _is_plain_object(rates):
@@ -201,7 +203,7 @@ def _validate_rate__typed(model, rate):
         raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " has a 'recorded' that is not a YYYY-MM-DD date")
     if not _js_in("source", rate):
         raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " is missing 'source' -- a rate with no source cannot be re-derived")
-    if _js_typeof(_js_get(rate, "source")) != "string" or _js_get(rate, "source") == "":
+    if not isinstance(_js_get(rate, "source"), str) or _js_get(rate, "source") == "":
         raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " has a 'source' that is not a non-empty string")
     for cls in TOKEN_CLASSES:
         if _js_in(cls, rate) and not _is_count(_js_get(rate, cls)):
@@ -230,7 +232,7 @@ def _validate_rate(model, rate):
         raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " has a 'recorded' that is not a YYYY-MM-DD date")
     if not _js_in("source", rate):
         raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " is missing 'source' -- a rate with no source cannot be re-derived")
-    if _js_typeof(_js_get(rate, "source")) != "string" or _js_get(rate, "source") == "":
+    if not isinstance(_js_get(rate, "source"), str) or _js_get(rate, "source") == "":
         raise PriceTableError("price table rate " + _js_str(py_repr(model)) + " has a 'source' that is not a non-empty string")
     for cls in TOKEN_CLASSES:
         if _js_in(cls, rate) and not _is_count(_js_get(rate, cls)):
@@ -261,7 +263,7 @@ def format_micros(micros):
 
 
 def _price_tokens__typed(table, model, usage):
-    if _js_typeof(model) != "string":
+    if not isinstance(model, str):
         return _unavailable("model must be a string")
     if not _is_plain_object(usage):
         return _unavailable("usage must be a mapping of token class to count")
@@ -299,7 +301,7 @@ def _price_tokens__typed(table, model, usage):
 def price_tokens(table, model, usage):
     if type(model) is str:
         return _price_tokens__typed(table, model, usage)
-    if _js_typeof(model) != "string":
+    if not isinstance(model, str):
         return _unavailable("model must be a string")
     if not _is_plain_object(usage):
         return _unavailable("usage must be a mapping of token class to count")

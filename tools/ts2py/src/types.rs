@@ -295,6 +295,10 @@ pub struct Assume {
     /// `const` locals read somewhere other than a literal index, a nullish test or a truthiness
     /// test: their array contents prove nothing (`lower.rs`, `peek`).
     pub escaped_locals: BTreeSet<Key>,
+    /// J90-P: parameters and declared locals no assignment rebinds: like a `const`, a guard may
+    /// narrow them (`lower.rs`, `narrowable`). Syntactic, so it is the same every round after
+    /// the first (which narrows none of them).
+    pub stable: BTreeSet<Key>,
 }
 
 /// What one round observed, folded into the next round's assumptions.
@@ -365,12 +369,14 @@ impl Observed {
             .collect();
         let mut escaped_locals = assume.escaped_locals.clone();
         escaped_locals.extend(self.escaped_locals.iter().cloned());
+        let stable = self.declared.difference(&self.assigned).cloned().collect();
         Assume {
             facts,
             wrapped,
             escaped,
             hoist,
             escaped_locals,
+            stable,
         }
     }
 }

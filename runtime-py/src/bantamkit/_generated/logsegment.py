@@ -15,6 +15,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_gt,
     _js_is_array,
     _js_is_double,
+    _js_is_number,
     _js_json_parse,
     _js_json_stringify_with,
     _js_le,
@@ -55,7 +56,7 @@ ROTATE_BYTES = 1000000
 
 
 def _refuse_non_finite__typed(_key, value):
-    if _js_typeof(value) == "number" and not _js_number_is_finite(value):
+    if _js_is_number(value) and not _js_number_is_finite(value):
         raise _JsRangeError(_js_str(value) + " is not JSON")
     return value
 
@@ -63,7 +64,7 @@ def _refuse_non_finite__typed(_key, value):
 def _refuse_non_finite(_key, value):
     if type(_key) is str:
         return _refuse_non_finite__typed(_key, value)
-    if _js_typeof(value) == "number" and not _js_number_is_finite(value):
+    if _js_is_number(value) and not _js_number_is_finite(value):
         raise _JsRangeError(_js_str(value) + " is not JSON")
     return value
 
@@ -106,13 +107,13 @@ def _load(line):
 
 
 def _is_old__typed(row, older_than):
-    return _js_typeof(_js_get(row, "ts")) == "string" and _js_lt(_js_get(row, "ts"), older_than)
+    return isinstance(_js_get(row, "ts"), str) and _js_lt(_js_get(row, "ts"), older_than)
 
 
 def _is_old(row, older_than):
     if type(older_than) is str:
         return _is_old__typed(row, older_than)
-    return _js_typeof(_js_get(row, "ts")) == "string" and _js_lt(_js_get(row, "ts"), older_than)
+    return isinstance(_js_get(row, "ts"), str) and _js_lt(_js_get(row, "ts"), older_than)
 
 
 def _write_all__typed(fd, data):
@@ -554,7 +555,7 @@ class LogSegment(_JsObject):
         except Exception as _js_error23:
             _js_caught23 = _js_catch(_js_error23)
         if _js_caught23 is not None:
-            if _js_typeof(_js_get(_js_caught23, "code")) != "string":
+            if not isinstance(_js_get(_js_caught23, "code"), str):
                 raise _js_caught23
         return _JS_UNDEFINED
 
