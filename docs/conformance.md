@@ -137,7 +137,14 @@ against the old `Date.UTC` ordinal on a scratch copy (2 failures); `store` 427 c
 `runtime-py`'s `memory/store` is compiled from `store.ts`): the two `ruling: G3 as Node` store-root
 cases (a NUL, a lone U+D800) went STALE as designed and are agreeing cases with a literal per side
 (`J89-4b a store root holding … — both answer as node (was ruled G3 as Node)`); the U+DC80 row stays
-ruled (G2 target-specific, permanent); `store` 428 cases, 11 ruled, 0 failures.
+ruled (G2 target-specific, permanent); `store` 428 cases, 11 ruled, 0 failures. **J89-5b generated
+the layers** (#316 G3 U3; the config read kept on PyYAML by ruling): `recall-strings` gains the
+config family, 48 documents each with a `RULED: config outside the reader's language — …` case (41)
+or a `ruling: UNRULED DIVERGENCE (J89-5b) load_grants — …` case (7: CPython raises what
+`load_grants` never caught), a non-ruled `J89-5b outcome bit per side: …` companion each, and the
+two per-side literals `LITERAL: J89-5b python|node: load_grants over the config family, every
+answer`; `recall-strings` 261 cases, 50 ruled, 0 failures. `ts2py` recompiles `layers.py` in the
+G1/G2/G3 call.
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream

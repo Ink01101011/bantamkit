@@ -1346,6 +1346,155 @@ export async function run(ctx) {
       'pinned exactly by the config battery above; only the reason after the colon differs.',
   });
 
+  // ---------------------------------- J89-5b (#316 G3 U3): the config read stays on PyYAML
+  //
+  // The orchestrator's ruling on J89-5's stop (option b): the generated Python reads
+  // `config.yaml` with `yaml.safe_load`, as `load_grants` always did, and Node keeps its own
+  // reader (`grantconfig.ts`). Where the two answer a document differently it is RULED, one
+  // family: a document outside the port reader's language. Each document below costs three
+  // pins: a `RULED:` case holding both answers (it goes STALE if they meet), a NON-ruled
+  // companion pinning each side's OUTCOME BIT to a literal (a ruling only proves the two
+  // still differ, never that each still grants or refuses), and the per-side answer literals
+  // after the loop. `G` is a granted directory beside the config (`.bantamkit/g`).
+  //
+  // The `unruled` rows are NOT this family and are not ruled: CPython's `yaml.safe_load`
+  // raises an exception that `load_grants` never caught (a `ValueError` from an implicit
+  // timestamp or int PyYAML cannot construct, from `resolve` of a decoded NUL, a
+  // `RecursionError` from a deep flow sequence), so Python's `load_grants` raises it raw
+  // where Node grants or refuses by name. Generation keeps Python's answer exactly; they are
+  // pinned as UNRULED DIVERGENCE (J89-5b) for the orchestrator, per side.
+  {
+    const G = '<ROOT>/.bantamkit/g';
+    const CFG = '<ROOT>/.bantamkit/config.yaml';
+    const GRANT = `grants: ${G}`;
+    const INVALID = (why) => `MemoryValidationError: invalid memory config ${CFG}: ${why}`;
+    const NOT_A_LIST = INVALID('extra_stores must be a list of paths');
+    const NOT_ROOT = (n) => INVALID(`line ${n} is not a root "key: value" mapping entry`);
+    const OUTSIDE = INVALID('a tag, an anchor, an alias or a second document is outside this reader');
+    const MAPPING = INVALID('expected a mapping');
+    const MISSING = (name) => `MemoryValidationError: granted store does not exist: <ROOT>/.bantamkit/${name} (from ${CFG})`;
+    // [label, document, python's answer (first line), node's answer (first line), family]
+    const FAMILY = [
+      ['an anchored grant list (the J89-5 finding)', 'extra_stores: &a [g]\n', GRANT, NOT_A_LIST, 'ruled'],
+      ['an anchored block list', 'extra_stores: &a\n- g\n', GRANT, NOT_ROOT(2), 'ruled'],
+      ['an anchored item', 'extra_stores:\n- &x g\n', GRANT, MISSING('&x g'), 'ruled'],
+      ['an alias item', 'base: &x g\nextra_stores:\n- *x\n', GRANT, MISSING('*x'), 'ruled'],
+      ['an aliased list', 'base: &x [g]\nextra_stores: *x\n', GRANT, NOT_A_LIST, 'ruled'],
+      ['a merge key', 'base: &b\n  extra_stores: [g]\n<<: *b\n', GRANT, NOT_ROOT(2), 'ruled'],
+      ['a flow merge key', '<<: {extra_stores: [g]}\n', GRANT, OUTSIDE, 'ruled'],
+      ['a !!str item', 'extra_stores:\n- !!str g\n', GRANT, MISSING('!!str g'), 'ruled'],
+      ['a !!seq list', 'extra_stores: !!seq [g]\n', GRANT, NOT_A_LIST, 'ruled'],
+      ['a !!map root', '!!map\nextra_stores: [g]\n', GRANT, OUTSIDE, 'ruled'],
+      ['a %YAML directive', '%YAML 1.1\n---\nextra_stores: [g]\n', GRANT, MAPPING, 'ruled'],
+      ['a %TAG directive', '%TAG !e! tag:yaml.org,2002:\n---\nextra_stores: !e!seq [g]\n', GRANT, MAPPING, 'ruled'],
+      ['a document end marker', 'extra_stores: [g]\n...\n', GRANT, NOT_ROOT(2), 'ruled'],
+      ['a document on the start line', '--- {extra_stores: [g]}\n', GRANT, OUTSIDE, 'ruled'],
+      ['a flow mapping document', '{extra_stores: [g]}\n', GRANT, MAPPING, 'ruled'],
+      ['a flow mapping under another key', 'x: {a: 1}\nextra_stores: [g]\n', GRANT, INVALID('a flow mapping is outside this reader'), 'ruled'],
+      ['a nested mapping under another key', 'x:\n  a: 1\nextra_stores: [g]\n', GRANT, NOT_ROOT(2), 'ruled'],
+      ['a double-quoted \\x escape', 'extra_stores: ["\\x67"]\n', GRANT, MISSING('x67'), 'ruled'],
+      ['a double-quoted \\u escape', 'extra_stores: ["\\u0067"]\n', GRANT, MISSING('u0067'), 'ruled'],
+      ['a flow sequence over three lines', 'extra_stores: [\n  g\n]\n', GRANT, INVALID('an unterminated flow sequence'), 'ruled'],
+      ['a double-quoted key', '"extra_stores": [g]\n', GRANT, MAPPING, 'ruled'],
+      ['a single-quoted key', "'extra_stores': [g]\n", GRANT, MAPPING, 'ruled'],
+      ['an explicit key', '? extra_stores\n: [g]\n', GRANT, MAPPING, 'ruled'],
+      ['a comment right after the closing bracket', 'extra_stores: [g]#c\n', GRANT, INVALID('an unterminated flow sequence'), 'ruled'],
+      ['a byte order mark', '\ufeffextra_stores: [g]\n', GRANT, MAPPING, 'ruled'],
+      ['a trailing comma in a flow sequence', 'extra_stores: [g, ]\n', GRANT, NOT_A_LIST, 'ruled'],
+      ['a block item on the next line', 'extra_stores:\n-\n  g\n', GRANT, INVALID('a null item in a block sequence is outside this reader'), 'ruled'],
+      ['a folded scalar item', 'extra_stores:\n- >-\n  g\n', GRANT, NOT_ROOT(3), 'ruled'],
+      // Both refuse, in different sentences (or, for `\t`, after reading a different path).
+      ['a !!str int item', 'extra_stores:\n- !!str 3\n', MISSING('3'), MISSING('!!str 3'), 'ruled'],
+      ['a local tag', 'extra_stores: !foo [g]\n', INVALID("could not determine a constructor for the tag '!foo'"), NOT_A_LIST, 'ruled'],
+      ['a second document', 'extra_stores: [g]\n---\nother: 1\n', INVALID('expected a single document in the stream'), NOT_ROOT(2), 'ruled'],
+      ['a literal block scalar item', 'extra_stores:\n- |\n  g\n', `MemoryValidationError: granted store does not exist: ${G}`, NOT_ROOT(3), 'ruled'],
+      ['a literal block scalar value', 'extra_stores: |\n  g\n', NOT_A_LIST, NOT_ROOT(2), 'ruled'],
+      ['a double-quoted \\t escape', 'extra_stores:\n- "g\\t"\n', MISSING('g\t'), MISSING('gt'), 'ruled'],
+      ['a plain item over two lines', 'extra_stores:\n- g\n  h\n', MISSING('g h'), NOT_ROOT(3), 'ruled'],
+      ['a !!binary item', 'extra_stores:\n- !!binary Zw==\n', NOT_A_LIST, MISSING('!!binary Zw=='), 'ruled'],
+      ['a list as a key', '[a]: 1\nextra_stores: [g]\n', INVALID('while constructing a mapping'), MAPPING, 'ruled'],
+      ['an empty flow item', 'extra_stores: [, g]\n', INVALID('while parsing a flow node'), NOT_A_LIST, 'ruled'],
+      ['a nested flow sequence', 'extra_stores: [[g]]\n', NOT_A_LIST, INVALID('a nested sequence is outside this reader'), 'ruled'],
+      ['a nested block sequence', 'extra_stores:\n- - g\n', NOT_A_LIST, MISSING('- g'), 'ruled'],
+      ['a NUL character', 'extra_stores: [g\u0000]\n', INVALID('unacceptable character #x0000: special characters are not allowed'), "OSError: [Errno 0] ERR_INVALID_ARG_VALUE: The argument 'path' must be a string, Uint8Array, or URL without null bytes.", 'ruled'],
+      // NOT this family: python raises what `load_grants` never caught (UNRULED, above).
+      ['an impossible date under another key', 'k: 2001-02-30\nextra_stores: [g]\n', 'ValueError: day is out of range for month', GRANT, 'unruled'],
+      ['an impossible date as a key', '2001-02-30: x\nextra_stores: [g]\n', 'ValueError: day is out of range for month', GRANT, 'unruled'],
+      ['an impossible hour', 'k: 2001-02-03 25:00:00\nextra_stores: [g]\n', 'ValueError: hour must be in 0..23', GRANT, 'unruled'],
+      ['an int of 5000 digits', `k: ${'9'.repeat(5000)}\nextra_stores: [g]\n`, 'ValueError: Exceeds the limit (4300 digits) for integer string conversion: value has 5000 digits; use sys.set_int_max_str_digits() to increase the limit', GRANT, 'unruled'],
+      ['an impossible date as a grant', 'extra_stores:\n- 2001-02-30\n', 'ValueError: day is out of range for month', NOT_A_LIST, 'unruled'],
+      ['a decoded NUL in a grant', 'extra_stores: ["a\\0b"]\n', 'ValueError: lstat: embedded null character in path', MISSING('a0b'), 'unruled'],
+      ['a flow sequence 1000 deep', `extra_stores: ${'['.repeat(1000)}${']'.repeat(1000)}\n`, 'RecursionError: maximum recursion depth exceeded', INVALID('a nested sequence is outside this reader'), 'unruled'],
+    ];
+    const bitOf = (text) => (text.startsWith('grants:') ? 'grants' : text.startsWith('MemoryValidationError: ') ? 'refuses' : `raises ${text.split(':')[0]}`);
+    // A literal compares the first line (PyYAML's diagnostics carry a rendered snippet below it),
+    // and Node's NUL message up to the path it quotes (cut by Node at 128 UTF-16 units).
+    const head = (text) => text.split('\n')[0].split(' Received ')[0];
+    const beds = { py: [], node: [] };
+    FAMILY.forEach(([, text], k) => {
+      for (const side of ['py', 'node']) {
+        const bed = join(scratch, 'j895b-config', side, String(k));
+        materialise(bed, merge(storeSpec('.bantamkit/memory'), { dirs: ['.bantamkit/g'] }));
+        writeFileSync(join(bed, '.bantamkit', 'config.yaml'), text);
+        beds[side].push(bed);
+      }
+    });
+    const pyAll = ctx.runPython(REF, {
+      op: 'grants',
+      stores: beds.py.map((bed) => b64(join(bed, '.bantamkit', 'memory'))),
+    }, { HOME: join(scratch, 'probe-home'), BANTAMKIT_MEMORY_DIR: '' }).grants;
+    const rendered = { py: [], node: [] };
+    FAMILY.forEach(([label, , , , family], k) => {
+      const py = scrub(Array.isArray(pyAll[k]) ? `grants: ${pyAll[k].map(unb64).join(' | ')}` : answer(pyAll[k]), beds.py[k]);
+      let nd;
+      try {
+        nd = `grants: ${layers.loadGrants(join(beds.node[k], '.bantamkit', 'memory')).join(' | ')}`;
+      } catch (e) {
+        nd = `${e?.name}: ${e?.message}`;
+      }
+      nd = scrub(nd, beds.node[k]);
+      rendered.py.push(head(py));
+      rendered.node.push(head(nd));
+      cases.push({
+        name: family === 'ruled'
+          ? `RULED: config outside the reader's language — ${label}`
+          : `ruling: UNRULED DIVERGENCE (J89-5b) load_grants — ${label}`,
+        kind: 'string',
+        expected: py,
+        actual: nd,
+        ruling: family === 'ruled'
+          ? 'J89-5b, the orchestrator\'s ruling on J89-5\'s stop (option b): Python keeps PyYAML ' +
+            'for the grants config, as #315 kept it for fact files, and Node keeps its own reader ' +
+            '(grantconfig.ts), which implements no tag, anchor, alias, merge key, directive, ' +
+            'second document, flow mapping, escape, block scalar or multi-line flow and refuses ' +
+            'or reads literally what it does not implement. A document outside that language may ' +
+            'be granted on one side and refused on the other; matching would mean porting ' +
+            'PyYAML\'s scanner and composer into the package. docs/porting.md, divergence table.'
+          : 'UNRULED DIVERGENCE (J89-5b): not ruled in docs/porting.md and not fixed; CPython\'s ' +
+            'yaml.safe_load (or Path.resolve) raises an exception load_grants never caught, so ' +
+            'python raises it raw where node grants or refuses by name. Generation keeps ' +
+            'python\'s answer; reported to the orchestrator.',
+      });
+    });
+    FAMILY.forEach(([label, , pyWant, nodeWant], k) => {
+      cases.push({
+        name: `J89-5b outcome bit per side: ${label}`,
+        kind: 'json',
+        expected: { python: bitOf(pyWant), node: bitOf(nodeWant) },
+        actual: { python: bitOf(rendered.py[k]), node: bitOf(rendered.node[k]) },
+      });
+    });
+    for (const [side, i, who] of [['py', 2, 'python'], ['node', 3, 'node']]) {
+      cases.push({
+        name: `LITERAL: J89-5b ${who}: load_grants over the config family, every answer`,
+        kind: 'json',
+        expected: FAMILY.map((row) => [row[0], row[i]]),
+        actual: FAMILY.map((row, k) => [row[0], rendered[side][k]]),
+      });
+    }
+    notes.push(`J89-5b: ${FAMILY.length} config documents outside the reader's language, each ruled (or UNRULED) with an outcome-bit companion; per-side literals`);
+  }
+
   {
     // #316 G3 (J89-1): memory/layers's constants and pure functions, compared directly.
     const g3 = await g3Cases(ctx, 'layers');

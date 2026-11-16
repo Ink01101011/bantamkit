@@ -605,3 +605,80 @@ print(refused)
         "[True, True, True, True, True, True]"
     );
 }
+
+/// J89-5b (#316 G3 U3, `memory/layers.ts`): the adapters layers.ts imports. `firstTokenTab` and
+/// `parseConfigDocument` (grantconfig.ts) are `yaml.safe_load` by the orchestrator's ruling
+/// (Python keeps PyYAML for the config): the tab positions are held to what Node v26.13.0's
+/// `firstTokenTab` printed for job65's #158 battery (the two agree there; `--suite store` pins the
+/// sentences), the document shapes to what the compiled validator reads, a YAMLError to `str(e)`,
+/// and an error `load_grants` never caught (`ValueError` from an impossible implicit timestamp)
+/// raised out of `firstTokenTab`, outside the compiled `try`. The pyfs rows are held to Node's
+/// `pyfs.ts` over the same bed (`HOME` the bed; `link` -> `real`).
+#[test]
+fn j89_5b_layers_adapters_answer_like_the_reference() {
+    let dir = scratch("j89-5b-adapters");
+    package(&dir, &[]);
+    let bed = dir.join("bed");
+    std::fs::create_dir_all(bed.join("real").join("sub")).unwrap();
+    std::fs::write(bed.join("afile"), "x\n").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(bed.join("real"), bed.join("link")).unwrap();
+    let got = run_python(
+        r###"import os, sys
+sys.path.insert(0, sys.argv[1])
+from pkg import _ts2py_runtime as rt, _ts2py_adapters as A
+bed = os.path.realpath(sys.argv[2])
+os.environ["HOME"] = bed
+docs = ['extra_stores:\n\t- ../../other\n', 'extra_stores:\t[../../other]\n', 'extra_stores:\n  -\t../../other\n', 'extra_stores:\n  \t- ../../other\n', 'extra_stores: []\n\tother: 1\n', 'extra_stores: []\t# none\n', 'extra_stores: []\n\t\n', '# a\tcomment\nextra_stores:\n  - ../../other\n', "extra_stores:\n  - '../../other'\n  - \"../../other\"\n", 'a: 1\n']
+print(rt._js_json_stringify([A.first_token_tab(d) for d in docs]))
+def shape(text):
+    try:
+        A.first_token_tab(text)
+        doc = A.parse_config_document(text)
+    except rt._JsError as e:
+        return ["error", e.message.splitlines()[0]]
+    if doc["kind"] != "mapping":
+        return doc
+    return {"kind": "mapping", "entries": [[k, v] for k, v in doc["entries"]]}
+texts = ["", "# only\n", "- a\n", "just a scalar\n", "a: 1\n", "extra_stores: [a, 3, null, [b], 'c']\n", "extra_stores: x\n", "extra_stores:\n", "1: [a]\nnull: [b]\nextra_stores: &x [g]\nalias: *x\n", "extra_stores: [unclosed\n", "a: 1\na: 2\n"]
+print(rt._js_json_stringify([shape(t) for t in texts]))
+try:
+    A.first_token_tab("k: 2001-02-30\n")
+    print("answered")
+except ValueError as e:
+    print("ValueError:", e)
+print(rt._js_json_stringify([A.py_is_absolute("/a"), A.py_is_absolute("a"), A.py_is_absolute(""), A.py_expanduser("~/x") == bed + "/x", A.py_expanduser("a//b/"), A.py_resolve(bed + "/link/sub/..").replace(bed, "<B>"), A.py_resolve(bed + "/nope/x").replace(bed, "<B>"), A.py_stat_is_dir(bed + "/real"), A.py_stat_is_dir(bed + "/afile"), A.py_is_file(bed + "/afile"), A.py_is_file(bed + "/real"), A.py_is_file(bed + "/missing"), A.py_cwd() == os.getcwd()]))
+refused = []
+for call in (lambda: A.first_token_tab(b"a: 1"), lambda: A.parse_config_document(None)):
+    try:
+        call()
+        refused.append("answered")
+    except TypeError as e:
+        refused.append(str(e).startswith("ts2py: ") and "outside the subset" in str(e))
+print(refused)
+"###,
+        &[&dir, &bed],
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    let mut lines = got.lines();
+    // Node: `[[2,1],[1,14],[2,4],[2,3],[2,1],[1,17],[2,1],null,null,null]`.
+    assert_eq!(
+        lines.next().unwrap(),
+        "[[2,1],[1,14],[2,4],[2,3],[2,1],[1,17],[2,1],null,null,null]"
+    );
+    assert_eq!(
+        lines.next().unwrap(),
+        r###"[{"kind":"null"},{"kind":"null"},{"kind":"other"},{"kind":"other"},{"kind":"mapping","entries":[["a",{"kind":"other","value":null}]]},{"kind":"mapping","entries":[["extra_stores",{"kind":"seq","items":[{"kind":"str","value":"a"},{"kind":"other","value":null},{"kind":"other","value":null},{"kind":"other","value":null},{"kind":"str","value":"c"}]}]]},{"kind":"mapping","entries":[["extra_stores",{"kind":"other","value":null}]]},{"kind":"mapping","entries":[["extra_stores",{"kind":"other","value":null}]]},{"kind":"mapping","entries":[["extra_stores",{"kind":"seq","items":[{"kind":"str","value":"g"}]}],["alias",{"kind":"seq","items":[{"kind":"str","value":"g"}]}]]},["error","while parsing a flow sequence"],{"kind":"mapping","entries":[["a",{"kind":"other","value":null}]]}]"###
+    );
+    assert_eq!(
+        lines.next().unwrap(),
+        "ValueError: day is out of range for month"
+    );
+    // Node's pyfs.ts over the same bed: `[true,false,false,"<HOME>/x","a/b","<B>/real",
+    // "<B>/nope/x",true,false,true,false,false]` (the last, `pyCwd`, is `process.cwd()`).
+    assert_eq!(
+        lines.next().unwrap(),
+        r###"[true,false,false,true,"a/b","<B>/real","<B>/nope/x",true,false,true,false,false,true]"###
+    );
+    assert_eq!(lines.next().unwrap(), "[True, True]");
+}

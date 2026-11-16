@@ -129,6 +129,14 @@ __all__ = [
     "today_local",
     "write_file_sync",
     "write_sync",
+    "first_token_tab",
+    "parse_config_document",
+    "py_cwd",
+    "py_expanduser",
+    "py_is_absolute",
+    "py_is_file",
+    "py_resolve",
+    "py_stat_is_dir",
 ]
 
 
@@ -1966,3 +1974,116 @@ def write_file_sync(path, data, options=_JS_UNDEFINED, *rest):
     finally:
         _os.close(fd)
     return _JS_UNDEFINED
+
+
+# ------------------------------------------------------------ J89-5b (#316 G3 U3): layers
+#
+# The grants config is read by PyYAML, as `load_grants` always read it: the orchestrator's ruling
+# on J89-5's stop (option b), following the owner's #315 ruling for fact files. `firstTokenTab`
+# and `parseConfigDocument` (runtime-ts/src/memory/grantconfig.ts) are the port's reduction of
+# `yaml.safe_load`; here they are `yaml.safe_load` itself.
+
+#: PyYAML's own wording for a tab where a token would start (job65/#158), matched exactly as the
+#: reference's `_TAB_PROBLEM` is, so a PyYAML that rewords it falls back to the generic sentence.
+_TAB_PROBLEM = "found character '\\t' that cannot start any token"
+
+# One text's `yaml.safe_load` outcome, `(text, value, error)`: `loadGrants` asks `firstTokenTab`
+# and then `parseConfigDocument` of the same text, and the reference loads it once.
+_GRANT_CONFIG = []
+
+
+def _grant_config_load(text):
+    if _GRANT_CONFIG and _GRANT_CONFIG[0][0] == text:
+        return _GRANT_CONFIG[0][1], _GRANT_CONFIG[0][2]
+    import yaml
+
+    value, error = None, None
+    try:
+        value = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        error = e
+    _GRANT_CONFIG[:] = [(text, value, error)]
+    return value, error
+
+
+def first_token_tab(text, *_):
+    """`firstTokenTab` (grantconfig.ts): the 1-based `[line, column]` of the tab PyYAML refused,
+    read off its `ScannerError`'s mark as the reference's `_token_tab` reads it, or null. An
+    exception that is not a `yaml.YAMLError` (the reference never caught one) is raised here, out
+    of `loadGrants`, as it left `load_grants`."""
+    if not isinstance(text, str):
+        raise TypeError("ts2py: firstTokenTab of anything but a string is outside the subset")
+    import yaml.scanner
+
+    try:
+        _, error = _grant_config_load(text)
+    except BaseException:
+        _GRANT_CONFIG.clear()
+        raise
+    if not isinstance(error, yaml.scanner.ScannerError) or error.problem != _TAB_PROBLEM:
+        return None
+    mark = error.problem_mark
+    if mark is None:
+        return None
+    return [mark.line + 1, mark.column + 1]
+
+
+def _config_item(item):
+    if isinstance(item, str):
+        return {"kind": "str", "value": item}
+    return {"kind": "other", "value": None}
+
+
+def parse_config_document(text, *_):
+    """`parseConfigDocument` (grantconfig.ts): `yaml.safe_load(text)` as the `ConfigDocument` the
+    compiled validator reads (the adapter row says how each shape converts); a `yaml.YAMLError` is
+    a `_JsError` whose message is `str(e)`, the text `load_grants` interpolates."""
+    if not isinstance(text, str):
+        raise TypeError("ts2py: parseConfigDocument of anything but a string is outside the subset")
+    value, error = _grant_config_load(text)
+    _GRANT_CONFIG.clear()
+    if error is not None:
+        raise _JsError(str(error))
+    if value is None:
+        return {"kind": "null"}
+    if not isinstance(value, dict):
+        return {"kind": "other"}
+    entries = _JsMap()
+    for key, entry in value.items():
+        if type(key) is not str:
+            continue
+        if isinstance(entry, list):
+            entries.set(key, {"kind": "seq", "items": [_config_item(i) for i in entry]})
+        else:
+            entries.set(key, {"kind": "other", "value": None})
+    return {"kind": "mapping", "entries": entries}
+
+
+def py_is_file(path, *_):
+    """`pyIsFile` (pyfs.ts): `Path.is_file()`, which it ports."""
+    return _pathlib.Path(path).is_file()
+
+
+def py_resolve(path, *_):
+    """`pyResolve` (pyfs.ts): `str(Path(path).resolve())`, which it ports (`strict=False`)."""
+    return str(_pathlib.Path(path).resolve())
+
+
+def py_stat_is_dir(path, *_):
+    """`pyStatIsDir` (pyfs.ts): `stat.S_ISDIR(os.stat(path).st_mode)`, unguarded."""
+    return _stat.S_ISDIR(_os.stat(_pathlib.Path(path)).st_mode)
+
+
+def py_cwd(*_):
+    """`pyCwd` (pyfs.ts): `str(Path.cwd())`."""
+    return str(_pathlib.Path.cwd())
+
+
+def py_expanduser(path, *_):
+    """`pyExpanduser` (pyfs.ts): `str(Path(path).expanduser())`, its `RuntimeError` included."""
+    return str(_pathlib.Path(path).expanduser())
+
+
+def py_is_absolute(path, *_):
+    """`pyIsAbsolute` (pyfs.ts): `PurePath(path).is_absolute()`."""
+    return _pathlib.PurePath(path).is_absolute()

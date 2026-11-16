@@ -611,3 +611,39 @@ measure apart from the save it sits in):
   failure is (`asPyOSError`), so the message is CPython's `str(e)` on both sides. No caller reads
   it: Node's component answers `WRITE_FAILED`, and the Python shim restates the error as the
   `OSError` component.py catches.
+
+## J89-5b rules (#316 G3 U3: `memory/layers.ts` generated, the config read kept on PyYAML)
+
+`layers.ts` joins the G1/G2/G3 call and is shipped as `_generated/layers.py` (the shim is
+`bantamkit.memory.layers`). No construct and no runtime helper was added: nine adapter rows and
+three TS refactors.
+
+**The config reader is not compiled, by ruling.** J89-5 stopped on it: layers.ts read `config.yaml`
+with its own reduction of `yaml.safe_load`, so compiling it would have moved Python off PyYAML. The
+orchestrator ruled option (b): Python keeps PyYAML for the config, as #315's owner ruling kept it
+for fact files. The reader (`firstTokenTab`, `parseConfigDocument` and their helpers) moved, byte
+for byte, into `runtime-ts/src/memory/grantconfig.ts`, which is not in the call; layers.ts imports
+the two functions, and those imports are adapter rows onto PyYAML. Where the two readers answer a
+document differently the difference is ruled (`docs/porting.md`, `RULED: config outside the
+reader's language — ...` in `--suite recall-strings`).
+
+| TypeScript | Python | Why it is the same function |
+|---|---|---|
+| `firstTokenTab` (`memory/grantconfig.ts`) | `yaml.safe_load(text)` (one load per text, shared with the next row); the 1-based `[line, column]` of the mark of a `ScannerError` whose problem is exactly `found character '\t' that cannot start any token`, else null; an exception that is not a `yaml.YAMLError` raised from here | Python is the reference (the ruling): it is the reference's `_token_tab`. Raising a non-YAML error here, outside the compiled `try`, makes it leave `loadGrants` as it left `load_grants` (which caught only `YAMLError`, `OSError`, `UnicodeDecodeError`): `k: 2001-02-30` is CPython's `ValueError` on both Pythons |
+| `parseConfigDocument` (`memory/grantconfig.ts`) | `yaml.safe_load(text)` converted: `None` `{kind: 'null'}`; a dict `{kind: 'mapping', entries}`, a Map of its `str` keys only (`data.get('extra_stores')` matches no other); a list entry `{kind: 'seq', items}`, each `str` item `{kind: 'str', value}` and any other `{kind: 'other', value: null}`; any other entry or document `{kind: 'other'...}`; a `yaml.YAMLError` a `_JsError` with `str(e)` | Python is the reference: the compiled validator asks exactly the reference's questions (`is None`, `isinstance(dict)`, `isinstance(list)`, `all(isinstance(p, str))`) of the converted value, and interpolates `str(e)` as `{e}` |
+| `pyIsFile`, `pyResolve`, `pyStatIsDir`, `pyCwd`, `pyExpanduser`, `pyIsAbsolute` (`memory/pyfs.ts`) | `Path.is_file()`, `str(Path.resolve())`, `S_ISDIR(os.stat().st_mode)`, `str(Path.cwd())`, `str(Path.expanduser())`, `PurePath.is_absolute()`, of the path as given (no `_store_path`: the reference called pathlib on it directly, so a NUL in a granted path is still CPython's `ValueError` from `resolve`) | Python is the reference: each is the pathlib call its doc comment names |
+| `pyRepr` (`memory/pyfs.ts`) | `py_repr` (the J87-3 row) | pyfs.ts re-exports pysem.ts's `pyRepr` |
+
+Measured: `g3_store.rs` `j89_5b_layers_adapters_answer_like_the_reference` (the #158 tab positions
+equal to Node's `firstTokenTab`; the document shapes; the `ValueError`; the pyfs rows equal to
+Node's `pyfs.ts` over one bed; a non-string refused). A 59-document battery of YAML features
+(anchors, aliases, merge keys, tags, directives, multi-document streams, block and folded scalars,
+flow mappings, escapes, a BOM, a NUL, an impossible timestamp, deep nesting) gave byte-identical
+`load_grants` answers on the generated Python and on the hand-written module of `32831cff`.
+
+TS refactors (Node's answers unchanged, `npm test` green):
+- the reader moved to `grantconfig.ts` (above);
+- `data.entries` is read through `const mapping: ConfigMapping = data`, a local interface whose
+  `entries` is a data field (J87-12), not `Map.prototype.entries`;
+- `e.strerror` (twice) is `pyOSErrorStrerror(e)` and the read failure's `e.message` is
+  `pyOSErrorText(e)` for a `PyOSError` (J89-4b): CPython's `strerror` and `str(e)` on both sides.

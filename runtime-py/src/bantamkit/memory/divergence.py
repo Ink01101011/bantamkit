@@ -338,6 +338,7 @@ class DivergenceReport:
 ACCOUNTED_WRITER_ENV: frozenset[str] = frozenset({MEMORY_DIR_ENV})
 
 _ENV_NAME_RE = re.compile(r"BANTAMKIT_[A-Z0-9_]+")
+_GENERATED_IMPORT_RE = re.compile(r"^from bantamkit\._generated import (\w+) as ", re.MULTILINE)
 
 
 def writer_source_files() -> list[Path]:
@@ -348,7 +349,18 @@ def writer_source_files() -> list[Path]:
     own knob, not the writer's, and registering it against itself would prove nothing.
     """
     here = Path(__file__).resolve()
-    return sorted(p for p in here.parent.glob("*.py") if p.name != here.name)
+    shims = sorted(p for p in here.parent.glob("*.py") if p.name != here.name)
+    # #316 (J89-5b): a module that is a SHIM over a generated one (`from bantamkit._generated
+    # import layers as _g`) resolves through that generated body, so the body is scanned too.
+    # Since `memory/layers.py` became one, `BANTAMKIT_MEMORY_DIR` is spelled in code only in
+    # `_generated/layers.py`, and a lever added to `layers.ts` lands there.
+    generated = here.parent.parent / "_generated"
+    bodies = {
+        generated / f"{stem}.py"
+        for p in shims
+        for stem in _GENERATED_IMPORT_RE.findall(p.read_text(encoding="utf-8"))
+    }
+    return shims + sorted(b for b in bodies if b.is_file())
 
 
 def env_names_in_source(source: str) -> frozenset[str]:
@@ -365,6 +377,16 @@ def env_names_in_source(source: str) -> frozenset[str]:
         node.value
         for node in ast.walk(tree)
         if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+    }
+    # A generated module's `__all__` lists its NAMES (`"BANTAMKIT_GITIGNORE_TEXT"` in
+    # `_generated/store.py`), which are not environment variables either (J89-5b).
+    prose |= {
+        constant
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets)
+        for constant in ast.walk(node.value)
+        if isinstance(constant, ast.Constant)
     }
     return frozenset(
         node.value

@@ -212,7 +212,7 @@ fn imports_resolve_through_compiled_modules_or_adapters_only() {
     assert!(modules[0].code.contains("from .b import helper\n"));
 
     let lines = ts2py::compile(
-        "import { pyRepr } from './pyfs.js';\nimport { x } from 'node:fs';\nexport const y = pyRepr;\n",
+        "import { PyRuntimeError } from './pyfs.js';\nimport { x } from 'node:fs';\nexport const y = PyRuntimeError;\n",
         "runtime-ts/src/memory/c.ts",
         &ts2py::Options::default(),
     )
@@ -220,7 +220,8 @@ fn imports_resolve_through_compiled_modules_or_adapters_only() {
     assert_eq!(
         lines,
         vec![
-            "runtime-ts/src/memory/c.ts:1:10: unsupported import of pyRepr from ./pyfs.js: no compiled module and no declared adapter: pyRepr",
+            // J89-5b declared pyfs.ts's `pyRepr` (layers.ts imports it); `PyRuntimeError` is not.
+            "runtime-ts/src/memory/c.ts:1:10: unsupported import of PyRuntimeError from ./pyfs.js: no compiled module and no declared adapter: PyRuntimeError",
             "runtime-ts/src/memory/c.ts:2:10: unsupported import of x from node:fs: no compiled module and no declared adapter: x",
         ]
     );

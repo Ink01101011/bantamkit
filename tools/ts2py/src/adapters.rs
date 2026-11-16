@@ -814,6 +814,70 @@ pub const ADAPTERS: &[Adapter] = &[
         kind: AdapterKind::Function,
         why: "Node builtin, `(path, string, 'utf8')` only: opened `w` (O_TRUNC | O_CREAT | O_WRONLY, mode 0o666 under the umask, binary on Windows) and every byte of the string's UTF-8 written (Node loops until it is; a lone surrogate is U+FFFD's three bytes, as Node's encoder writes it), the path under the G2 path policy. The flags and mode are what `Path.write_text` opens with, which the hand-written queries module used for the sidecar and the term cache (tests/g3_store.rs `j89_5a_*`).",
     },
+    // J89-5b (#316 G3 U3: memory/layers). Every import of layers.ts that is not compiled.
+    Adapter {
+        module: Some("runtime-ts/src/memory/grantconfig.ts"),
+        name: "firstTokenTab",
+        py_name: "first_token_tab",
+        kind: AdapterKind::Function,
+        why: "Python is the reference, by the orchestrator's ruling on J89-5's stop (option b: Python keeps PyYAML for the config, as #315 kept it for fact files). `firstTokenTab` is the port's search for the byte PyYAML refuses with `found character '\\t' that cannot start any token` (its doc comment); the reference reads that byte off the error, `_token_tab`: a `ScannerError` with exactly that problem and a mark. The adapter runs `yaml.safe_load` (once per text, shared with `parseConfigDocument`) and answers that mark's 1-based `[line, column]`, or null. An exception `load_grants` never caught (anything but `yaml.YAMLError`, e.g. CPython's `ValueError` from an implicit timestamp that is no date) is raised here, outside the compiled `try`, so it leaves `loadGrants` as it left `load_grants`.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/grantconfig.ts"),
+        name: "parseConfigDocument",
+        py_name: "parse_config_document",
+        kind: AdapterKind::Function,
+        why: "Python is the reference (the ruling above): `parseConfigDocument` is `yaml.safe_load` reduced to the three answers `load_grants` asks (its doc comment). The adapter is `yaml.safe_load` of the same text, its value converted to the `ConfigDocument` the compiled validator reads: `None` is `{kind: 'null'}`, a dict `{kind: 'mapping', entries}` (a Map of its `str` keys; `data.get('extra_stores')` matches no other key), anything else `{kind: 'other'}`; an entry that is a list is `{kind: 'seq', items}` with each `str` item `{kind: 'str', value}` and any other `{kind: 'other', value: null}` (`isinstance(p, str)` is the one question asked of an item), any other entry `{kind: 'other', value: null}`. A `yaml.YAMLError` is a `_JsError` whose message is `str(e)`, the text the reference interpolates (`--suite recall-strings` config battery and `RULED: config outside the reader's language`).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyIsFile",
+        py_name: "py_is_file",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyIsFile` is `Path.is_file()` (its doc comment), raising for EACCES as CPython 3.12 does.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyRepr",
+        py_name: "py_repr",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: pyfs.ts re-exports pysem.ts's `pyRepr`, CPython's `repr(str)` (the J87-3 row).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyResolve",
+        py_name: "py_resolve",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyResolve` is `Path.resolve()` with `strict=False` (its doc comment: `posixpath.realpath`, then pathlib's ELOOP check), so `str(Path(p).resolve())`.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyStatIsDir",
+        py_name: "py_stat_is_dir",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyStatIsDir` is `stat.S_ISDIR(os.stat(p).st_mode)`, unguarded (its doc comment; `_pinned_store`'s check).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyCwd",
+        py_name: "py_cwd",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyCwd` is `Path.cwd()`, `os.getcwd()` as a string (`_resolved_base`).",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyExpanduser",
+        py_name: "py_expanduser",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyExpanduser` is `Path(raw).expanduser()` (its doc comment), so `str(Path(raw).expanduser())`, its `RuntimeError` included; `~<another user>` is the ruled difference (`RULED: ~someone-else needs a passwd lookup`), and Python keeps its passwd lookup.",
+    },
+    Adapter {
+        module: Some("runtime-ts/src/memory/pyfs.ts"),
+        name: "pyIsAbsolute",
+        py_name: "py_is_absolute",
+        kind: AdapterKind::Function,
+        why: "Python is the reference: `pyIsAbsolute` is `PurePath.is_absolute()` (its doc comment).",
+    },
 ];
 
 /// The adapter for `name` imported from `module` (a normalised `.ts` path), if one is declared.

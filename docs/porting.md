@@ -356,6 +356,7 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | `build_id` | hashes the executing tree; two runtimes, two trees. `assets_digest` **is** identical (read it off `build_identity` on either server, or `_assets_fingerprint()`; this row no longer quotes a digest, because each of the three it carried — `sha256:b03141bf…` at #75, `d47dcf4b…` over 87 files, `9e66e89a…` over 93 — went stale by the same route: the pack changed and the row did not; job67 J67-9) and that is the one that matters — but only because both walks now EXCLUDE `__pycache__`. That is a precondition, not a given: the pack ships eleven `.py` fixtures, `pip install` byte-compiles them, and on the published 0.27.0 artifacts the wheel answered `sha256:fa8372f6…` over 98 files against npm's `sha256:d47dcf4b…` over 87 while this row already claimed they were identical. Gated per side by `build_identity: a __pycache__ does not move assets_digest` in `tools/conformance/suites/wire.mjs` — per side, because pointed at one polluted pack both runtimes moved together and the cross-runtime comparison stayed green. |
 | the event log's build identity | **not a difference — an omission, for this reason.** A `build_id` hashes the executing tree and the two runtimes are two trees (row above), so no build identity is a field in an event-log record at all; the `build_identity` record carries the COUNT of underivable fields instead. Same for `sessionId` (the server cannot observe it), pids and absolute paths. See [eventlog.md](eventlog.md). |
 | the YAML scanner cases | the codec has no scanner; 5 shapes ruled, `!` filed alone. **#120 adds 8:** an anchor, `!!str`, a flow mapping, an empty flow mapping, a nested flow sequence, a flow-sequence pair, a flow sequence over two lines and an anchored sequence item are READ by PyYAML and REFUSED by the port with a named `FactParseError` — reading them means porting the scanner, anchors and the composer. A refusal names the file and writes nothing, which is the point: the plain-text guess it replaced was stamped back to disk. Ruled in `tools/conformance/suites/codec.mjs` as `ruling: #120 node refuses where python reads: …`, with the refusal-bit companions as per-side literals (`#120 per side: the ruled inputs — python reads every one` / `— node refuses every one, with a named FactParseError`), because the two bits DIFFER and a side-to-side bit could never be green. Teeth: forcing the ruled answers equal reddened all 8 as `STALE RULING`; dropping `&` from the refused set left every ruling green and reddened the node literal (1 failure). **job67 (J67-3), user ruling 2026-10-15 on #120's remainder: these eight are the FINAL answer** — the PyYAML scanner is not ported, and the refusal is by name. What the ruling changed is what a refusal COSTS: a `memory_save` on Node no longer refuses the whole store because one fact file is one of these shapes. Both runtimes' `save` now skip any fact file they cannot read, name it (`SaveResult.skipped`, and a closing paragraph on the reply: `N fact file(s) could not be read and was/were skipped; the duplicate check read every other fact:` + `[project] <the store's sentence>`), and land; the one file a save never skips is the one it would WRITE (`<sentence>; saving '<name>' would overwrite that file, so nothing was saved -- repair it or move it out of facts/ first`). So over a store holding an anchored fact the save lands on both sides, Python reads the fact and Node names it skipped, and the `index.md` each rebuilds differs by that one line — ruled in `tools/conformance/suites/store.mjs` as `ruling: #120 save past a file only python reads — the answers`, with the refusal bit (`— the save lands on both sides`) and the written fact's bytes compared unruled and each side's skip pinned as a literal. Blank lines, lines of spaces and comment lines inside a block sequence — and `links: ` / `links: # c` before one — were NOT a ruled shape to keep: they are READ now, as PyYAML reads them, compared in `codec.mjs` as read-alike cases and a second 1500-frontmatter seeded corpus where node must neither guess nor refuse. **Since #315 (J86-3) runtime-py's store reads through the code compiled from the port's own `factfile.ts` first** (*Generated modules*), and that code refuses these eight shapes by the same names; `memory/factcodec.py` then reads the file with `yaml.safe_load`, exactly as before, so python still reads every one and this row's answers are unchanged (`ts2py-codec`'s `node-refuses` class: runtime-py reads each, `py=before` holds it equal to the pre-#315 read). |
+| the grants config (`config.yaml`) over a document outside the port reader's language (J89-5b) | **Python reads it with PyYAML; Node with its own reduced reader, and the two may grant and refuse differently.** The orchestrator's ruling on J89-5's stop (option b), after the owner's #315 ruling for fact files: `memory/layers` is generated, and the config read stays on `yaml.safe_load` on the Python side (the `firstTokenTab` / `parseConfigDocument` adapters; Node's reader is `runtime-ts/src/memory/grantconfig.ts`). That reader implements no tag, anchor, alias, merge key, directive, second document, document end, flow mapping, escape, block scalar or flow sequence over lines, and refuses (or reads literally) what it does not implement; matching would mean porting PyYAML's scanner and composer. J89-5 found the first: `extra_stores: &a [g]` is a grant on Python and `extra_stores must be a list of paths` on Node. J89-5b's scan found 41 in the family (28 where Python grants and Node refuses, 13 where both refuse in different sentences). Each: a `RULED: config outside the reader's language — <document>` case in `tools/conformance/suites/recall-strings.mjs`, a non-ruled `J89-5b outcome bit per side: <document>` companion (the grant/refuse bit of each side against a literal, since a ruling only proves the two still differ) and the per-side literals `LITERAL: J89-5b python|node: load_grants over the config family, every answer`. The older `RULED: a config outside the reader's language, and PyYAML's scanner diagnostics` (the wording after the identical prefix) stands. NOT in this family, and not ruled: seven documents where CPython raises out of `load_grants` (an impossible implicit timestamp, a 5,000-digit int, a decoded NUL, nesting 1,000 deep), pinned `UNRULED DIVERGENCE (J89-5b)`; see *The layers* under *Generated modules*. |
 | the native memory mirror over a frontmatter only PyYAML reads (#228) | **the reference mirrors the file; the port skips it as `frontmatter`.** The mirror (job74) parses a native fact file with each runtime's own frontmatter reader: `yaml.safe_load` on the reference, `parseFrontmatter` on the port. The port reads the language the store emits plus the hand-written shapes #120 and #219 added, and refuses everything else by name — the eight #120 shapes (a flow mapping such as `metadata: {type: user}`, an anchor, …), a block sequence indented under its key (`links:\n  - a`), and any list or mapping two levels down (the memory-keeper shape `metadata:\n  links:\n    - a`, measured in 2 of 460 real native files on this machine, 2026-10-22). PyYAML reads all of them, so the reference saves a fact the port logs as `mirror-skipped` / `frontmatter`. Agreeing would mean porting the scanner, which the user's #120 ruling of 2026-10-15 declines, or making the reference drop a fact it can read. Nothing is written into the native directory on either side and both exit 0 with nothing printed. Ruled in `tools/conformance/suites/hooks.mjs` as `native-mirror-ruled: a frontmatter only PyYAML reads — the outcomes` over three files (flow mapping, indented list, keeper shape); each side's answer is pinned as a literal (`— the reference mirrors every ruled shape` / `— the port skips every ruled shape as frontmatter`), because the two bits DIFFER and a side-to-side bit could never be green; and the half the ruling does not license — exit 0, nothing printed, the native directory untouched — is compared side to side and pinned per side. Every other mirror outcome J74-4 found different by running both hooks (CRLF, a `{}` frontmatter, a falsy or non-scalar description, realpath of a missing tail or another-case spelling) was FIXED to agree, not ruled. **#315 (J86-3) leaves the mirror on `yaml.safe_load`:** the store now reads generated-first with a PyYAML fallback (*Generated modules*), and over these shapes the fallback answers, so the store and the mirror on the reference both read them as before; the mirror itself was not routed through the generated codec, because generated-first would also move the two classes #315's ruling licenses for the store (`yaml11-breaks`, `pyyaml-refuses`) into the mirror's outcomes, which this row pins. |
 | `MemoryStore.snapshot()` (Python only; J89-4b, #316 G3 U2) | **a Python-only API, kept by the shim, not a difference in any answer.** The pinned read set exists for ONE caller, `component.Memory.batch`, which `agent.py`'s loop (the Python eval agent, an unported module: no Node counterpart) enters around each assistant turn (RB-P1: a speculative save between two reads of one turn). `store.ts` deliberately omits it: the Node MCP server has no turn to pin. Since store.ts is generated it is hand-written in the shim (`bantamkit.memory.store`), built on the generated store: the pin is the generated `facts()` at entry, and while it holds the generated `candidates` answers it and `indexed` answers `null` (so `recall`, `lookup` and `pool` read the pin and `save` stays live), the same three moments `test_memory.py`'s snapshot cases pin. No `ruling:` case: no MCP tool, CLI or hook reaches it, so there is no Node answer to compare. |
 | `checkSchema` wording | 50 cases; both sides refuse, the sentences differ |
@@ -1008,7 +1009,7 @@ user-facing call on either side that this ending could make diverge. `agent`, `b
 no observable behaviour on either side for it to hold constant — so adding one would be a case
 that can never fail, which is worse than no case.
 
-## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment, the usage ledger, retrieval, the memory store, the native layer and the queries sidecar are compiled from TypeScript (#314, #315, #316 G1, G2, G3)
+## Generated modules: `workplan`, the fact-file codec, `pricing`, `jobbudget`, the event log, the token ledger, the log segment, the usage ledger, retrieval, the memory store, the native layer, the queries sidecar and the layers are compiled from TypeScript (#314, #315, #316 G1, G2, G3)
 
 Since #314 (J85-3) the Python work planner is not a port. `runtime-ts/src/workplan.ts` is the
 one source; `tools/ts2py` (Rust, `tools/ts2py/SUBSET.md`) compiles it to
@@ -1020,7 +1021,7 @@ generated code.
 
 **Every generated file is committed**, so `pip install`, `python -m build` and the wheel need no
 Rust. After any edit to `workplan.ts`, `memory/pyyaml.ts`, `memory/factfile.ts`, `pricing.ts`,
-`jobbudget.ts`, a G2/G3 module (`memory/store.ts`, `memory/native.ts` and `memory/queries.ts` among them) or `tools/ts2py`, regenerate from the repository root (all five; each is
+`jobbudget.ts`, a G2/G3 module (`memory/store.ts`, `memory/native.ts`, `memory/queries.ts` and `memory/layers.ts` among them) or `tools/ts2py`, regenerate from the repository root (all five; each is
 deterministic, so an unchanged input rewrites the same bytes):
 
 ```
@@ -1033,7 +1034,7 @@ cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   runtime-ts/src/pricing.ts runtime-ts/src/jobbudget.ts runtime-ts/src/storage/logsegment.ts \
   runtime-ts/src/eventlog.ts runtime-ts/src/tokenledger.ts runtime-ts/src/memory/usage.ts \
   runtime-ts/src/memory/retrieval.ts runtime-ts/src/memory/store.ts runtime-ts/src/memory/native.ts \
-  runtime-ts/src/memory/queries.ts \
+  runtime-ts/src/memory/queries.ts runtime-ts/src/memory/layers.ts \
   --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
 cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py
@@ -1977,14 +1978,92 @@ Node, the same bed (n = 9, before = `2737c34e`'s `dist`): `layerTerms` cached +0
 byte comparison (`ts2py/committed/queries.py`) and the sha256 header
 (`test_generated_module_names_the_typescript_on_disk[queries.py]`) each red once on a scratch edit.
 
-### Not generated in J89-5: `layers`, `dream`
+### The layers (#316 G3 U3, J89-5b): generated, the config read kept on PyYAML
 
-`memory/layers.ts` is stopped on a decision: its config reader is a TypeScript reduction of
-`yaml.safe_load`, so generating it moves Python off PyYAML. That turns the ruled `a config outside
-the reader's language` case STALE, and J89-5 found an UNRULED outcome difference under it:
-`extra_stores: &a [g]` (an anchored list) is a grant on Python and `extra_stores must be a list of
-paths` on Node. `dream.ts` needs the constructs listed in the J89-5 hand-off; `queries.ts` was
-generated by J89-5a (above).
+Since J89-5b `bantamkit.memory.layers` runs `_generated/layers.py`, compiled from
+`runtime-ts/src/memory/layers.ts` in the G1/G2/G3 call (it imports the compiled store). The
+hand-written module is retired; `memory/layers.py` is the shim and keeps every name its callers use
+(`component`, `hookadapter`, `mcpreport`, `divergence`, `__main__`, the tests, `layers_ref.py`,
+`g3_ref.py`): `PROJECT_STORE` a `Path`, `CONFIG_NAME`, `MEMORY_DIR_ENV`, `StoreBinding` (the
+frozen dataclass, `fact_count` / `searched_from` snake_case, `Path` fields), `discover_project_store`
+and `load_grants` answering `Path`s, `resolve_project_store`, `count_facts`, `tab_sentence` and
+`_pinned_store`.
+
+**The config is still read by PyYAML (the orchestrator's ruling on J89-5's stop, option b).** It
+follows the owner's #315 ruling for fact files: generated, with PyYAML kept on the Python side.
+layers.ts's own reader (`firstTokenTab`, `parseConfigDocument` and their helpers) moved byte for
+byte into `runtime-ts/src/memory/grantconfig.ts`, which is not compiled; layers.ts imports the two
+functions and ts2py resolves them to adapters that ARE `yaml.safe_load` (one load per text): the
+tab mark read off PyYAML's own `ScannerError` as the reference's `_token_tab` read it, the document
+converted to the `ConfigDocument` the generated validator reads, a `yaml.YAMLError` a JS Error with
+`str(e)`. Every other rule of layers.ts is generated. Pathlib calls are adapters onto the same
+pathlib calls (`tools/ts2py/RULES.md`, *J89-5b rules*). TS refactors, Node's answers unchanged
+(`npm test` green, Node's `loadGrants` / `resolveProjectStore` / `discoverProjectStore` within
+-0.9%..-0.4%, n = 9 against `32831cff`'s `dist`): the move; `data.entries` read through a local
+`ConfigMapping` binding (J87-12); `e.strerror` as `pyOSErrorStrerror(e)` and the read failure as
+`pyOSErrorText(e)` (J89-4b).
+
+Python's answers are unchanged. A battery of 72 config documents (anchors, aliases, merge keys,
+tags, directives, a second document, a document end, block and folded scalars, flow mappings and
+sequences over lines, `\x` / `\u` / `\t` / `\0` escapes, a BOM, a NUL, impossible timestamps, a
+5,000-digit int, nesting 1,000 and 3,000 deep) gave byte-identical `load_grants` answers on the
+generated module and on the hand-written module at `32831cff` (exception types included).
+
+**The config family, ruled (J89-5b).** J89-5's finding, `extra_stores: &a [g]` (Python grants
+`<…>/.bantamkit/g`, Node refuses with `invalid memory config <path>: extra_stores must be a list of
+paths`), is a deliberate difference by the same ruling, and the scan for others found 28 documents
+whose OUTCOME differs (Python grants, Node refuses) and 13 where both refuse in different sentences
+(or, for `"g\t"`, after reading a different path). All 41 are one family, a document outside the
+port reader's language, and carry the three pins: the divergence row above, a `RULED: config
+outside the reader's language — <document>` case each in `--suite recall-strings`, a non-ruled
+`J89-5b outcome bit per side: <document>` companion each (each side's grant/refuse bit against a
+literal), and per-side literals of every answer. Red once: a scratch-tree shim that refused the
+anchored list with Node's sentence turned the ruling STALE and its companion and the Python literal
+red (3 failures).
+
+**Found, not ruled, not changed (reported to the orchestrator).** Seven documents are NOT this
+family: CPython raises out of `load_grants` an exception it never caught, where Node grants or
+refuses by name. An implicit timestamp PyYAML cannot construct (`k: 2001-02-30`, `2001-02-30: x`,
+`k: 2001-02-03 25:00:00`: `ValueError`, and Node GRANTS), an int past CPython's 4,300-digit limit
+(`ValueError`; Node grants), the same timestamp as a grant (`ValueError`; Node refuses), a decoded
+NUL in a grant (`"a\0b"`: `ValueError` from `Path.resolve`; Node reads `a0b` and refuses it) and a
+flow sequence 1,000 deep (`RecursionError`; Node refuses). Generation keeps Python's answer (the
+`firstTokenTab` adapter raises such an exception outside the compiled `try`, as it left
+`load_grants`). Each is pinned `ruling: UNRULED DIVERGENCE (J89-5b) load_grants — <document>` with
+its outcome-bit companion and the per-side literals; no ruling chooses a side.
+
+**Cost (J89-5b, macOS arm64, CPython 3.12.13; n = 9 interleaved rounds, medians; before =
+`32831cff`, after = this tree; the project store a copy of the 91-fact `.bantamkit/memory`, granted
+a second copy through `config.yaml`, the walk starting two levels below it, HOME scratch).**
+
+| Path | Before | After | |
+|---|---|---|---|
+| `discover_project_store` | 40.6 us | 42.5 us | +4.6% |
+| `resolve_project_store` | 112.4 us | 118.9 us | +5.8% |
+| `load_grants` (one grant) | 96.2 us | 110.9 us | +15.2%: the converted document and the generated validator's `_js_get` reads |
+| `count_facts` (91 facts) | 68.1 us | 69.8 us | +2.5% |
+| `Memory.layered` (project, grant, profile) | 321.7 us | 348.5 us | +8.3% |
+| layered `Memory.recall` (`memory_recall`) | 7.55 ms | 7.16 ms | -5.3% |
+| cold `import bantamkit.memory.layers` | 91.2 ms | 89.9 ms | -1.4% |
+| `--hook` UserPromptSubmit, a process | 423.1 ms | 421.6 ms | -0.3% (output byte-identical, and equal to Node's) |
+
+**An instrument followed the lever.** `divergence.writer_store_env_names` (the register of env
+names the writer's store resolution reads, Python-only, off the MCP path) scanned `memory/*.py`;
+once the shim no longer spells `BANTAMKIT_MEMORY_DIR` the scan found nothing and
+`test_no_environment_variable_moves_the_writers_store_behind_this_resolvers_back` went red. It now
+also scans the generated body of each memory shim (`from bantamkit._generated import <x> as`) and
+treats a module's `__all__` strings as names, not env reads (`_generated/store.py` lists
+`BANTAMKIT_GITIGNORE_TEXT`): the population is `{BANTAMKIT_MEMORY_DIR}` again, read from
+`_generated/layers.py`, so a lever added to `layers.ts` is seen.
+
+**Gates.** `--all` 23,250 cases, 0 failures, 241 ruled (`--suite recall-strings` 261, 50 ruled);
+the F4 byte comparison (`ts2py/committed/layers.py`) and the sha256 header
+(`test_generated_module_names_the_typescript_on_disk[layers.py]`) each red once on a scratch edit.
+
+### Not generated in J89-5: `dream`
+
+`dream.ts` needs the constructs listed in the J89-5 hand-off. `queries.ts` was generated by J89-5a
+and `layers.ts` by J89-5b (above).
 
 ## Concurrency
 
