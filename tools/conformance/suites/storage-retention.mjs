@@ -543,7 +543,7 @@ export async function run(ctx) {
     ),
   );
   // J90-1 (#316 G4 prep): coverage this suite lacked, and the inputs the hand-written runtimes
-  // disagree on, pinned `UNRULED DIVERGENCE` (lib/storage_j90.mjs).
+  // disagreed on, settled by J90-1F to agree or ruled (lib/storage_j90.mjs).
   cases.push(...j90Cases('retention', await j90(ctx, 'retention')));
   return { cases, notes: [`${SCENARIOS.length} scripted scenarios, ${SCENARIOS.reduce((n, s) => n + s.ops.length, 0)} ops per side`] };
 }

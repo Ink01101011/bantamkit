@@ -19,6 +19,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { pyReadText } from '../memory/pyfs.js';
 import { FIELD_BOOST, tokenizeV2 } from '../memory/retrieval.js';
 import { cmpCodepoint } from '../pysem.js';
 import { dumpIndex, SHARDS, shardOf, type IndexDoc } from './hotindex.js';
@@ -27,8 +28,12 @@ import { exclusive } from './lock.js';
 export const COLD_VERSION = 1;
 const ID = /^[0-9]{6}$/;
 
-/** The reads this module makes; a test swaps `readFileSync` to count them. */
-export const coldFs = { readFileSync: (p: string): string => fs.readFileSync(p, 'utf8') };
+/**
+ * The reads this module makes; a test swaps `readFileSync` to count them. Strict UTF-8, as the
+ * reference's `open(path, encoding="utf-8")`: a segment holding a byte that is not UTF-8 is
+ * refused (`ColdIndexError`), not served with U+FFFD in a doc (J90-1F #10).
+ */
+export const coldFs = { readFileSync: (p: string): string => pyReadText(p) };
 
 /** A manifest, segment or shard that is not what this module wrote: `reset()` and re-add. */
 export class ColdIndexError extends Error {

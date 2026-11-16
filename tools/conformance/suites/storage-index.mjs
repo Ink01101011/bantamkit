@@ -1157,7 +1157,7 @@ async function runIn(ctx) {
   }
 
   // J90-1 (#316 G4 prep): coverage this suite lacked, and the inputs the hand-written runtimes
-  // disagree on, pinned `UNRULED DIVERGENCE` (lib/storage_j90.mjs).
+  // disagreed on, settled by J90-1F to agree or ruled (lib/storage_j90.mjs).
   cases.push(...j90Cases('index', await j90(ctx, 'index')));
   return { cases, notes };
 }

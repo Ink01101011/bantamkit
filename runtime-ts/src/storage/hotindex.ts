@@ -38,7 +38,7 @@ import * as path from 'node:path';
 
 import { BantamError } from '../errors.js';
 import { parseFrontmatter, pySplit, pyStrip } from '../memory/factfile.js';
-import { PyOSError, PyUnicodeDecodeError, pyJoin, pyReadText } from '../memory/pyfs.js';
+import { PyOSError, PyUnicodeDecodeError, pyDecodeUtf8, pyJoin, pyReadText } from '../memory/pyfs.js';
 import { FIELD_BOOST, pyRound9, stale, tokenizeV2 } from '../memory/retrieval.js';
 import { MemoryStore, pyText, tokens } from '../memory/store.js';
 import { cmpCodepoint } from '../pysem.js';
@@ -695,7 +695,9 @@ export class HotIndex {
   private readShard(family: Family, i: number, fp: string): Map<string, unknown> | null {
     let got: unknown;
     try {
-      got = JSON.parse(fs.readFileSync(this.shardPath(family, i), 'utf8'));
+      // Strict UTF-8, as the reference's `read_text`: a shard a lossy decode would trust with a
+      // U+FFFD term is refused and the index rebuilt, so the term is found (J90-1F #3).
+      got = JSON.parse(pyReadText(this.shardPath(family, i)));
     } catch {
       return null;
     }
@@ -800,7 +802,8 @@ export class HotIndex {
     const cut = raw.indexOf(0x0a);
     if (cut > 0 && raw[cut - 1] === 0x2c) {
       try {
-        const got: unknown = JSON.parse(`${raw.toString('utf8', 0, cut - 1)}}`);
+        // Strict UTF-8, as the reference's `json.loads(bytes)`: a head that is not UTF-8 rebuilds.
+        const got: unknown = JSON.parse(`${pyDecodeUtf8(raw.subarray(0, cut - 1))}}`);
         if (isObj(got) && sameKeys(got, HEAD_KEYS)) {
           top = got;
           tail = raw.subarray(cut + 1);
@@ -812,7 +815,7 @@ export class HotIndex {
     if (top === null) {
       let whole: unknown;
       try {
-        whole = JSON.parse(raw.toString('utf8'));
+        whole = JSON.parse(pyDecodeUtf8(raw));
       } catch {
         return null;
       }
@@ -1231,7 +1234,7 @@ function completeTail(data: IndexData): boolean {
   let got: unknown = tail;
   if (Buffer.isBuffer(tail)) {
     try {
-      got = JSON.parse(`{${tail.toString('utf8')}`);
+      got = JSON.parse(`{${pyDecodeUtf8(tail)}`);
     } catch {
       return false;
     }

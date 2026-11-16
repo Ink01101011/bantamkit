@@ -219,7 +219,7 @@ export async function run(ctx) {
     cases.push(...literalCases(ro(py), ro(nd), 'LITERAL: read-only dir, [lock held/fast, append ok/fast, new file refused/fast, bytes, dir]', [[false, true], [true, true], [false, true], true, [LOG]]));
   }
   // J90-1 (#316 G4 prep): coverage this suite lacked, and the inputs the hand-written runtimes
-  // disagree on, pinned `UNRULED DIVERGENCE` (lib/storage_j90.mjs).
+  // disagreed on, settled by J90-1F to agree or ruled (lib/storage_j90.mjs).
   cases.push(...j90Cases('lock', await j90(ctx, 'lock')));
   return { cases, notes: [`${beds.length} beds${beds.length > BEDS.length ? '' : ' (read-only bed skipped on Windows)'}`] };
 }

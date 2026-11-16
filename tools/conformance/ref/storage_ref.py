@@ -842,6 +842,10 @@ def _j90_mangle(raw: bytes, mode: str) -> bytes:
         return raw.replace(b'"alpha":', b'"alph\xff":', 1)
     if mode == "shard_seg_float":
         return re.sub(rb'"alpha":\[(\d+),1,', rb'"alpha":[\1,1.0,', raw, count=1)
+    if mode == "head_invalid_utf8":  # the first `"beta"` is a name in `cols`, on the first line
+        return raw.replace(b'"beta"', b'"bet\xff"', 1)
+    if mode == "tail_invalid_utf8":  # a doc's description, on the second line
+        return raw.replace(b'"beta alpha words', b'"bet\xff alpha words', 1)
     raise ValueError(mode)
 
 
@@ -897,16 +901,19 @@ def _j90_index(d: Path) -> dict:
                       list(h.HEAD_KEYS), list(h.TAIL_KEYS), h.SEG, h.DUPLICATE, h.INDEX_DIR_ENV],
     }
     # 2. A head or shard in a shape neither runtime writes, read by a fresh instance.
-    for mode in ("lens_total_float", "full_at_lower", "shard_invalid_utf8", "shard_seg_float"):
+    for mode in ("lens_total_float", "full_at_lower", "shard_invalid_utf8", "shard_seg_float",
+                 "head_invalid_utf8", "tail_invalid_utf8"):
         root, home = bed(mode, "facts", facts[:2])
         hi = h.HotIndex(root, "facts", home)
         hi.refresh("fast")
-        p = hi.path if mode in ("lens_total_float", "full_at_lower") else hi.shard_path("postings", h.shard_of("alpha"))
+        p = hi.shard_path("postings", h.shard_of("alpha")) if mode.startswith("shard") else hi.path
         p.write_bytes(_j90_mangle(p.read_bytes(), mode))
         hi = h.HotIndex(root, "facts", home)
         res = {
             "refresh": _j90_try(lambda hi=hi: hi.refresh("fast")),
             "query": _j90_try(lambda hi=hi: sorted(hi.query(["alpha"]).items())),
+            "names": _j90_try(lambda hi=hi: list(hi.names())),
+            "beta": _j90_try(lambda hi=hi: (hi.doc("beta") or {}).get("description")),
         }
         stamp = json.loads(hi.path.read_text(encoding="utf-8").split("\n", 1)[0][:-1] + "}")["full_at"]
         res["full_at_sep"] = stamp[10:11]
@@ -1001,8 +1008,8 @@ def _j90_retention(d: Path) -> dict:
         # a closed-looking job whose unit status is a list, beside an ordinary closed job
         home, root = bed("list_status")
         sw = root / ".shiftwork"
-        (sw / "checkpoint-a.json").write_text(json.dumps({"plan": {"units": [{"status": []}]}}))
-        (sw / "checkpoint-b.json").write_text(json.dumps({"plan": {"units": [{"status": "done"}]}}))
+        (sw / "checkpoint-a.json").write_text(json.dumps({"plan": {"units": [{"status": []}]}}), encoding="utf-8")
+        (sw / "checkpoint-b.json").write_text(json.dumps({"plan": {"units": [{"status": "done"}]}}), encoding="utf-8")
         _j90_pin(sw)
         out["list_status"] = {
             "run": _j90_try(lambda: r.run_retention(home, [root], now)),
@@ -1017,6 +1024,28 @@ def _j90_retention(d: Path) -> dict:
         cold.add({"k": dict(doc, name="k", file=".shiftwork/archive/k.json.gz")})
         out["no_file_run"] = _j90_try(lambda: r.run_retention(home, [root], now))
         out["no_file_search"] = _j90_try(lambda: r.search_archived(root / ".shiftwork" / "checkpoint.json", "x", home))
+        # J90-1F: an OSError in search_archived's RETRY (after a ColdIndexError): the live segment
+        # renumbered 000002, every shard corrupt, and a DIRECTORY where the rebuild writes 000001.
+        import gzip
+
+        home, root = bed("retry_oserror")
+        (root / ".shiftwork" / "archive" / "j.json.gz").write_bytes(
+            gzip.compress(json.dumps({".shiftwork/checkpoint-j.json": "alpha word"}).encode())
+        )
+        cp = root / ".shiftwork" / "checkpoint.json"
+        first = _j90_try(lambda: r.search_archived(cp, "alpha", home))
+        c = r.shiftwork_cold(home, root).dir
+        seg = json.loads((c / "seg-000001.json").read_text(encoding="utf-8"))
+        seg["id"] = "000002"
+        (c / "seg-000002.json").write_text(json.dumps(seg), encoding="utf-8")
+        (c / "seg-000001.json").unlink()
+        man = json.loads((c / "manifest.json").read_text(encoding="utf-8"))
+        man["segments"][0]["id"] = "000002"
+        (c / "manifest.json").write_text(json.dumps(man), encoding="utf-8")
+        for i in range(16):
+            (c / f"shard-{i:02d}.json").write_text("{", encoding="utf-8")
+        (c / "seg-000001.json").mkdir()
+        out["retry_oserror"] = {"first": first, "retry": _j90_try(lambda: r.search_archived(cp, "alpha", home))}
         # retention.json with a byte that is not UTF-8 outside `ran_at`
         home, _ = bed("due")
         r.state_path(home).write_bytes(b'{"ran_at":"2026-10-16T00:00:00.000Z","note":"\xff"}')
@@ -1048,7 +1077,32 @@ def _j90_lock(d: Path) -> dict:
     t = d / "target"
     with lock.exclusive(t) as held:
         mode = _stat.S_IMODE(os.stat(f"{t}.lock").st_mode)
-    return {"mode": [held, oct(mode)], "constants": [lock.LOCK_WAIT_MS, lock.LOCK_STALE_MS, lock.LOCK_POLL_MS]}
+    # J90-1F: a wait for a lock another writer holds, with the WALL clock stepped back 1 s (or on
+    # 5 s) after the first reading. The wait is measured on a monotonic clock, so it ends after
+    # about `wait_ms` either way: `[held, waited < 1000 ms]`.
+    import time as _time
+
+    real = _time.time
+    clock = []
+    for jump in (-1.0, 5.0):
+        Path(f"{t}.lock").write_bytes(b"")
+        calls = [0]
+
+        def stepped(jump=jump, calls=calls):
+            calls[0] += 1
+            return real() + (jump if calls[0] > 1 else 0.0)
+
+        _time.time = stepped
+        t0 = _time.monotonic()
+        try:
+            with lock.exclusive(t, wait_ms=200, stale_ms=60_000) as got:
+                pass
+        finally:
+            _time.time = real
+        clock.append([got, (_time.monotonic() - t0) * 1000 < 1000, (_time.monotonic() - t0) * 1000 >= 150])
+    os.unlink(f"{t}.lock")
+    return {"mode": [held, oct(mode)], "clock": clock,
+            "constants": [lock.LOCK_WAIT_MS, lock.LOCK_STALE_MS, lock.LOCK_POLL_MS]}
 
 
 def storage_j90(req: dict) -> dict:

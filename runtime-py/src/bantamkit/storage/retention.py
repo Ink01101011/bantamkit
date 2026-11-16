@@ -54,7 +54,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .coldindex import ColdIndex, ColdIndexError
+from .coldindex import ColdIndex, ColdIndexError, _js_quote
 from .hotindex import INDEX_DIR_ENV, dumps
 from .lock import exclusive
 from .logsegment import LogSegment
@@ -103,12 +103,18 @@ def audit_enabled() -> bool:
 
 def parse_now(now: str) -> int:
     """Milliseconds since the epoch for `YYYY-MM-DDTHH:MM:SS[.mmm]Z`; ValueError otherwise."""
+    # One sentence for every refusal, the value quoted as `JSON.stringify` quotes it -- an
+    # impossible date included, which `datetime` would otherwise word itself (J90-1F #11).
+    refusal = f"not a retention timestamp: {_js_quote(now)}"
     m = _NOW.fullmatch(now) if isinstance(now, str) else None
     if m is None:
-        raise ValueError(f"not a retention timestamp: {now!r}")
+        raise ValueError(refusal)
     y, mo, d, h, mi, s = (int(g) for g in m.groups()[:6])
     ms = int(m.group(7) or 0)
-    t = datetime(y, mo, d, h, mi, s, tzinfo=UTC)
+    try:
+        t = datetime(y, mo, d, h, mi, s, tzinfo=UTC)
+    except ValueError:
+        raise ValueError(refusal) from None
     return int(t.timestamp()) * 1000 + ms
 
 
@@ -328,7 +334,12 @@ def _closed(data: Any) -> bool:
     units = plan.get("units") if isinstance(plan, dict) else None
     if not isinstance(units, list) or not units:
         return False
-    return all(isinstance(u, dict) and u.get("status") in _CLOSED for u in units)
+    # A status that is not a string (a list, say) is not closed: `in` would raise on an
+    # unhashable one and kill the whole sweep (J90-1F #12).
+    return all(
+        isinstance(u, dict) and isinstance(u.get("status"), str) and u["status"] in _CLOSED
+        for u in units
+    )
 
 
 def _walk(d: Path) -> list[Path]:
@@ -572,7 +583,13 @@ def sync_jobs(home: Path, root: Path) -> ColdIndex:
     """The root's job cold index, with every `.shiftwork/archive/*.json.gz` not yet in it added."""
     cold = shiftwork_cold(home, root)
     try:
-        held = {d["file"] for d in cold.all_docs()}
+        # A doc with no string `file` holds no archive (J90-1F #13): `retention.ts` puts the
+        # `undefined` in its set, which no archive path ever equals.
+        held = {
+            f
+            for d in cold.all_docs()
+            if isinstance(d, dict) and isinstance(f := d.get("file"), str)
+        }
     except ColdIndexError:
         cold.reset()
         held = set()
@@ -624,8 +641,8 @@ def _compact_cold(home: Path, roots: list[Path], report: dict[str, list[Any]]) -
                 report["compacted"].append(name)
         except ColdIndexError:
             cold.reset()  # derived: the next search re-adds its sources
-        except OSError:
-            pass
+        except Exception:  # noqa: BLE001 -- as `retention.ts`: one index never stops the sweep
+            pass  # (a `keep` over a doc with no `file`, J90-1F #13; an OSError, as before)
 
 
 # ---------------------------------------------------------------------------------- run
@@ -647,7 +664,7 @@ def run_retention(home: Path | str, roots: list[Path | str], now: str) -> dict[s
         if added:
             try:
                 sync_jobs(home, root)
-            except (OSError, ColdIndexError):
+            except Exception:  # noqa: BLE001 -- as `retention.ts`: any failure, the next search syncs it
                 pass  # derived: the next search syncs it
     _compact_cold(home, root_paths, report)
     return report
@@ -799,13 +816,16 @@ def search_archived(
     want = set(terms)
     home = Path(home) if home is not None else Path(os.path.expanduser("~"))
     root = Path(checkpoint).parent.parent
+    # An OSError in the retry answers `[]` as one in the first try does (`retention.ts` wraps
+    # both in one handler); a sibling `except` would let it out (J90-1F).
     try:
-        cold = sync_jobs(home, root)
-        rows = cold.query(terms)
-    except ColdIndexError:
-        shiftwork_cold(home, root).reset()
-        cold = sync_jobs(home, root)
-        rows = cold.query(terms)
+        try:
+            cold = sync_jobs(home, root)
+            rows = cold.query(terms)
+        except ColdIndexError:
+            shiftwork_cold(home, root).reset()
+            cold = sync_jobs(home, root)
+            rows = cold.query(terms)
     except OSError:
         return []
     hits: list[dict[str, Any]] = []
@@ -813,7 +833,8 @@ def search_archived(
         doc = cold.doc(job)
         if doc is None:
             continue
-        data = _gunzip(root / doc["file"])
+        # No `file`: `root / None` raises TypeError, as `path.join` does on `undefined` (#14).
+        data = _gunzip(root / doc.get("file"))
         if data is None:
             continue
         try:

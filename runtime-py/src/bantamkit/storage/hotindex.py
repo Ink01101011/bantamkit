@@ -107,6 +107,12 @@ _TAGS_LINE = re.compile(r"^tags:", re.MULTILINE)
 # Claude Code nests `links` under `metadata:`, so the native read looks at indented keys too.
 _NATIVE_EXTRA_LINE = re.compile(r"^[ \t]*(?:tags|links):", re.MULTILINE)
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
+# `full_at` as `hotindex.ts` reads it: ASCII digits, an upper-case `T` and `Z`, nothing after.
+# `strptime` matches its literals without regard to case and `\d` any Unicode digit (J90-1F #2).
+_ISO_RE = re.compile(
+    r"([0-9]{4})-([0-9]{1,2})-([0-9]{1,2})T([0-9]{1,2}):([0-9]{1,2}):([0-9]{1,2})Z"
+)
+_SAFE = 2**53 - 1
 DUPLICATE = "duplicate name"
 
 
@@ -148,12 +154,34 @@ def _iso(t: float) -> str:
 
 
 def _age_s(full_at: Any, now: float) -> float:
-    """Seconds since `full_at`; an unreadable stamp is infinitely old."""
+    """Seconds since `full_at`; an unreadable stamp is infinitely old.
+
+    Read as `hotindex.ts` `ageS` reads it: `Date.UTC` takes a year 0..99 as 1900..1999, so such
+    a stamp never reads back as itself and is unreadable there; it is here too.
+    """
+    m = _ISO_RE.fullmatch(full_at) if isinstance(full_at, str) else None
+    if m is None:
+        return float("inf")
+    y, mo, d, h, mi, s = (int(g) for g in m.groups())
+    if y < 100:
+        return float("inf")
     try:
-        then = datetime.strptime(full_at, _ISO).replace(tzinfo=UTC).timestamp()
-    except (TypeError, ValueError):
+        then = datetime(y, mo, d, h, mi, s, tzinfo=UTC).timestamp()
+    except ValueError:
         return float("inf")
     return now - then
+
+
+def _js_number(text: str) -> float | int:
+    """A JSON float token as `JSON.parse` reads it: `1.0` is the number 1, so a whole number
+    within 2^53 is an int and every `_is_*` check below reads it as `hotindex.ts` does
+    (J90-1F #1, #4). A float that is not a whole number stays a float."""
+    f = float(text)
+    return int(f) if f.is_integer() and abs(f) <= _SAFE else f
+
+
+def _loads(text: str | bytes) -> Any:
+    return json.loads(text, parse_float=_js_number)
 
 
 def _wiki_links(body: str) -> list[str]:
@@ -487,7 +515,7 @@ class HotIndex:
         if isinstance(tail, bytes):
             with no_gc():
                 try:
-                    got = json.loads(tail)
+                    got = _loads(tail)
                 except ValueError:
                     return False
         if not isinstance(got, dict) or sorted(got) != list(TAIL_KEYS):
@@ -539,7 +567,7 @@ class HotIndex:
         # 8.3 ms with it on).
         with no_gc():
             try:
-                got = json.loads(text)
+                got = _loads(text)
             except ValueError:
                 return None
         if not (isinstance(got, dict) and got.get("fingerprint") == fp):
@@ -638,7 +666,7 @@ class HotIndex:
         with no_gc():
             if cut > 0 and raw[cut - 1 : cut] == b",":
                 try:
-                    data = json.loads(raw[: cut - 1] + b"}")
+                    data = _loads(raw[: cut - 1] + b"}")
                 except ValueError:
                     data = None
                 if isinstance(data, dict) and sorted(data) == list(HEAD_KEYS):
@@ -647,7 +675,7 @@ class HotIndex:
                     data = None
             if data is None:
                 try:
-                    whole = json.loads(raw)
+                    whole = _loads(raw)
                 except ValueError:
                     return None
                 if not isinstance(whole, dict) or sorted(whole) != sorted(HEAD_KEYS + TAIL_KEYS):
@@ -677,6 +705,10 @@ class HotIndex:
             return None
         if not all(isinstance(v, str) for v in data["skipped"].values()):
             return None
+        # `_loads` reads a whole `avgdl` (`4.0`) as an int; it stays the float it is written as,
+        # as `hotindex.ts` keeps it (`dumpIndex` writes any number there as a float).
+        if type(data["avgdl"]) is int:
+            data["avgdl"] = float(data["avgdl"])
         # A head read whole has its second line parsed already: check it now, as a head always
         # was. Only `head_text`'s two lines defer it.
         if isinstance(data["_tail"], dict) and not self._complete(data):

@@ -30,6 +30,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as zlib from 'node:zlib';
 
+import { pyReadText } from '../memory/pyfs.js';
 import { tokenizeV2 } from '../memory/retrieval.js';
 import { reduceUsage, storeId } from '../memory/usage.js';
 import { cmpCodepoint } from '../pysem.js';
@@ -661,7 +662,9 @@ export function statePath(home: string): string {
 export function due(home: string, now: string): boolean {
   let age: number;
   try {
-    const data = JSON.parse(fs.readFileSync(statePath(home), 'utf8')) as unknown;
+    // Strict UTF-8, as the reference's `read_text`: a state file that is not UTF-8 is unreadable
+    // and the run is due, not read lossily and called fresh (J90-1F #15).
+    const data = JSON.parse(pyReadText(statePath(home))) as unknown;
     if (!isObj(data) || !('ran_at' in data)) return true;
     age = parseNow(now) - parseNow(data['ran_at']);
   } catch {

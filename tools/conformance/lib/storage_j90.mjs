@@ -3,13 +3,15 @@
  * op. Each owning suite (`storage-index`, `storage-cold`, `storage-retention`, `storage-lock`)
  * calls `j90(ctx, section)`, which runs the reference and this module over two scratch
  * directories and answers `{ py, nd }`; the suite decides which answers are compared and which
- * are pinned as `UNRULED DIVERGENCE`. Change one side, change both.
+ * were pinned as `UNRULED DIVERGENCE` until J90-1F settled them (see `j90Cases`). Change one side,
+ * change both.
  *
  * A raise is the answer `{ raised: <class>, msg: <sentence> }` on both sides.
  */
-import { mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { gzipSync } from 'node:zlib';
 
 const REF = join(dirname(dirname(fileURLToPath(import.meta.url))), 'ref', 'storage_ref.py');
 const T = 1_700_000_000;
@@ -38,6 +40,8 @@ function mangle(raw, mode) {
   }
   if (mode === 'shard_invalid_utf8') return Buffer.from(s.replace('"alpha":', '"alph\xff":'), 'latin1');
   if (mode === 'shard_seg_float') return Buffer.from(s.replace(/"alpha":\[(\d+),1,/, '"alpha":[$1,1.0,'), 'latin1');
+  if (mode === 'head_invalid_utf8') return Buffer.from(s.replace('"beta"', '"bet\xff"'), 'latin1');
+  if (mode === 'tail_invalid_utf8') return Buffer.from(s.replace('"beta alpha words', '"bet\xff alpha words'), 'latin1');
   throw new Error(mode);
 }
 
@@ -91,7 +95,7 @@ async function index(runtimeTs, d) {
     head_text: h.headText(Object.fromEntries(all.map((k) => [k, k]))),
     constants: [h.INDEX_VERSION, h.FULL_REFRESH_EVERY_S, h.SHARDS, [...h.FAMILIES], [...h.HEAD_KEYS], [...h.TAIL_KEYS], h.SEG, h.DUPLICATE, h.INDEX_DIR_ENV],
   };
-  for (const mode of ['lens_total_float', 'full_at_lower', 'shard_invalid_utf8', 'shard_seg_float']) {
+  for (const mode of ['lens_total_float', 'full_at_lower', 'shard_invalid_utf8', 'shard_seg_float', 'head_invalid_utf8', 'tail_invalid_utf8']) {
     [root, home] = bed(mode, 'facts', facts.slice(0, 2));
     hi = new h.HotIndex(root, 'facts', home);
     hi.refresh('fast');
@@ -101,6 +105,8 @@ async function index(runtimeTs, d) {
     const res = {
       refresh: attempt(() => fresh.refresh('fast')),
       query: attempt(() => byKey(fresh.query(['alpha']))),
+      names: attempt(() => [...fresh.names().keys()]),
+      beta: attempt(() => fresh.doc('beta')?.description ?? null),
     };
     const first = readFileSync(fresh.path, 'utf8').split('\n', 1)[0];
     res.full_at_sep = JSON.parse(`${first.slice(0, -1)}}`).full_at.slice(10, 11);
@@ -201,6 +207,22 @@ async function retention(runtimeTs, d) {
     ci.add(new Map([['k', { ...doc, name: 'k', file: '.shiftwork/archive/k.json.gz' }]]));
     out.no_file_run = attempt(() => r.runRetention(home, [root], now));
     out.no_file_search = attempt(() => r.searchArchived(join(root, '.shiftwork', 'checkpoint.json'), 'x', home));
+    // J90-1F: an OSError in searchArchived's RETRY, as the reference builds it.
+    [home, root] = bed('retry_oserror');
+    writeFileSync(join(root, '.shiftwork', 'archive', 'j.json.gz'), gzipSync(JSON.stringify({ '.shiftwork/checkpoint-j.json': 'alpha word' })));
+    const cp = join(root, '.shiftwork', 'checkpoint.json');
+    const first = attempt(() => r.searchArchived(cp, 'alpha', home));
+    const c = r.shiftworkCold(home, root).dir;
+    const seg = JSON.parse(readFileSync(join(c, 'seg-000001.json'), 'utf8'));
+    seg.id = '000002';
+    writeFileSync(join(c, 'seg-000002.json'), JSON.stringify(seg));
+    unlinkSync(join(c, 'seg-000001.json'));
+    const man = JSON.parse(readFileSync(join(c, 'manifest.json'), 'utf8'));
+    man.segments[0].id = '000002';
+    writeFileSync(join(c, 'manifest.json'), JSON.stringify(man));
+    for (let i = 0; i < 16; i += 1) writeFileSync(join(c, `shard-${String(i).padStart(2, '0')}.json`), '{');
+    mkdirSync(join(c, 'seg-000001.json'));
+    out.retry_oserror = { first, retry: attempt(() => r.searchArchived(cp, 'alpha', home)) };
     [home] = bed('due');
     writeFileSync(r.statePath(home), Buffer.concat([Buffer.from('{"ran_at":"2026-10-16T00:00:00.000Z","note":"'), Buffer.from([0xff]), Buffer.from('"}')]));
     out.due_invalid_utf8 = r.due(home, '2026-10-16T01:00:00.000Z');
@@ -227,7 +249,25 @@ async function lock(runtimeTs, d) {
   const was = process.umask(0o022); // as the reference sets it
   try {
     const mode = l.exclusive(t, (held) => [held, `0o${(statSync(`${t}.lock`).mode & 0o777).toString(8)}`]);
-    return { mode, constants: [l.LOCK_WAIT_MS, l.LOCK_STALE_MS, l.LOCK_POLL_MS] };
+    // J90-1F: the wait with the WALL clock stepped back 1 s (or on 5 s), as the reference does it.
+    const real = Date.now;
+    const clock = [];
+    for (const jump of [-1000, 5000]) {
+      writeFileSync(`${t}.lock`, '');
+      let calls = 0;
+      Date.now = () => real() + (calls++ > 0 ? jump : 0);
+      const t0 = performance.now();
+      let got;
+      try {
+        got = l.exclusive(t, (h) => h, { waitMs: 200, staleMs: 60_000 });
+      } finally {
+        Date.now = real;
+      }
+      const waited = performance.now() - t0;
+      clock.push([got, waited < 1000, waited >= 150]);
+    }
+    unlinkSync(`${t}.lock`);
+    return { mode, clock, constants: [l.LOCK_WAIT_MS, l.LOCK_STALE_MS, l.LOCK_POLL_MS] };
   } finally {
     process.umask(was);
   }
@@ -252,9 +292,30 @@ export function unpath(value, dir) {
 
 // --------------------------------------------------------------------------------- the cases
 
-const UNRULED = 'UNRULED DIVERGENCE (J90-1): not ruled in docs/porting.md and not fixed; ';
 const bit = (v) => v !== null && typeof v === 'object' && !Array.isArray(v) && 'raised' in v;
 const msgOf = (v) => (bit(v) ? v.msg : v);
+
+/*
+ * J90-1F settled the sixteen inputs J90-1 pinned `UNRULED DIVERGENCE` (and three more it found):
+ * fifteen now AGREE — each compared side to side and pinned per side below, so a change made on
+ * both sides at once still fails — and one, the native flow mapping, is RULED under #228
+ * (docs/porting.md), with its outcome bit pinned per side and the half it does not license compared.
+ */
+const Q_ALPHA = [['alpha', [['alpha', 'name', 1], ['alpha', 'description', 1], ['beta', 'description', 1]]]];
+const SETTLED_INDEX = {
+  query: Q_ALPHA, names: ['alpha', 'beta'], beta: 'beta alpha words, stale? no', full_at_sep: 'T',
+};
+const CIE = { ColdIndexError: true };
+const BETA_DOC = {
+  description: 'word two', file: 'beta.md', keywords: ['kw'], links: [], mtime_ns: '1', name: 'beta',
+  refs: [], size: 1, tags: [], type: 'project',
+};
+const EMPTY_REPORT = { archived: [], compacted: [], deleted: [], folded: [], refused: [], rotated: [] };
+const RULING_228_HOT =
+  '#228 (docs/porting.md, the hot index row): a native fact whose frontmatter only PyYAML reads (here a flow ' +
+  'mapping, `metadata: {type: user}`) is indexed by the reference, which reads native files with ' +
+  '`divergence.parse_fact` (`yaml.safe_load`), and skipped by the port, whose codec refuses the shape by name ' +
+  "(#120). Each side's hot index holds what that side's native mirror and recall read for the same file.";
 
 /** Per-side literals: a change made on both sides leaves the differential green, these do not. */
 const LITERALS = {
@@ -285,8 +346,6 @@ export function j90Cases(section, { py, nd, dirs }) {
     cases.push({ name: `LITERAL: J90-1 ${name} — python`, kind: 'json', expected, actual: a });
     cases.push({ name: `LITERAL: J90-1 ${name} — node`, kind: 'json', expected, actual: b });
   };
-  const unruled = (name, a, b, why) =>
-    cases.push({ name: `ruling: UNRULED DIVERGENCE ${name}`, kind: 'json', expected: a, actual: b, ruling: UNRULED + why });
   if (section === 'index') {
     const L = LITERALS.index;
     same('HotIndex public reads (names, doc, cols, fileOf, lens, lensTotal, size, exists, headPrint, docsUnchecked, parseFile, invalidate)', P(py.reads), N(nd.reads));
@@ -295,28 +354,48 @@ export function j90Cases(section, { py, nd, dirs }) {
     same('decodeSegments refuses a run past the names (the bit and the sentence)', [bit(py.units.decode_bad), msgOf(py.units.decode_bad)], [bit(nd.units.decode_bad), msgOf(nd.units.decode_bad)]);
     same('hotindex constants', py.units.constants, nd.units.constants);
     lit('hotindex encodeSegments and constants', [L.encode, L.constants], [py.units.encode, py.units.constants], [nd.units.encode, nd.units.constants]);
-    unruled('a head whose lens_total holds 1.0 (a float the JSON spells as an integer)', py.lens_total_float, nd.lens_total_float,
-      'python rebuilds (`_is_lens` wants `int`), node reads the head as fresh (`JSON.parse` folds 1.0 to 1)');
-    unruled('a head whose full_at is spelled with a lowercase t and z', py.full_at_lower, nd.full_at_lower,
-      'python strptime is case-insensitive and keeps the stamp; node ISO regex refuses it, refreshes in full and rewrites the stamp');
-    unruled('a postings shard with an invalid UTF-8 byte inside a term, fingerprint intact', py.shard_invalid_utf8, nd.shard_invalid_utf8,
-      'python strict-decodes, refuses the shard and rebuilds (the term is found); node decodes it lossily, trusts it, and the term is LOST (python is safer)');
-    unruled('a postings shard whose run length is 1.0', py.shard_seg_float, nd.shard_seg_float,
-      'python `query` raises ValueError("malformed postings") out to the caller; node reads 1.0 as 1 and answers');
-    unruled('a native fact whose metadata is a flow mapping ({type: user})', py.native_flow, nd.native_flow,
-      'python reads native frontmatter with PyYAML and indexes it; the codec refuses a flow mapping and skips the file (#228 rules the same boundary for the native mirror, not for the hot index)');
+    // #1 #2 #4 settled to node's answer, #3 (and the head and tail J90-1F found alike) to python's.
+    const modes = ['lens_total_float', 'full_at_lower', 'shard_invalid_utf8', 'shard_seg_float', 'head_invalid_utf8', 'tail_invalid_utf8'];
+    const why = {
+      lens_total_float: 'a head whose lens_total holds 1.0 is read as 1 and trusted (was: python rebuilt)',
+      full_at_lower: 'a head whose full_at is spelled with a lowercase t and z is unreadable: a full refresh rewrites it (was: python kept it)',
+      shard_invalid_utf8: 'a postings shard with an invalid UTF-8 byte in a term is refused and rebuilt, the term found (was: node lost it)',
+      shard_seg_float: 'a postings shard whose run length is 1.0 reads as 1 and answers (was: python raised malformed postings)',
+      head_invalid_utf8: 'a head whose first line holds an invalid UTF-8 byte is refused and rebuilt (was: node trusted a U+FFFD name)',
+      tail_invalid_utf8: 'a head whose second line holds an invalid UTF-8 byte is refused and rebuilt (was: node served a U+FFFD description)',
+    };
+    for (const m of modes) {
+      const pick = (r) => ({ refresh: r.refresh, query: r.query, names: r.names, beta: r.beta, full_at_sep: r.full_at_sep });
+      same(`${why[m]} — refresh, query, names, doc, stamp`, py[m], nd[m]);
+      // Only a refused FIRST line is seen by the fast refresh (it rebuilds); a bad second line,
+      // shard or stamp is met later (`_complete`, `_shard`, the full-refresh test).
+      const refresh = m === 'head_invalid_utf8' ? 'rebuilt' : 'fresh';
+      lit(`${why[m]}`, { refresh, ...SETTLED_INDEX }, pick(py[m]), pick(nd[m]));
+    }
+    // #5: ruled under #228. The outcome bit DIFFERS, so it is pinned per side; the fact beside it
+    // (block-mapping `metadata:`) is read alike, and that half is compared.
+    cases.push({ name: 'ruling: #228 the hot index over a native fact only PyYAML reads (flow mapping) — docs and skips', kind: 'json', expected: py.native_flow, actual: nd.native_flow, ruling: RULING_228_HOT });
+    cases.push({ name: 'LITERAL: J90-1F #228 per side: the hot index over a native flow mapping — python indexes it', kind: 'json', expected: { docs: ['flow', 'plain'], skipped: [] }, actual: py.native_flow });
+    cases.push({ name: 'LITERAL: J90-1F #228 per side: the hot index over a native flow mapping — node skips it by file', kind: 'json', expected: { docs: ['plain'], skipped: ['flow.md'] }, actual: nd.native_flow });
+    same('#228 the native fact beside it (block-mapping metadata) is indexed on both sides', py.native_flow.docs.includes('plain'), nd.native_flow.docs.includes('plain'));
   } else if (section === 'cold') {
     same('ColdIndex public reads (owners, allDocs, docs, doc, manifest)', py.reads, nd.reads);
     lit('ColdIndex owners / allDocs', [LITERALS.cold.owners, LITERALS.cold.all_docs], [py.reads.owners, py.reads.all_docs], [nd.reads.owners, nd.reads.all_docs]);
     same('ColdIndex refuses a name with a separator, `..` or empty (the refusal bit)', py.bad_name.map(bit), nd.bad_name.map(bit));
-    unruled('the ColdIndex bad-name sentence', py.bad_name.map(msgOf), nd.bad_name.map(msgOf),
-      "python quotes with repr ('a/b'), node with JSON.stringify (\"a/b\"); no caller passes a user's name today");
-    unruled('a cold shard row whose tf is 1.0', py.tf_float, nd.tf_float, 'python refuses the shard (ColdIndexError), node reads 1.0 as 1 and answers');
-    unruled('a cold manifest whose version is true', py.version_true, nd.version_true, 'python accepts it (True == 1), node refuses it (true !== 1)');
-    unruled('a cold manifest segment id with a trailing newline', py.id_newline, nd.id_newline,
-      "python's `^[0-9]{6}$` matches before a final newline and the segment's rows go unread; node refuses the manifest");
-    unruled('a cold segment with an invalid UTF-8 byte', py.seg_invalid_utf8, nd.seg_invalid_utf8,
-      'python refuses the segment (ColdIndexError), node decodes it lossily and returns U+FFFD in the doc');
+    // #6 #7 #8 #9 settled to node's answer, #10 to python's.
+    const names = ['unknown cold index name: "a/b"', 'unknown cold index name: ".."', 'unknown cold index name: ""'];
+    same('the ColdIndex bad-name sentence (JSON quotes)', py.bad_name.map(msgOf), nd.bad_name.map(msgOf));
+    lit('the ColdIndex bad-name sentence', names, py.bad_name.map(msgOf), nd.bad_name.map(msgOf));
+    const settled = [
+      ['tf_float', 'a cold shard row whose tf is 1.0 reads as 1 (was: python refused the shard)', { query: [['alpha', '000002', 1], ['beta', '000001', 1]], doc: BETA_DOC }],
+      ['version_true', 'a cold manifest whose version is true is refused (was: python accepted True == 1)', { query: CIE, doc: CIE }],
+      ['id_newline', 'a cold manifest segment id with a trailing newline is refused (was: python matched before the newline)', { query: CIE, doc: CIE }],
+      ['seg_invalid_utf8', 'a cold segment with an invalid UTF-8 byte is refused (was: node served U+FFFD)', { query: [['alpha', '000002', 1], ['beta', '000001', 1]], doc: CIE }],
+    ];
+    for (const [k, w, want] of settled) {
+      same(w, py[k], nd[k]);
+      lit(w, want, py[k], nd[k]);
+    }
   } else if (section === 'retention') {
     const L = LITERALS.retention;
     same('retention constants', py.constants, nd.constants);
@@ -324,22 +403,36 @@ export function j90Cases(section, { py, nd, dirs }) {
     same('parseNow — the value or the refusal bit, per input', py.parse_now.map((v) => (bit(v) ? 'refused' : v)), nd.parse_now.map((v) => (bit(v) ? 'refused' : v)));
     lit('parseNow values', L.parse_now_values, py.parse_now.slice(0, 4), nd.parse_now.slice(0, 4));
     same('parseNow refuses a number (the sentence)', msgOf(py.parse_now_nonstr), msgOf(nd.parse_now_nonstr));
-    unruled('parseNow — the refusal sentence', py.parse_now.filter(bit).map(msgOf), nd.parse_now.filter(bit).map(msgOf),
-      "python quotes with repr and lets datetime word an impossible date ('day is out of range for month'), node writes one sentence with JSON quotes");
-    unruled('Retention over a checkpoint whose unit status is a list, beside a closed job', P(py.list_status), N(nd.list_status),
-      "python `_closed` raises TypeError (unhashable list) and the WHOLE sweep dies, so the closed job beside it is not archived; node skips the job and archives the other");
-    unruled('Retention compacting a job cold index holding a doc with no file', py.no_file_run, nd.no_file_run,
-      'python `d["file"]` raises KeyError out of run_retention (the child records an error); node swallows it inside compact');
+    // #11 #12 #13 #14 settled to node's answer, #15 to python's; the retry OSError (J90-1F) to node's.
+    const q = (x) => `not a retention timestamp: ${JSON.stringify(x)}`;
+    const refusals = ['2023-02-29T00:00:00Z', '0000-01-01T00:00:00Z', '2026-10-16T24:00:00Z', '2026-10-16T00:00:60Z',
+      '2026-10-16 00:00:00Z', '2026-10-16T00:00:00', 'x', ''].map(q);
+    same('parseNow — the refusal sentence, one sentence with JSON quotes', py.parse_now.filter(bit).map(msgOf), nd.parse_now.filter(bit).map(msgOf));
+    lit('parseNow — the refusal sentence', refusals, py.parse_now.filter(bit).map(msgOf), nd.parse_now.filter(bit).map(msgOf));
+    const listStatus = { run: { ...EMPTY_REPORT, archived: ['<dir>/list_status/root/.shiftwork/archive/b.json.gz'] }, left: ['archive', 'checkpoint-a.json'] };
+    same('Retention over a checkpoint whose unit status is a list skips it and archives the closed job beside it', P(py.list_status), N(nd.list_status));
+    lit('Retention over a list unit status', listStatus, P(py.list_status), N(nd.list_status));
+    same('Retention compacting a job cold index holding a doc with no file: the sweep goes on', py.no_file_run, nd.no_file_run);
+    lit('Retention over a doc with no file', EMPTY_REPORT, py.no_file_run, nd.no_file_run);
     same('searchArchived over a job cold index holding a doc with no file raises (the refusal bit)', bit(py.no_file_search), bit(nd.no_file_search));
-    unruled('searchArchived over a doc with no file — the class raised', py.no_file_search.raised, nd.no_file_search.raised, 'python KeyError, node TypeError');
-    unruled('retention.json with a non-UTF-8 byte outside ran_at', py.due_invalid_utf8, nd.due_invalid_utf8,
-      'python strict-decodes, fails and calls the run due; node `due` decodes lossily and calls it fresh (node `retentionLine` already decodes strictly)');
+    same('searchArchived over a doc with no file — the class raised', py.no_file_search.raised, nd.no_file_search.raised);
+    lit('searchArchived over a doc with no file — the class raised', 'TypeError', py.no_file_search.raised, nd.no_file_search.raised);
+    same('retention.json with a non-UTF-8 byte outside ran_at: the run is due', py.due_invalid_utf8, nd.due_invalid_utf8);
+    lit('retention.json with a non-UTF-8 byte: due', true, py.due_invalid_utf8, nd.due_invalid_utf8);
+    const retry = { first: [{ job: 'j', file: '.shiftwork/checkpoint-j.json', line: 1 }], retry: [] };
+    same('searchArchived: an OSError in the retry after a ColdIndexError answers []', py.retry_oserror, nd.retry_oserror);
+    lit('searchArchived: an OSError in the retry', retry, py.retry_oserror, nd.retry_oserror);
   } else if (section === 'lock') {
     same('lock constants', py.constants, nd.constants);
     lit('lock constants', LITERALS.lock.constants, py.constants, nd.constants);
-    // POSIX permission bits: Windows has no mode to compare, so the pin is POSIX-only.
-    if (process.platform !== 'win32') unruled('the permission bits of a held lock file (umask 022)', py.mode, nd.mode,
-      "python `os.open` defaults to mode 0o777 (0o755 after the umask), node `'wx'` to 0o666 (0o644)");
+    // #16 settled to node's answer. POSIX permission bits: Windows has no mode to compare.
+    if (process.platform !== 'win32') {
+      same('the permission bits of a held lock file (umask 022): 0o644, not executable', py.mode, nd.mode);
+      lit('the permission bits of a held lock file (umask 022)', [true, '0o644'], py.mode, nd.mode);
+    }
+    // J90-1F: the wait is measured on a monotonic clock, so a stepped wall clock moves neither end.
+    same('a lock wait with the wall clock stepped back 1 s / on 5 s: [held, under 1 s, at least 150 ms]', py.clock, nd.clock);
+    lit('a lock wait under a stepped wall clock', [[false, true, true], [false, true, true]], py.clock, nd.clock);
   }
   return cases;
 }

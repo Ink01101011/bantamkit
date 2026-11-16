@@ -33,11 +33,11 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .hotindex import SHARDS, _iso, dumps, shard_of
+from .hotindex import SHARDS, _iso, _loads, dumps, shard_of
 from .lock import exclusive
 
 COLD_VERSION = 1
-_ID = re.compile(r"^[0-9]{6}$")
+_ID = re.compile(r"[0-9]{6}")
 
 
 class ColdIndexError(Exception):
@@ -45,8 +45,19 @@ class ColdIndexError(Exception):
 
 
 def _read_json(path: Path) -> Any:
+    # Numbers as `JSON.parse` reads them: a tf of `1.0` is the whole number 1 (J90-1F #7).
     with open(path, encoding="utf-8") as fh:
-        return json.loads(fh.read())
+        return _loads(fh.read())
+
+
+def _js_quote(value: Any) -> str:
+    """`JSON.stringify(value)` for the name a refusal quotes, as `coldindex.ts` quotes it."""
+    try:
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return repr(value)
+    # JSON.stringify escapes a lone surrogate; `json.dumps` would write it raw.
+    return re.sub("[\ud800-\udfff]", lambda m: f"\\u{ord(m.group()):04x}", text)
 
 
 def _is_rows(v: Any) -> bool:
@@ -66,7 +77,7 @@ class ColdIndex:
     def __init__(self, name: str, home: Path | str, cold_dir: Path | str | None = None):
         bad = not isinstance(name, str) or not name or name in (".", "..")
         if bad or re.search(r"[/\\]", name):
-            raise ValueError(f"unknown cold index name: {name!r}")
+            raise ValueError(f"unknown cold index name: {_js_quote(name)}")
         self.name = name
         base = Path(cold_dir) if cold_dir is not None else Path(home) / ".bantamkit" / "cold"
         self.dir = base / name
@@ -93,12 +104,15 @@ class ColdIndex:
         segs = data.get("segments") if isinstance(data, dict) else None
         if (
             not isinstance(data, dict)
+            # `true` is not 1 to `coldindex.ts` (`!==`), though `True == 1` here (J90-1F #8).
+            or type(data.get("version")) is not int
             or data.get("version") != COLD_VERSION
             or not isinstance(segs, list)
             or not all(
                 isinstance(s, dict)
                 and isinstance(s.get("id"), str)
-                and _ID.match(s["id"])
+                # Whole-string: `^...$` would match before a final newline (J90-1F #9).
+                and _ID.fullmatch(s["id"])
                 and isinstance(s.get("docs"), list)
                 and all(isinstance(n, str) for n in s["docs"])
                 and isinstance(s.get("created"), str)

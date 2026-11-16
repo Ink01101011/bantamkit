@@ -38,9 +38,12 @@ export function exclusive<T>(target: string, body: (held: boolean) => T, options
   const staleMs = options.staleMs ?? LOCK_STALE_MS;
   const pollMs = options.pollMs ?? LOCK_POLL_MS;
   const lock = `${target}.lock`;
-  const deadline = Date.now() + waitMs;
+  // The wait is measured on a monotonic clock, as the reference's `time.monotonic()`: a wall
+  // clock stepped back would hold a waiter far past `waitMs`, one stepped forward would give up
+  // at once (J90-1F). Staleness stays on the wall clock: it is compared with a file's mtime.
+  const deadline = performance.now() + waitMs;
   let held = false;
-  while (!held && Date.now() < deadline) {
+  while (!held && performance.now() < deadline) {
     try {
       fs.closeSync(fs.openSync(lock, 'wx'));
       held = true;

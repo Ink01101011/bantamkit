@@ -54,7 +54,9 @@ def exclusive(
     held = False
     while not held and time.monotonic() < deadline:
         try:
-            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            # 0o666, as Node's `'wx'` opens it: `os.open` would default to 0o777, an executable
+            # lock file (0o755 under umask 022) (J90-1F #16).
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666))
             held = True
         except OSError as e:
             if _refused(lock, e):
