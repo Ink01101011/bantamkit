@@ -153,6 +153,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src"))
 
+from bantamkit._generated._ts2py_runtime import _js_json_parse
 from bantamkit.storage import LogSegment
 
 
@@ -818,6 +819,13 @@ _J90_FACT = (
 )
 
 
+_DECODE_JSON = [
+    "[-0,1,1,0,0]", "[0,1,2.0,0,0]", "[0,1,1.5,0,0]", "[9007199254740993,1,1,0,0]", '[0,"1",1,0,0]',
+    "[0,1,null,0,0]", "[0,1,1,0]", "[0,4,1,0,0]", "[1e400,1,1,0,0]", "[0,1,1,0,0,1,1,0,0,2]",
+    "[0,1,true,0,0]", "[-1,1,1,0,0]", "[0,0,1,0,0]", "[0,3,1,-1,2,1,2,0,0,5]", '"x"', "{}", "[]",
+]
+
+
 def _j90_try(f):
     try:
         return f()
@@ -914,6 +922,9 @@ def _j90_index(d: Path) -> dict:
     out["units"] = {
         "decode": h.decode(["a", "b", "c"], [0, 2, 1, 0, 3, 2, 1, 0, 0, 1]),
         "decode_bad": _j90_try(lambda: h.decode(["a"], [0, 2, 1, 0, 0])),
+        # J90-P3: as storage_j90.mjs's DECODE_JSON, each text read as the runtime reads a shard.
+        "decode_json": [_j90_try(lambda t=t: h.decode(["a", "b", "c"], _js_json_parse(t)))
+                        for t in _DECODE_JSON],
         "encode": h.encode([(0, 1, 0, 0), (1, 1, 0, 0), (2, 0, 2, 0), (4, 0, 2, 0)]),
         "head_text": h.head_text({k: k for k in h.HEAD_KEYS + h.TAIL_KEYS}),
         "constants": [h.INDEX_VERSION, h.FULL_REFRESH_EVERY_S, h.SHARDS, list(h.FAMILIES),

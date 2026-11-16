@@ -48,23 +48,7 @@ def resolve_project_store(start=_JS_UNDEFINED):
     return _count_into_binding(path, base, "walk")
 
 
-def _count_facts__typed(root):
-    facts = py_join(root, "facts")
-    _js_caught0 = None
-    try:
-        return len([name for name in _js_array("filter", py_scandir_names(facts)) if _js_truthy(matches_md(name))])
-    except Exception as _js_error0:
-        _js_caught0 = _js_catch(_js_error0)
-    if _js_caught0 is not None:
-        error = _js_caught0 if isinstance(_js_caught0, PyOSError) else as_py_os_error(_js_caught0, facts)
-        if _js_get(error, "code") == "ENOENT":
-            return 0
-        raise _js_throw(error)
-
-
 def count_facts(root):
-    if type(root) is str:
-        return _count_facts__typed(root)
     facts = py_join(root, "facts")
     _js_caught1 = None
     try:
@@ -76,6 +60,9 @@ def count_facts(root):
         if _js_get(error, "code") == "ENOENT":
             return 0
         raise _js_throw(error)
+
+
+_count_facts__typed = count_facts
 
 
 def _count_into_binding__typed(path, searched_from, origin):
@@ -145,53 +132,7 @@ def _walk_to_store(base):
 _walk_to_store__typed = _walk_to_store
 
 
-def _load_grants__typed(project_store):
-    config_path = py_join(py_parent(project_store), CONFIG_NAME)
-    if not _js_truthy(py_exists(config_path)):
-        return []
-    if not _js_truthy(py_is_file(config_path)):
-        raise MemoryValidationError("invalid memory config " + _js_str(config_path) + ": not a file")
-    data = _JS_UNDEFINED
-    text = _JS_UNDEFINED
-    _js_caught5 = None
-    try:
-        text = py_read_text(config_path)
-    except Exception as _js_error5:
-        _js_caught5 = _js_catch(_js_error5)
-    if _js_caught5 is not None:
-        why = py_os_error_text(_js_caught5) if isinstance(_js_caught5, PyOSError) else _js_get(_js_caught5, "message") if isinstance(_js_caught5, _JsError) else _js_str(_js_caught5)
-        raise MemoryValidationError("invalid memory config " + _js_str(config_path) + ": " + _js_str(why))
-    tab = first_token_tab(text)
-    if tab is not None:
-        raise MemoryValidationError("invalid memory config " + _js_str(config_path) + ": " + tab_sentence(_js_get(tab, 0), _js_get(tab, 1)))
-    _js_caught6 = None
-    try:
-        data = parse_config_document(text)
-    except Exception as _js_error6:
-        _js_caught6 = _js_catch(_js_error6)
-    if _js_caught6 is not None:
-        raise MemoryValidationError("invalid memory config " + _js_str(config_path) + ": " + _js_str(_js_get(_js_caught6, "message") if isinstance(_js_caught6, _JsError) else _js_str(_js_caught6)))
-    if _js_get(data, "kind") == "null":
-        return []
-    if _js_get(data, "kind") != "mapping":
-        raise MemoryValidationError("invalid memory config " + _js_str(config_path) + ": expected a mapping")
-    mapping = data
-    raw = _js_coalesce(_js_m_get(_js_get(mapping, "entries"), "extra_stores"), lambda: {"kind": "seq", "items": []})
-    if _js_get(raw, "kind") != "seq" or not all(_js_get(item, "kind") == "str" for item in _js_array("every", _js_get(raw, "items"))):
-        raise MemoryValidationError("invalid memory config " + _js_str(config_path) + ": extra_stores must be a list of paths")
-    grants = []
-    for entry in _js_get(raw, "items"):
-        resolved = py_resolve(py_join(py_parent(config_path), _js_get(entry, "value")))
-        if not _js_truthy(py_is_dir(resolved)):
-            shape = "is not a directory" if _js_truthy(py_exists(resolved)) else "does not exist"
-            raise MemoryValidationError("granted store " + shape + ": " + _js_str(resolved) + " (from " + _js_str(config_path) + ")")
-        grants.append(resolved)
-    return grants
-
-
 def load_grants(project_store):
-    if type(project_store) is str:
-        return _load_grants__typed(project_store)
     config_path = py_join(py_parent(project_store), CONFIG_NAME)
     if not _js_truthy(py_exists(config_path)):
         return []
@@ -233,6 +174,9 @@ def load_grants(project_store):
             raise MemoryValidationError("granted store " + shape + ": " + _js_str(resolved) + " (from " + _js_str(config_path) + ")")
         grants.append(resolved)
     return grants
+
+
+_load_grants__typed = load_grants
 
 
 def tab_sentence(line, column):

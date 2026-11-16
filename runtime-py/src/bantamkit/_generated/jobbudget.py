@@ -12,7 +12,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_get,
     _js_gt,
     _js_in,
-    _js_is_array,
     _js_is_double,
     _js_is_number,
     _js_le,
@@ -45,7 +44,7 @@ DIMENSIONS = ["tokens", "units", "wallclock_ms"]
 def _counted(lines):
     kept = []
     for raw in lines:
-        if _js_typeof(raw) != "object" or raw is None or _js_is_array(raw):
+        if _js_typeof(raw) != "object" or raw is None or isinstance(raw, list):
             continue
         line = raw
         event = _js_get(line, "event")

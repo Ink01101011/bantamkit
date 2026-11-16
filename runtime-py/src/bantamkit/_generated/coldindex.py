@@ -17,7 +17,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_every_string,
     _js_floor,
     _js_get,
-    _js_is_array,
     _js_json_parse,
     _js_json_stringify,
     _js_list_at,
@@ -85,26 +84,13 @@ class ColdIndexError(_JsError):
 
 
 def _is_obj(v):
-    return v is not None and _js_typeof(v) == "object" and not _js_is_array(v)
+    return v is not None and _js_typeof(v) == "object" and not isinstance(v, list)
 
 
 COLD_NOT_JSON = "the file is not JSON"
 
 
-def _read_json__typed(p):
-    text = coldFs.readFileSync(p)
-    _js_caught0 = None
-    try:
-        return _js_json_parse(text)
-    except Exception as _js_error0:
-        _js_caught0 = _js_catch(_js_error0)
-    if _js_caught0 is not None:
-        raise ColdIndexError(COLD_NOT_JSON)
-
-
 def _read_json(p):
-    if type(p) is str:
-        return _read_json__typed(p)
     text = coldFs.readFileSync(p)
     _js_caught1 = None
     try:
@@ -115,14 +101,17 @@ def _read_json(p):
         raise ColdIndexError(COLD_NOT_JSON)
 
 
+_read_json__typed = _read_json
+
+
 def _is_segment(s):
     id_ = _js_get(s, "id")
     docs = _js_get(s, "docs")
-    return isinstance(id_, str) and _ID.search(_js_code_units(id_)) is not None and _js_is_array(docs) and _js_every_string(docs) and isinstance(_js_get(s, "created"), str)
+    return isinstance(id_, str) and _ID.search(_js_code_units(id_)) is not None and isinstance(docs, list) and _js_every_string(docs) and isinstance(_js_get(s, "created"), str)
 
 
 def _is_rows(v):
-    return _js_is_array(v) and all(_js_is_array(r) and len(r) == 4 and isinstance(r[0], str) and isinstance(r[1], str) and isinstance(r[2], str) and _js_number_is_integer(r[3]) for r in v)
+    return isinstance(v, list) and all(isinstance(r, list) and len(r) == 4 and isinstance(r[0], str) and isinstance(r[1], str) and isinstance(r[2], str) and (type(r[3]) is int and -2**53 <= r[3] <= 2**53 or _js_number_is_integer(r[3])) for r in v)
 
 
 def _iso_now(now_ms):
@@ -170,7 +159,7 @@ class ColdIndex(_JsObject):
             raise ColdIndexError("cold index manifest unreadable: " + _js_str(_err_message(_js_caught2)))
         top = data
         segs = _js_get(top, "segments") if _is_obj(data) else _JS_UNDEFINED
-        if not _is_obj(data) or not _js_strict_eq(_js_get(top, "version"), COLD_VERSION) or not _js_is_array(segs) or not all(_is_obj(s) and _is_segment(s) for s in segs):
+        if not _is_obj(data) or not _js_strict_eq(_js_get(top, "version"), COLD_VERSION) or not isinstance(segs, list) or not all(_is_obj(s) and _is_segment(s) for s in segs):
             raise ColdIndexError("cold index manifest is not this version's shape")
         return data
 
@@ -408,29 +397,7 @@ def _next_id(manifest):
     return _js_m_padStart(_js_str(_js_add(last, 1)), 6, "0")
 
 
-def _write__typed(p, text):
-    tmp = path_join(path_dirname(p), _js_str(path_basename(p)) + "." + _js_str(process_pid()) + ".tmp")
-    _js_caught12 = None
-    try:
-        write_file_sync(tmp, text, "utf8")
-        rename_sync(tmp, p)
-    except Exception as _js_error12:
-        _js_caught12 = _js_catch(_js_error12)
-    if _js_caught12 is not None:
-        _js_caught13 = None
-        try:
-            rm_sync(tmp, {"force": True})
-        except Exception as _js_error13:
-            _js_caught13 = _js_catch(_js_error13)
-        if _js_caught13 is not None:
-            pass
-        raise _js_caught12
-    return _JS_UNDEFINED
-
-
 def _write(p, text):
-    if type(p) is str and type(text) is str:
-        return _write__typed(p, text)
     tmp = path_join(path_dirname(p), _js_str(path_basename(p)) + "." + _js_str(process_pid()) + ".tmp")
     _js_caught14 = None
     try:
@@ -448,6 +415,9 @@ def _write(p, text):
             pass
         raise _js_caught14
     return _JS_UNDEFINED
+
+
+_write__typed = _write
 
 
 # Imported last: these modules import this one back (an import cycle).

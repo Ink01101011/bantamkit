@@ -106,6 +106,9 @@ async function index(runtimeTs, d) {
   out.units = {
     decode: h.decodeSegments(['a', 'b', 'c'], [0, 2, 1, 0, 3, 2, 1, 0, 0, 1]),
     decode_bad: attempt(() => h.decodeSegments(['a'], [0, 2, 1, 0, 0])),
+    // J90-P3: segments as a shard's JSON reads them, malformed ways included (the strided copy's
+    // guard fails on each, and the general loop answers); the same texts in storage_ref.py.
+    decode_json: DECODE_JSON.map((text) => attempt(() => h.decodeSegments(['a', 'b', 'c'], JSON.parse(text)))),
     encode: h.encodeSegments([[0, 1, 0, 0], [1, 1, 0, 0], [2, 0, 2, 0], [4, 0, 2, 0]]),
     head_text: h.headText(Object.fromEntries(all.map((k) => [k, k]))),
     constants: [h.INDEX_VERSION, h.FULL_REFRESH_EVERY_S, h.SHARDS, [...h.FAMILIES], [...h.HEAD_KEYS], [...h.TAIL_KEYS], h.SEG, h.DUPLICATE, h.INDEX_DIR_ENV],
@@ -428,6 +431,8 @@ export function unpath(value, dir) {
 
 // --------------------------------------------------------------------------------- the cases
 
+/** J90-P3: segment texts for `decodeSegments` (storage_ref.py holds the same list). */
+const DECODE_JSON = ['[-0,1,1,0,0]', '[0,1,2.0,0,0]', '[0,1,1.5,0,0]', '[9007199254740993,1,1,0,0]', '[0,"1",1,0,0]', '[0,1,null,0,0]', '[0,1,1,0]', '[0,4,1,0,0]', '[1e400,1,1,0,0]', '[0,1,1,0,0,1,1,0,0,2]', '[0,1,true,0,0]', '[-1,1,1,0,0]', '[0,0,1,0,0]', '[0,3,1,-1,2,1,2,0,0,5]', '"x"', '{}', '[]'];
 const bit = (v) => v !== null && typeof v === 'object' && !Array.isArray(v) && 'raised' in v;
 const msgOf = (v) => (bit(v) ? v.msg : v);
 
@@ -498,6 +503,7 @@ export function j90Cases(section, { py, nd, dirs }) {
     lit('HotIndex names / fileOf / size', [L.names, L.file_of, L.size], [py.reads.names, py.reads.file_of, py.reads.size], [nd.reads.names, nd.reads.file_of, nd.reads.size]);
     same('decodeSegments / encodeSegments / headText', [py.units.decode, py.units.encode, py.units.head_text], [nd.units.decode, nd.units.encode, nd.units.head_text]);
     same('decodeSegments refuses a run past the names (the bit and the sentence)', [bit(py.units.decode_bad), msgOf(py.units.decode_bad)], [bit(nd.units.decode_bad), msgOf(nd.units.decode_bad)]);
+    same('decodeSegments of JSON-read segments, malformed ones too (J90-P3: each answer, the bit and the sentence)', py.units.decode_json.map((v) => [bit(v), msgOf(v)]), nd.units.decode_json.map((v) => [bit(v), msgOf(v)]));
     same('hotindex constants', py.units.constants, nd.units.constants);
     lit('hotindex encodeSegments and constants', [L.encode, L.constants], [py.units.encode, py.units.constants], [nd.units.encode, nd.units.constants]);
     // #1 #2 #4 settled to node's answer, #3 (and the head and tail J90-1F found alike) to python's.

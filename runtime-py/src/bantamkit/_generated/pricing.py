@@ -14,7 +14,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_get,
     _js_gt,
     _js_in,
-    _js_is_array,
     _js_is_number,
     _js_json_parse,
     _js_le,
@@ -97,7 +96,7 @@ class PriceTableError(BantamError):
 
 
 def _is_count(value):
-    return _js_is_number(value) and _js_number_is_integer(value) and _js_ge(value, 0) and _js_le(value, MAX_SAFE_INT)
+    return _js_is_number(value) and (type(value) is int and -2**53 <= value <= 2**53 or _js_number_is_integer(value)) and _js_ge(value, 0) and _js_le(value, MAX_SAFE_INT)
 
 
 def _as_count(value):
@@ -152,7 +151,7 @@ _decode_price_json__typed = decode_price_json
 
 
 def _is_plain_object(value):
-    return _js_typeof(value) == "object" and value is not None and not _js_is_array(value)
+    return _js_typeof(value) == "object" and value is not None and not isinstance(value, list)
 
 
 def validate_price_table(raw):

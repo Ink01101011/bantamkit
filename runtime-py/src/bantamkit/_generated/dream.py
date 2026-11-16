@@ -636,19 +636,7 @@ def _consume(store, name):
     return _JS_UNDEFINED
 
 
-def _file_size__typed(path):
-    _js_caught10 = None
-    try:
-        return _js_size(stat_sync(path))
-    except Exception as _js_error10:
-        _js_caught10 = _js_catch(_js_error10)
-    if _js_caught10 is not None:
-        return 0
-
-
 def _file_size(path):
-    if type(path) is str:
-        return _file_size__typed(path)
     _js_caught11 = None
     try:
         return _js_size(stat_sync(path))
@@ -656,6 +644,9 @@ def _file_size(path):
         _js_caught11 = _js_catch(_js_error11)
     if _js_caught11 is not None:
         return 0
+
+
+_file_size__typed = _file_size
 
 
 def dream(project, profile, dry_run=_JS_UNDEFINED):

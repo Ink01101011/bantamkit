@@ -19,7 +19,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_get,
     _js_gt,
     _js_invoke,
-    _js_is_array,
     _js_json_stringify,
     _js_le,
     _js_len,
@@ -162,19 +161,7 @@ def profile_store():
     return py_join(py_home(), *_STORE_PARTS)
 
 
-def _same_directory__typed(a, b):
-    _js_caught0 = None
-    try:
-        return _js_strict_eq(py_realpath(a), py_realpath(b))
-    except Exception as _js_error0:
-        _js_caught0 = _js_catch(_js_error0)
-    if _js_caught0 is not None:
-        return _js_strict_eq(path_resolve(a), path_resolve(b))
-
-
 def _same_directory(a, b):
-    if type(a) is str and type(b) is str:
-        return _same_directory__typed(a, b)
     _js_caught1 = None
     try:
         return _js_strict_eq(py_realpath(a), py_realpath(b))
@@ -182,6 +169,9 @@ def _same_directory(a, b):
         _js_caught1 = _js_catch(_js_error1)
     if _js_caught1 is not None:
         return _js_strict_eq(path_resolve(a), path_resolve(b))
+
+
+_same_directory__typed = _same_directory
 
 
 def layer_label(root):
@@ -721,7 +711,7 @@ class Memory(_JsObject):
         i = 0
         while _js_lt(i, _js_len(facts)):
             item = _js_get(facts, i)
-            is_dict = item is not None and _js_typeof(item) == "object" and not _js_is_array(item)
+            is_dict = item is not None and _js_typeof(item) == "object" and not isinstance(item, list)
             obj = item if is_dict else None
             name = _js_get(obj, "name") if obj is not None and _js_object_has_own(obj, "name") else None
             layer = _js_get(obj, "layer") if obj is not None and _js_object_has_own(obj, "layer") and _js_get(obj, "layer") is not None else None

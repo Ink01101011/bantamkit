@@ -498,6 +498,45 @@ runtime and adapters to the source's `ast.dump` (docstrings aside), and
 `runtime-py/tests/test_ts2py_fresh.py` spells the same rule. The documentation stays in
 `tools/ts2py/src/`, the only copy anyone edits.
 
+## Proven shapes for JSON-derived arrays (J90-P3, #316 G4)
+
+A value read from JSON proves nothing (SUBSET.md, *Not proof*), and a TypeScript check on it
+(`Array.isArray`, `every(Number.isInteger)`, a length test) proves less than a lowering needs
+(`Number.isInteger` admits an int past 2^53, which `<` and `+` must round). So the shape is proven
+the way the counted loop proves it (J89-3): by a guard made once, at run time, before the loop,
+that checks the STRONGER property the direct reads need; a value that fails it (a string, `null`,
+`-0`, a float, an int past 2^53, a length that is no multiple of the stride) takes the general
+loop, which answers what JS answers. Every rule below is pinned TAKEN and answering as Node does in
+`tests/j90p3.rs` (`probe()` and a 3,000-input digest over seeded malformed segment arrays read from
+JSON text, `tests/fixtures/j90p3_probe.ts`), with a mutation of each shown red.
+
+| Construct | Proven copy | Guard (once, before the loop) |
+|---|---|---|
+| `for (let j = a; j < b; j += S)`, `S` a whole-number literal from 1 to 1024 or a module `const` bound to one | `for j in range(j, b, S)` | as J89-3 |
+| `x[j + c]`, `c` a whole-number literal or such a `const` | `x[j + c]` | `x` a list; `b <= j or j + (b - 1 - j) // S * S + c < len(x)` (the last group's read in range); with `S == 1`, `b + c <= len(x)` |
+| an array some read of which (or a `const` read from it) is an operand of arithmetic, a comparison, `===`, an index, a return, or anything but a sink | its reads proven numbers | `_js_doubles(x, j, len(x))` (`_js_doubles(x, j, b)` for `x[j]` at stride 1, as before) |
+| an array every read of which lands only in a SINK: a `const`'s initializer whose name then lands only in sinks, an array literal's element, `push`'s argument, a bare name tested by `if` | its reads `x[j + c]` as they are, proving nothing | bounds alone (no element check: a string array is read directly) |
+| a counted loop nested in the body (`for (let k = s; k < e; k += S2)`) | lowered with its own guard and copy, per entry, inside the copy; the outer copy's proven bindings stay proven in it | the outer guard checks every array the inner loop reads by `k` is a list |
+| `throw new Error('literal')`, array literals, `push` of an array literal onto a fresh array | in the copy (no compiled code runs) | — |
+
+The general loop of a copy (what a failed guard runs) holds no copy of a nested loop of its own:
+it is the rare path, lowered once. Two smaller rules ride with these: `Array.isArray(x)` is
+`isinstance(x, list)` inline (`_js_is_array`'s own test; a match array is a list subclass), and a
+proven number named once is tested `x != 0 and x == x` (falsy for `0`, `-0` and NaN) instead of
+`_js_truthy(x)`.
+
+**One body up to temporaries.** J90-P2's one body for a wrapped function whose guarded entry is
+its typed body line for line now compares the two bodies up to the compiler's own temporaries
+(`_js_caught`, `_js_error`, `_js_fn`, `_js_arg`, `_js_t`, `_js_first`, `_js_obj`, `_js_switch`,
+`_js_item` followed by digits, renumbered in order of first appearance): each is local to its
+body, so two bodies that differ only in those numbers are one function. It removed about 25 KB of
+committed `_generated` source (a typed body with a `try` differed only there).
+
+`decodeSegments` (storage/hotindex.ts) is written for the strided copy: a segment's five numbers
+read once at `j + 0..4`, the run one nested counted loop, `names` read only as values
+(`ArrayLike<string>`, so it has one body); Node's answers before and after are equal over 20,000
+seeded inputs, malformed ones included.
+
 ## Classes (J86)
 
 | Construct | Lowering | Preserved |

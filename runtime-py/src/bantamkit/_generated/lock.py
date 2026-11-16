@@ -45,22 +45,7 @@ LOCK_POLL_MS = 5
 _REFUSED = _JsSet(["EACCES", "EPERM", "EROFS"])
 
 
-def _refused__typed(lock, e):
-    if not _js_m_has(_REFUSED, _js_coalesce_value(_js_get(e, "code"), "")):
-        return False
-    _js_caught0 = None
-    try:
-        stat_sync(lock)
-    except Exception as _js_error0:
-        _js_caught0 = _js_catch(_js_error0)
-    if _js_caught0 is not None:
-        return _js_get(_js_caught0, "code") == "ENOENT"
-    return False
-
-
 def _refused(lock, e):
-    if type(lock) is str:
-        return _refused__typed(lock, e)
     if not _js_m_has(_REFUSED, _js_coalesce_value(_js_get(e, "code"), "")):
         return False
     _js_caught1 = None
@@ -71,6 +56,9 @@ def _refused(lock, e):
     if _js_caught1 is not None:
         return _js_get(_js_caught1, "code") == "ENOENT"
     return False
+
+
+_refused__typed = _refused
 
 
 def _acquire_lock__typed(lock, wait_ms, stale_ms, poll_ms):
@@ -207,40 +195,7 @@ def temp_base(name):
     return _js_m_slice(stem, 0, dot)
 
 
-def _remove_stale_temps__typed(dir, owns, stale_ms=_JS_UNDEFINED):
-    if stale_ms is _JS_UNDEFINED:
-        stale_ms = LOCK_STALE_MS
-    names = _JS_UNDEFINED
-    _js_caught8 = None
-    try:
-        names = readdir_sync(dir)
-    except Exception as _js_error8:
-        _js_caught8 = _js_catch(_js_error8)
-    if _js_caught8 is not None:
-        return []
-    removed = []
-    for name in _js_m_sort([*names], cmp_codepoint):
-        base = temp_base(name)
-        if base is None or not _js_truthy(owns(base)):
-            continue
-        p = path_join(dir, name)
-        _js_caught9 = None
-        try:
-            st = lstat_sync(p)
-            if not _js_truthy(_js_invoke(st, "isFile")) or not _js_gt(_js_num(_js_now() - _js_num(_js_get(st, "mtimeMs"))), stale_ms):
-                continue
-            unlink_sync(p)
-            removed.append(name)
-        except Exception as _js_error9:
-            _js_caught9 = _js_catch(_js_error9)
-        if _js_caught9 is not None:
-            pass
-    return removed
-
-
 def remove_stale_temps(dir, owns, stale_ms=_JS_UNDEFINED):
-    if type(dir) is str:
-        return _remove_stale_temps__typed(dir, owns, stale_ms)
     if stale_ms is _JS_UNDEFINED:
         stale_ms = LOCK_STALE_MS
     names = _JS_UNDEFINED
@@ -269,3 +224,6 @@ def remove_stale_temps(dir, owns, stale_ms=_JS_UNDEFINED):
         if _js_caught11 is not None:
             pass
     return removed
+
+
+_remove_stale_temps__typed = remove_stale_temps

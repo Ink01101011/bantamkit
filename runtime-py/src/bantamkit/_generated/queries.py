@@ -20,7 +20,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_get,
     _js_gt,
     _js_invoke,
-    _js_is_array,
     _js_is_number,
     _js_json_parse,
     _js_len,
@@ -115,21 +114,7 @@ def sidecar_path(home, root):
 _sidecar_path__typed = sidecar_path
 
 
-def _doc_of__typed(p):
-    raw = _JS_UNDEFINED
-    _js_caught0 = None
-    try:
-        raw = read_file_sync(p)
-    except Exception as _js_error0:
-        _js_caught0 = _js_catch(_js_error0)
-    if _js_caught0 is not None:
-        return None
-    return _doc_of_bytes(raw)
-
-
 def _doc_of(p):
-    if type(p) is str:
-        return _doc_of__typed(p)
     raw = _JS_UNDEFINED
     _js_caught1 = None
     try:
@@ -139,6 +124,9 @@ def _doc_of(p):
     if _js_caught1 is not None:
         return None
     return _doc_of_bytes(raw)
+
+
+_doc_of__typed = _doc_of
 
 
 def _doc_of_bytes(raw):
@@ -271,11 +259,11 @@ _terms_path__typed = terms_path
 
 
 def _is_count(x):
-    return _js_is_number(x) and _js_number_is_integer(x) and _js_ge(x, 0) and _js_lt(x, _EXACT)
+    return _js_is_number(x) and (type(x) is int and -2**53 <= x <= 2**53 or _js_number_is_integer(x)) and _js_ge(x, 0) and _js_lt(x, _EXACT)
 
 
 def _is_object(x):
-    return x is not None and _js_typeof(x) == "object" and not _js_is_array(x)
+    return x is not None and _js_typeof(x) == "object" and not isinstance(x, list)
 
 
 def _cached__typed(p, sha):
@@ -296,11 +284,11 @@ def _cached__typed(p, sha):
     out = _JsMap()
     for name in _js_object_keys(facts):
         entry = _js_get(facts, name)
-        if not _js_is_array(entry) or len(entry) != 2:
+        if not isinstance(entry, list) or len(entry) != 2:
             return None
         dl = _js_list_at(entry, 0)
         flat = _js_list_at(entry, 1)
-        if not _is_count(dl) or not _js_is_array(flat) or _js_mod(len(flat), 2) != 0:
+        if not _is_count(dl) or not isinstance(flat, list) or _js_mod(len(flat), 2) != 0:
             return None
         i = 0
         while i < len(flat):
@@ -331,11 +319,11 @@ def _cached(p, sha):
     out = _JsMap()
     for name in _js_object_keys(facts):
         entry = _js_get(facts, name)
-        if not _js_is_array(entry) or len(entry) != 2:
+        if not isinstance(entry, list) or len(entry) != 2:
             return None
         dl = _js_list_at(entry, 0)
         flat = _js_list_at(entry, 1)
-        if not _is_count(dl) or not _js_is_array(flat) or _js_mod(len(flat), 2) != 0:
+        if not _is_count(dl) or not isinstance(flat, list) or _js_mod(len(flat), 2) != 0:
             return None
         i = 0
         while i < len(flat):
@@ -400,7 +388,7 @@ def _sidecar_entries(raw):
                 if not _is_object(entry) or not _js_object_has_own(entry, "queries"):
                     continue
                 qs = _js_get(entry, "queries")
-                if _js_is_array(qs) and len(qs) > 0 and _js_every_string(qs):
+                if isinstance(qs, list) and len(qs) > 0 and _js_every_string(qs):
                     _js_m_set(out, name, qs)
             return out
     return _entries_of(_doc_of_bytes(raw))
@@ -460,16 +448,12 @@ def _flat_terms(counts):
     return out
 
 
-def _dump_terms_slow__typed(facts, sha):
-    doc = {"t": "dict", "v": _JsMap([["facts", {"t": "dict", "v": _JsMap(_js_m_map([*facts], lambda _js_arg8, *_: (lambda n, row: [n, {"t": "list", "v": [_py_int(_js_get(row, 0)), {"t": "list", "v": _flat_terms(_js_get(row, 1))}]}])(*_js_destructure(_js_arg8, 2))))}], ["sidecar", {"t": "str", "v": sha}], ["v", _py_int__typed(TERMS_VERSION)]])}
-    return dump_json(doc, {"sortKeys": True, "ensureAscii": True, "separators": [",", ":"]})
-
-
 def dump_terms_slow(facts, sha):
-    if type(sha) is str:
-        return _dump_terms_slow__typed(facts, sha)
     doc = {"t": "dict", "v": _JsMap([["facts", {"t": "dict", "v": _JsMap(_js_m_map([*facts], lambda _js_arg9, *_: (lambda n, row: [n, {"t": "list", "v": [_py_int(_js_get(row, 0)), {"t": "list", "v": _flat_terms(_js_get(row, 1))}]}])(*_js_destructure(_js_arg9, 2))))}], ["sidecar", {"t": "str", "v": sha}], ["v", _py_int__typed(TERMS_VERSION)]])}
     return dump_json(doc, {"sortKeys": True, "ensureAscii": True, "separators": [",", ":"]})
+
+
+_dump_terms_slow__typed = dump_terms_slow
 
 
 def sidecar_entries_slow(raw):
@@ -567,7 +551,7 @@ _cps__typed = _cps
 
 
 def check_queries(queries):
-    if not _js_is_array(queries) or not _js_every_string(queries):
+    if not isinstance(queries, list) or not _js_every_string(queries):
         raise MemoryValidationError("queries must be a list of strings")
     if len(queries) > MAX_QUERIES:
         raise MemoryValidationError("queries: at most " + _js_str(MAX_QUERIES) + " per fact, got " + _js_str(len(queries)))

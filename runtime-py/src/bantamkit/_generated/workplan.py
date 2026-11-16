@@ -10,7 +10,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_code_units,
     _js_every_string,
     _js_get,
-    _js_is_array,
     _js_is_nullish,
     _js_is_number,
     _js_json_stringify,
@@ -51,7 +50,7 @@ def _refuse(reason):
 
 
 def _is_integer(value):
-    return _js_is_number(value) and _js_number_is_integer(value)
+    return _js_is_number(value) and (type(value) is int and -2**53 <= value <= 2**53 or _js_number_is_integer(value))
 
 
 def _plain_path(path):
@@ -65,8 +64,8 @@ def _plain_path(path):
 def _touches_refusal__typed(node_id, touches):
     if _js_is_nullish(touches):
         return None
-    bad = touches if not _js_is_array(touches) else _js_m_find(touches, lambda path, *_: not _plain_path(path))
-    if _js_is_array(touches) and bad is _JS_UNDEFINED:
+    bad = touches if not isinstance(touches, list) else _js_m_find(touches, lambda path, *_: not _plain_path(path))
+    if isinstance(touches, list) and bad is _JS_UNDEFINED:
         return None
     return "node " + node_id + " touches " + _js_str(_js_json_stringify(bad)) + ", which is not a plain relative path"
 
@@ -76,8 +75,8 @@ def touches_refusal(node_id, touches):
         return _touches_refusal__typed(node_id, touches)
     if _js_is_nullish(touches):
         return None
-    bad = touches if not _js_is_array(touches) else _js_m_find(touches, lambda path, *_: not _plain_path(path))
-    if _js_is_array(touches) and bad is _JS_UNDEFINED:
+    bad = touches if not isinstance(touches, list) else _js_m_find(touches, lambda path, *_: not _plain_path(path))
+    if isinstance(touches, list) and bad is _JS_UNDEFINED:
         return None
     return "node " + _js_str(node_id) + " touches " + _js_str(_js_json_stringify(bad)) + ", which is not a plain relative path"
 
@@ -85,14 +84,14 @@ def touches_refusal(node_id, touches):
 def _read_nodes(nodes):
     read = []
     for index, raw in _js_m_entries(nodes):
-        if _js_typeof(raw) != "object" or raw is None or _js_is_array(raw):
+        if _js_typeof(raw) != "object" or raw is None or isinstance(raw, list):
             return _refuse("nodes[" + _js_str(index) + "] must be an object")
         node = raw
         id_ = _js_get(node, "id")
         if not isinstance(id_, str):
             return _refuse("nodes[" + _js_str(index) + "].id must be a string")
         depends_on = _js_get(node, "depends_on")
-        if not _js_is_nullish(depends_on) and not (_js_is_array(depends_on) and _js_every_string(depends_on)):
+        if not _js_is_nullish(depends_on) and not (isinstance(depends_on, list) and _js_every_string(depends_on)):
             return _refuse("nodes[" + _js_str(index) + "].depends_on must be a list of strings")
         priority = _js_get(node, "priority")
         if not _js_is_nullish(priority) and not _is_integer(priority):
@@ -126,7 +125,7 @@ def _cycle_path(nodes, emitted):
 
 def _plan__typed(input):
     nodes = _read_nodes__typed(input)
-    if not _js_is_array(nodes):
+    if not isinstance(nodes, list):
         return nodes
     declared = _JsSet()
     for node in nodes:
@@ -180,7 +179,7 @@ def plan(input):
     if type(input) is list:
         return _plan__typed(input)
     nodes = _read_nodes(input)
-    if not _js_is_array(nodes):
+    if not isinstance(nodes, list):
         return nodes
     declared = _JsSet()
     for node in nodes:

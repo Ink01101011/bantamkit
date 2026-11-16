@@ -25,7 +25,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_gt,
     _js_in,
     _js_invoke,
-    _js_is_array,
     _js_is_double,
     _js_json_stringify,
     _js_le,
@@ -737,7 +736,7 @@ def py_hash_key(value):
         return "num:" + _js_str(_js_get(value, "text"))
     elif _js_switch11 == "float":
         n = _js_number(_js_get(value, "text"))
-        return "num:" + _js_m_toString(_js_bigint(_js_list_at(_js_m_split(_js_get(value, "text"), "."), 0))) if _js_number_is_integer(n) else "num:" + _js_str(_js_get(value, "text"))
+        return "num:" + _js_m_toString(_js_bigint(_js_list_at(_js_m_split(_js_get(value, "text"), "."), 0))) if (type(n) is int and -2**53 <= n <= 2**53 or _js_number_is_integer(n)) else "num:" + _js_str(_js_get(value, "text"))
     else:
         return _js_str(_js_get(value, "pyType")) + ":" + _js_str(_js_get(value, "text"))
     return _JS_UNDEFINED
@@ -757,9 +756,9 @@ def _num_eq(a, b):
     if _js_typeof(a) == "bigint" and _js_typeof(b) == "bigint":
         return _js_strict_eq(a, b)
     if _js_typeof(a) == "bigint":
-        return _js_number_is_integer(b) and _js_strict_eq(a, _js_bigint(b))
+        return (type(b) is int and -2**53 <= b <= 2**53 or _js_number_is_integer(b)) and _js_strict_eq(a, _js_bigint(b))
     if _js_typeof(b) == "bigint":
-        return _js_number_is_integer(a) and _js_strict_eq(_js_bigint(a), b)
+        return (type(a) is int and -2**53 <= a <= 2**53 or _js_number_is_integer(a)) and _js_strict_eq(_js_bigint(a), b)
     return _js_strict_eq(a, b)
 
 
@@ -1650,7 +1649,7 @@ class MemoryStore(_JsObject):
                 _js_m_push(findings, "fact '" + py_text(name) + "' in " + _js_str(file) + ": the description is not one line " + ("(it holds the control character " + broken + "), read as '" + _js_str(description) + "'; make it one line"))
         links = py_list(_js_get(meta, "links"))
         keywords = _js_get(meta, "keywords") if _js_in("keywords", meta) else []
-        if not (_js_is_array(keywords) and _js_every_string(keywords)):
+        if not (isinstance(keywords, list) and _js_every_string(keywords)):
             raise MemoryValidationError("fact '" + py_text(name) + "' in " + _js_str(file) + ": keywords must be a list of strings")
         return {"name": name, "description": description, "type": _js_get(alias, "type"), "body": py_strip(_js_get(parts, 2)), "links": links, "keywords": [*keywords], **_js_spread({"extra": extra_of(meta)} if _js_gt(_js_len(extra_of(meta)), 0) else {}), "last_recalled": _js_coalesce_value(_js_get(stamps, "last_recalled"), None), "created": raw_created if _js_truthy(py_truthy(raw_created)) else py_mtime_date(path), "outcome": _js_get(alias, "outcome"), "status": _js_get(alias, "status"), "source": path}
 
@@ -1681,7 +1680,7 @@ class MemoryStore(_JsObject):
         segs = _JsMap()
         df = _JsMap([[t, 0] for t in _js_array("map", q)])
         for t, seg in _js_rows(_js_invoke(idx, "segments", q), 2, (0, 1)):
-            if not _js_is_array(seg) or not _js_strict_eq(_js_mod(_js_len(seg), 5), 0):
+            if not isinstance(seg, list) or not _js_strict_eq(_js_mod(_js_len(seg), 5), 0):
                 return None
             out = []
             d = 0
@@ -1692,7 +1691,7 @@ class MemoryStore(_JsObject):
                 x = _js_get(seg, _js_num(j + 2))
                 y = _js_get(seg, _js_num(j + 3))
                 z = _js_get(seg, _js_num(j + 4))
-                if not (_js_number_is_integer(a) and _js_number_is_integer(c) and _js_number_is_integer(x) and _js_number_is_integer(y) and _js_number_is_integer(z)):
+                if not ((type(a) is int and -2**53 <= a <= 2**53 or _js_number_is_integer(a)) and (type(c) is int and -2**53 <= c <= 2**53 or _js_number_is_integer(c)) and (type(x) is int and -2**53 <= x <= 2**53 or _js_number_is_integer(x)) and (type(y) is int and -2**53 <= y <= 2**53 or _js_number_is_integer(y)) and (type(z) is int and -2**53 <= z <= 2**53 or _js_number_is_integer(z))):
                     return None
                 if _js_lt(c, 1) or _js_lt(a, 0) or _js_gt(_js_add(a, c), n) or _js_lt(x, 0) or _js_lt(y, 0) or _js_lt(z, 0):
                     return None

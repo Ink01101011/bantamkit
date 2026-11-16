@@ -28,7 +28,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_get_prototype_of,
     _js_gt,
     _js_invoke,
-    _js_is_array,
     _js_json_stringify,
     _js_le,
     _js_len,
@@ -577,7 +576,7 @@ def _emit_node__typed(e, value, mapping_context, path, seen):
         _js_invoke(e, "increaseIndent", False, False)
         _js_invoke(e, "writeScalar", _js_get(value, "yaml"), _js_get(value, "tag"), False)
         _js_invoke(e, "popIndent")
-    elif _js_is_array(value):
+    elif isinstance(value, list):
         _claim__typed(value, path, seen)
         items = value
         if _js_strict_eq(_js_len(items), 0):
@@ -627,7 +626,7 @@ def _emit_node(e, value, mapping_context, path, seen):
         _js_invoke(e, "increaseIndent", False, False)
         _js_invoke(e, "writeScalar", _js_get(value, "yaml"), _js_get(value, "tag"), False)
         _js_invoke(e, "popIndent")
-    elif _js_is_array(value):
+    elif isinstance(value, list):
         _claim(value, path, seen)
         items = value
         if _js_strict_eq(_js_len(items), 0):
@@ -837,7 +836,7 @@ def _construct_timestamp__typed(raw):
     elif tz is not _JS_UNDEFINED:
         offset = "+00:00"
         aware = True
-    text = _js_cat(date + " " + _pad(hour, 2) + ":" + _pad(minute, 2) + ":" + _pad(second, 2), _js_cat(("." + _pad(micro, 6) if _js_truthy(micro) else ""), offset))
+    text = _js_cat(date + " " + _pad(hour, 2) + ":" + _pad(minute, 2) + ":" + _pad(second, 2), _js_cat(("." + _pad(micro, 6) if micro != 0 and micro == micro else ""), offset))
     sec = _js_num(_js_num(_js_num(_js_num(_js_mul(_days_from_civil(year, month, day), 86400) + _js_mul(hour, 3600)) + _js_mul(minute, 60)) + second) - offset_seconds)
     return PyScalar(TIMESTAMP_TAG, "datetime.datetime", text, text, True, {"kind": "datetime", "aware": aware, "sec": sec, "us": micro})
 
@@ -887,7 +886,7 @@ def _construct_timestamp(raw):
     elif tz is not _JS_UNDEFINED:
         offset = "+00:00"
         aware = True
-    text = _js_cat(date + " " + _pad(hour, 2) + ":" + _pad(minute, 2) + ":" + _pad(second, 2), _js_cat(("." + _pad(micro, 6) if _js_truthy(micro) else ""), offset))
+    text = _js_cat(date + " " + _pad(hour, 2) + ":" + _pad(minute, 2) + ":" + _pad(second, 2), _js_cat(("." + _pad(micro, 6) if micro != 0 and micro == micro else ""), offset))
     sec = _js_num(_js_num(_js_num(_js_num(_js_mul(_days_from_civil(year, month, day), 86400) + _js_mul(hour, 3600)) + _js_mul(minute, 60)) + second) - offset_seconds)
     return PyScalar(TIMESTAMP_TAG, "datetime.datetime", text, text, True, {"kind": "datetime", "aware": aware, "sec": sec, "us": micro})
 

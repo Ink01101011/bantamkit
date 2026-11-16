@@ -82,19 +82,7 @@ def hook_tier(home, cwd):
     return any(_js_truthy(has_bantamkit_hooks(p)) for p in settings_paths(home, cwd))
 
 
-def _host_data_tier__typed(home):
-    _js_caught1 = None
-    try:
-        return native_memory_dir(home) is not None
-    except Exception as _js_error1:
-        _js_caught1 = _js_catch(_js_error1)
-    if _js_caught1 is not None:
-        return False
-
-
 def host_data_tier(home):
-    if type(home) is str:
-        return _host_data_tier__typed(home)
     _js_caught2 = None
     try:
         return native_memory_dir(home) is not None
@@ -102,6 +90,9 @@ def host_data_tier(home):
         _js_caught2 = _js_catch(_js_error2)
     if _js_caught2 is not None:
         return False
+
+
+_host_data_tier__typed = host_data_tier
 
 
 def _tiers__typed(home, cwd):
@@ -128,20 +119,7 @@ def tier_line(found):
     return "storage: core " + _on(_js_get(found, "core")) + "; hooks " + _on(_js_get(found, "hook")) + "; host data " + _on(_js_get(found, "host_data"))
 
 
-def _kind_of__typed(p):
-    _js_caught3 = None
-    try:
-        st = stat_sync(p)
-        return "dir" if _js_truthy(_js_invoke(st, "isDirectory")) else "file" if _js_truthy(_js_invoke(st, "isFile")) else ""
-    except Exception as _js_error3:
-        _js_caught3 = _js_catch(_js_error3)
-    if _js_caught3 is not None:
-        return ""
-
-
 def _kind_of(p):
-    if type(p) is str:
-        return _kind_of__typed(p)
     _js_caught4 = None
     try:
         st = stat_sync(p)
@@ -152,19 +130,10 @@ def _kind_of(p):
         return ""
 
 
-def _size_of__typed(p):
-    _js_caught5 = None
-    try:
-        return _js_size(stat_sync(p))
-    except Exception as _js_error5:
-        _js_caught5 = _js_catch(_js_error5)
-    if _js_caught5 is not None:
-        return 0
+_kind_of__typed = _kind_of
 
 
 def _size_of(p):
-    if type(p) is str:
-        return _size_of__typed(p)
     _js_caught6 = None
     try:
         return _js_size(stat_sync(p))
@@ -172,6 +141,9 @@ def _size_of(p):
         _js_caught6 = _js_catch(_js_error6)
     if _js_caught6 is not None:
         return 0
+
+
+_size_of__typed = _size_of
 
 
 def index_lines(memory):
@@ -204,36 +176,7 @@ def index_lines(memory):
     return out
 
 
-def _logs__typed(base):
-    found = [["hook-log", path_join(base, "hooks", "hook-log.jsonl")]]
-    names = []
-    _js_caught8 = None
-    try:
-        names = _js_m_sort(readdir_sync(path_join(base, "usage")))
-    except Exception as _js_error8:
-        _js_caught8 = _js_catch(_js_error8)
-    if _js_caught8 is not None:
-        pass
-    for n in names:
-        if _js_m_endsWith(n, ".jsonl"):
-            found.append(["usage/" + _js_str(_js_m_slice(n, 0, _js_neg(_js_str_len(".jsonl")))), path_join(base, "usage", n)])
-    touched = []
-    _js_caught9 = None
-    try:
-        touched = _js_m_sort(readdir_sync(path_join(base, "touch")))
-    except Exception as _js_error9:
-        _js_caught9 = _js_catch(_js_error9)
-    if _js_caught9 is not None:
-        pass
-    for n in touched:
-        if _js_m_endsWith(n, ".jsonl"):
-            found.append(["touch/" + _js_str(_js_m_slice(n, 0, _js_neg(_js_str_len(".jsonl")))), path_join(base, "touch", n)])
-    return found
-
-
 def _logs(base):
-    if type(base) is str:
-        return _logs__typed(base)
     found = [["hook-log", path_join(base, "hooks", "hook-log.jsonl")]]
     names = []
     _js_caught10 = None
@@ -258,6 +201,9 @@ def _logs(base):
         if _js_m_endsWith(n, ".jsonl"):
             found.append(["touch/" + _js_str(_js_m_slice(n, 0, _js_neg(_js_str_len(".jsonl")))), path_join(base, "touch", n)])
     return found
+
+
+_logs__typed = _logs
 
 
 def log_lines(home, detail=_JS_UNDEFINED):
@@ -305,31 +251,7 @@ _touch_line__typed = touch_line
 _STRICT = TextDecoder("utf-8", {"fatal": True, "ignoreBOM": True})
 
 
-def _retention_line__typed(home):
-    ran = "never"
-    refused = 0
-    _js_caught12 = None
-    try:
-        data = parse_json(_js_invoke(_STRICT, "decode", read_file_sync(state_path(home))))
-        if _js_get(data, "t") == "dict":
-            at = _js_m_get(_js_get(data, "v"), "ran_at")
-            if at is not _JS_UNDEFINED and _js_get(at, "t") == "str":
-                ran = _js_get(at, "v")
-            report = _js_m_get(_js_get(data, "v"), "report")
-            if report is not _JS_UNDEFINED and _js_get(report, "t") == "dict":
-                list_ = _js_m_get(_js_get(report, "v"), "refused")
-                if list_ is not _JS_UNDEFINED and _js_get(list_, "t") == "list":
-                    refused = _js_len(_js_get(list_, "v"))
-    except Exception as _js_error12:
-        _js_caught12 = _js_catch(_js_error12)
-    if _js_caught12 is not None:
-        pass
-    return "retention: " + ("" if _js_truthy(enabled()) else "off; ") + "last ran " + _js_str(ran) + "; refused " + _js_str(refused)
-
-
 def retention_line(home):
-    if type(home) is str:
-        return _retention_line__typed(home)
     ran = "never"
     refused = 0
     _js_caught13 = None
@@ -349,6 +271,9 @@ def retention_line(home):
     if _js_caught13 is not None:
         pass
     return "retention: " + ("" if _js_truthy(enabled()) else "off; ") + "last ran " + _js_str(ran) + "; refused " + _js_str(refused)
+
+
+_retention_line__typed = retention_line
 
 
 def _status_lines__typed(memory, home, cwd, detail=_JS_UNDEFINED):

@@ -259,17 +259,29 @@ fn j89_3_a_loop_that_could_break_its_guard_has_no_proven_copy() {
         "for (let i = 0; i < n; i += 1) { t[i] = xs[i]!; g(); }",
         "for (let i = 0; i < n; i += 1) { t[i] = xs[i]!; ys[i] = 1; }",
         "for (let i = 0; i < n; i += 1) { t[i] = xs[i]!; xs.push(1); }",
-        "for (let i = 0; i < n; i += 1) { t[i] = xs[i + 1]!; }",
-        "for (let i = 0; i < n; i += 2) { t[i] = xs[i]!; }",
         "for (let i = 0; i <= n; i += 1) { t[i] = xs[i]!; }",
         "for (let i = 0; i < n; i += 1) { t[i] = xs[i]!; i = n; }",
         "for (let i = 0; i < n; i += 1) { t[i] = xs[i]!; n = 0; }",
-        "for (let i = 0; i < n; i += 1) { for (let j = 0; j < n; j += 1) s = s + 1; }",
         "for (let i = 0; i < n; i += 1) { s = s + xs.length; }",
         "for (let i = 0; i < n; i += 1) { t[i] = `${xs[i]!}`.length; }",
     ] {
         let code = code_of(&format!("{open}  {body}\n  return s + out.length;\n}}\n"));
         assert!(!code.contains("range("), "{body}:\n{code}");
+    }
+    // J90-P3: an offset, a stride and a nested counted loop are copies now, each read in range by
+    // its guard (tests/j90p3.rs pins them).
+    for (body, guard) in [
+        (
+            "for (let i = 0; i < n; i += 1) { t[i] = xs[i + 1]!; }",
+            "n + 1 <= len(xs) and _js_doubles(xs, i, n + 1):",
+        ),
+        (
+            "for (let i = 0; i < n; i += 2) { t[i] = xs[i]!; }",
+            "(n <= i or i + (n - 1 - i) // 2 * 2 < len(xs)) and _js_doubles(xs, i, len(xs)):",
+        ),
+    ] {
+        let code = code_of(&format!("{open}  {body}\n  return s + out.length;\n}}\n"));
+        assert!(code.contains(guard), "{body}:\n{code}");
     }
     // The same loop with nothing that could break it: proven.
     let code = code_of(&format!(

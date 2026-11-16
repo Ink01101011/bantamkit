@@ -224,19 +224,7 @@ def _base_name(p):
     return p if cut < 0 else _js_m_slice(p, _js_num(cut + 1))
 
 
-def _is_file__typed(p):
-    _js_caught8 = None
-    try:
-        return _js_invoke(stat_sync(p), "isFile")
-    except Exception as _js_error8:
-        _js_caught8 = _js_catch(_js_error8)
-    if _js_caught8 is not None:
-        return False
-
-
 def _is_file(p):
-    if type(p) is str:
-        return _is_file__typed(p)
     _js_caught9 = None
     try:
         return _js_invoke(stat_sync(p), "isFile")
@@ -244,3 +232,6 @@ def _is_file(p):
         _js_caught9 = _js_catch(_js_error9)
     if _js_caught9 is not None:
         return False
+
+
+_is_file__typed = _is_file

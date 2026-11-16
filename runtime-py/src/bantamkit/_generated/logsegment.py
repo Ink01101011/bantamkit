@@ -14,7 +14,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_div,
     _js_get,
     _js_gt,
-    _js_is_array,
     _js_is_double,
     _js_is_number,
     _js_json_parse,
@@ -76,21 +75,7 @@ def _split(data):
     return lines
 
 
-def _load__typed(line):
-    v = _JS_UNDEFINED
-    _js_caught0 = None
-    try:
-        v = _js_json_parse(line)
-    except Exception as _js_error0:
-        _js_caught0 = _js_catch(_js_error0)
-    if _js_caught0 is not None:
-        return None
-    return v if _js_typeof(v) == "object" and v is not None and not _js_is_array(v) else None
-
-
 def _load(line):
-    if type(line) is str:
-        return _load__typed(line)
     v = _JS_UNDEFINED
     _js_caught1 = None
     try:
@@ -99,7 +84,10 @@ def _load(line):
         _js_caught1 = _js_catch(_js_error1)
     if _js_caught1 is not None:
         return None
-    return v if _js_typeof(v) == "object" and v is not None and not _js_is_array(v) else None
+    return v if _js_typeof(v) == "object" and v is not None and not isinstance(v, list) else None
+
+
+_load__typed = _load
 
 
 def _is_old(row, older_than):

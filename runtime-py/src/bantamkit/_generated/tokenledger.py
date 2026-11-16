@@ -14,7 +14,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_get,
     _js_gt,
     _js_invoke,
-    _js_is_array,
     _js_is_double,
     _js_is_number,
     _js_json_parse,
@@ -92,11 +91,11 @@ class TokenLedgerError(BantamError):
 
 
 def _is_count(value):
-    return _js_is_number(value) and _js_number_is_integer(value) and _js_ge(value, 0) and _js_le(value, MAX_SAFE_INT)
+    return _js_is_number(value) and (type(value) is int and -2**53 <= value <= 2**53 or _js_number_is_integer(value)) and _js_ge(value, 0) and _js_le(value, MAX_SAFE_INT)
 
 
 def _is_plain_object(value):
-    return _js_typeof(value) == "object" and value is not None and not _js_is_array(value)
+    return _js_typeof(value) == "object" and value is not None and not isinstance(value, list)
 
 
 def _decode_line(text):
@@ -106,49 +105,7 @@ def _decode_line(text):
 _decode_line__typed = _decode_line
 
 
-def _walk__typed(base):
-    found = []
-    def visit(directory, prefix):
-        names = _JS_UNDEFINED
-        _js_caught0 = None
-        try:
-            names = _js_m_sort(readdir_sync(directory), cmp_codepoint)
-        except Exception as _js_error0:
-            _js_caught0 = _js_catch(_js_error0)
-        if _js_caught0 is not None:
-            return _JS_UNDEFINED
-        for name in names:
-            child = path_join(directory, name)
-            rel = _js_cat(_js_str(prefix), _js_str(name))
-            is_directory = False
-            _js_caught1 = None
-            try:
-                is_directory = _js_invoke(stat_sync(child), "isDirectory")
-            except Exception as _js_error1:
-                _js_caught1 = _js_catch(_js_error1)
-            if _js_caught1 is not None:
-                is_directory = False
-            if _js_truthy(is_directory):
-                link = False
-                _js_caught2 = None
-                try:
-                    link = _js_invoke(lstat_sync(child), "isSymbolicLink")
-                except Exception as _js_error2:
-                    _js_caught2 = _js_catch(_js_error2)
-                if _js_caught2 is not None:
-                    link = False
-                if not _js_truthy(link):
-                    visit(child, rel + "/")
-            elif _js_m_endsWith(name, TRANSCRIPT_SUFFIX):
-                found.append([child, rel])
-        return _JS_UNDEFINED
-    visit(base, "")
-    return found
-
-
 def walk(base):
-    if type(base) is str:
-        return _walk__typed(base)
     found = []
     def visit(directory, prefix):
         names = _JS_UNDEFINED
@@ -186,6 +143,9 @@ def walk(base):
         return _JS_UNDEFINED
     visit(base, "")
     return found
+
+
+_walk__typed = walk
 
 
 def _read_utf8_strict(path):

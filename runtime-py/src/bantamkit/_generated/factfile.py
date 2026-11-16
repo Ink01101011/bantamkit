@@ -21,7 +21,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_gt,
     _js_in,
     _js_invoke,
-    _js_is_array,
     _js_is_double,
     _js_is_nullish,
     _js_json_stringify,
@@ -160,7 +159,7 @@ def _fact_of_parsed(parsed):
             raise FactParseError("formatFact: the frontmatter has no '" + key + "' key, and a fact must carry name, description and type")
     def one(key):
         return _js_get(meta, key)
-    return {"name": one("name"), "description": one("description"), "type": _js_get(alias, "type"), "outcome": _js_get(alias, "outcome"), "status": _js_get(alias, "status"), "created": None if _js_get(meta, "created") is _JS_UNDEFINED else one("created"), "last_recalled": None if _js_get(meta, "last_recalled") is _JS_UNDEFINED else one("last_recalled"), "links": py_list(_js_get(meta, "links")), **_js_spread({"keywords": [*_js_get(meta, "keywords")]} if _js_is_array(_js_get(meta, "keywords")) and _js_every_string(_js_get(meta, "keywords")) else {}), **_js_spread({"extra": extra_of(meta)} if len(extra_of(meta)) > 0 else {}), "body": body}
+    return {"name": one("name"), "description": one("description"), "type": _js_get(alias, "type"), "outcome": _js_get(alias, "outcome"), "status": _js_get(alias, "status"), "created": None if _js_get(meta, "created") is _JS_UNDEFINED else one("created"), "last_recalled": None if _js_get(meta, "last_recalled") is _JS_UNDEFINED else one("last_recalled"), "links": py_list(_js_get(meta, "links")), **_js_spread({"keywords": [*_js_get(meta, "keywords")]} if isinstance(_js_get(meta, "keywords"), list) and _js_every_string(_js_get(meta, "keywords")) else {}), **_js_spread({"extra": extra_of(meta)} if len(extra_of(meta)) > 0 else {}), "body": body}
 
 
 def py_truthy(value):
@@ -168,7 +167,7 @@ def py_truthy(value):
         return False
     if isinstance(value, str):
         return value != ""
-    if _js_is_array(value):
+    if isinstance(value, list):
         return len(value) > 0
     return _js_get(value, "truthy")
 
@@ -176,7 +175,7 @@ def py_truthy(value):
 def py_list(value):
     if not _js_truthy(py_truthy(value)):
         return []
-    if _js_is_array(value):
+    if isinstance(value, list):
         return [*value]
     if isinstance(value, str):
         return [*value]
@@ -331,7 +330,7 @@ def _well_formed_meta(meta):
     for k, v in _js_rows(_js_object_entries(meta), 2, (0, 1)):
         if isinstance(v, str):
             out.append([k, well_formed(v)])
-        elif _js_is_array(v):
+        elif isinstance(v, list):
             out.append([k, [_well_formed__typed(x) if isinstance(x, str) else x for x in _js_array("map", v)]])
         else:
             out.append([k, v])
@@ -1094,7 +1093,7 @@ def _scan_block_sequence__typed(front, pos):
         if _js_units_at(_jsu_front, front, _js_num(i + 1)) != " ":
             raise FactParseError("expected \"- \" at the start of a sequence item: " + _js_str(_line__typed(front, i)))
         value, next = _scan_node__typed(front, _js_num(i + 2))
-        if _js_is_array(value):
+        if isinstance(value, list):
             raise FactParseError("a nested sequence item is not in this codec's language")
         items.append(value)
         after = _skip_trailing_comment__typed(front, next)
@@ -1122,7 +1121,7 @@ def _scan_block_sequence(front, pos):
         if _js_get(front, _js_add(i, 1)) != " ":
             raise FactParseError("expected \"- \" at the start of a sequence item: " + _js_str(_line(front, i)))
         value, next = _scan_node(front, _js_add(i, 2))
-        if _js_is_array(value):
+        if isinstance(value, list):
             raise FactParseError("a nested sequence item is not in this codec's language")
         items.append(value)
         after = _skip_trailing_comment(front, next)

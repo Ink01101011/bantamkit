@@ -17,7 +17,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_get,
     _js_gt,
     _js_invoke,
-    _js_is_array,
     _js_is_double,
     _js_is_number,
     _js_json_stringify,
@@ -253,7 +252,7 @@ def _must_parse(ts):
 
 
 def _valid(e):
-    if _js_typeof(e) != "object" or e is None or _js_is_array(e):
+    if _js_typeof(e) != "object" or e is None or isinstance(e, list):
         return False
     o = e
     ts = _js_get(o, "ts")
@@ -373,7 +372,7 @@ class UsageLedger(_JsObject):
         for e in self.events():
             if not _js_strict_eq(_js_get(e, "fact"), fact) or _js_get(e, "kind") != "save":
                 continue
-            if _js_is_array(_js_get(e, "keywords")):
+            if isinstance(_js_get(e, "keywords"), list):
                 found = [k for k in _js_array("filter", _js_get(e, "keywords")) if isinstance(k, str)]
         return found
 

@@ -198,22 +198,42 @@ function isCols(v: unknown): v is IndexCols {
   return true;
 }
 
+/** The FIELD_BOOST fields a segment's three counts name, in order (`SEG` is a start, a run length
+ * and one count per field). */
+function segmentFields(): [Field, Field, Field] {
+  const fields = FIELD_BOOST.map(([f]) => f as Field);
+  if (fields.length !== SEG - 2) throw new Error('FIELD_BOOST must name SEG - 2 fields');
+  return [fields[0]!, fields[1]!, fields[2]!];
+}
+
+const SEG_FIELDS = segmentFields();
+const FIELD0 = SEG_FIELDS[0];
+const FIELD1 = SEG_FIELDS[1];
+const FIELD2 = SEG_FIELDS[2];
+
 /** A term's segments as `[name, field, tf]` rows, name order then field order. */
-export function decodeSegments(names: readonly string[], seg: unknown): Posting[] {
+export function decodeSegments(names: ArrayLike<string>, seg: unknown): Posting[] {
   if (!Array.isArray(seg) || seg.length % SEG !== 0 || !seg.every((x) => Number.isInteger(x))) {
     throw new Error('malformed postings');
   }
-  const fields = FIELD_BOOST.map(([f]) => f as Field);
+  const n = names.length;
+  const m = seg.length;
   const out: Posting[] = [];
-  for (let j = 0; j < seg.length; j += SEG) {
+  // A segment's five numbers read once, each run one counted loop (#316 G4, J90-P3: ts2py proves
+  // both loops once, for the whole array and for each run, and reads the elements directly).
+  for (let j = 0; j < m; j += SEG) {
     const start = seg[j] as number;
     const count = seg[j + 1] as number;
-    if (count < 1 || start < 0 || start + count > names.length) throw new Error('malformed postings');
-    for (let i = start; i < start + count; i += 1) {
-      for (let k = 0; k < fields.length; k += 1) {
-        const tf = seg[j + 2 + k] as number;
-        if (tf) out.push([names[i]!, fields[k]!, tf]);
-      }
+    const tf0 = seg[j + 2] as number;
+    const tf1 = seg[j + 3] as number;
+    const tf2 = seg[j + 4] as number;
+    if (count < 1 || start < 0 || start + count > n) throw new Error('malformed postings');
+    const end = start + count;
+    for (let i = start; i < end; i += 1) {
+      const name = names[i]!;
+      if (tf0) out.push([name, FIELD0, tf0]);
+      if (tf1) out.push([name, FIELD1, tf1]);
+      if (tf2) out.push([name, FIELD2, tf2]);
     }
   }
   return out;
@@ -309,21 +329,31 @@ export function daysFromCivil(y: number, m: number, d: number): number {
  * `Date.UTC` and `getUTC*` round trip answered exactly this on 760,087 stamps (every year
  * 0000..9999 at the edge months and days, every time edge, 200,000 seeded) at five clocks.
  */
-function ageS(fullAt: string, nowMs: number): number {
+/** `fullAt` as ms since the epoch, NaN when it is not a stamp `isoNow` could have written. */
+function fullAtMs(fullAt: string): number {
   const m = ISO.exec(fullAt);
-  if (!m) return Infinity;
+  if (!m) return NaN;
   const y = Number(m[1]);
   const mo = Number(m[2]);
   const d = Number(m[3]);
   const h = Number(m[4]);
   const mi = Number(m[5]);
   const s = Number(m[6]);
-  if (y < 100 || mo < 1 || mo > 12 || h > 23 || mi > 59 || s > 59 || d < 1) return Infinity;
+  if (y < 100 || mo < 1 || mo > 12 || h > 23 || mi > 59 || s > 59 || d < 1) return NaN;
   const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
   const last = mo === 2 && leap ? 29 : MONTH_DAYS[mo - 1]!;
-  if (d > last) return Infinity;
-  const t = daysFromCivil(y, mo, d) * 86_400_000 + h * 3_600_000 + mi * 60_000 + s * 1000;
-  return nowMs / 1000 - t / 1000;
+  if (d > last) return NaN;
+  return daysFromCivil(y, mo, d) * 86_400_000 + h * 3_600_000 + mi * 60_000 + s * 1000;
+}
+
+/** The last stamp `ageS` read and its `fullAtMs`: every fast refresh reads the same `full_at`
+ * until a full one writes the next (#316 G4, J90-P3: one parse per stamp, not per refresh). */
+let fullAtLast: [string, number] = ['', NaN];
+
+function ageS(fullAt: string, nowMs: number): number {
+  if (fullAt !== fullAtLast[0]) fullAtLast = [fullAt, fullAtMs(fullAt)];
+  const t = fullAtLast[1];
+  return Number.isNaN(t) ? Infinity : nowMs / 1000 - t / 1000;
 }
 
 function wikiLinks(body: string): string[] {

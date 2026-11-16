@@ -89,8 +89,8 @@ fn j90p_lowerings_are_taken_and_answer_like_node() {
         "_js_is_number(v)",
         "v is not _JS_UNDEFINED",
         // `Array.isArray(v) && v.length` / `?:` / after an exiting `if`: a list.
-        "_js_is_array(v) and len(v) > 1",
-        "len(v) if _js_is_array(v) else",
+        "isinstance(v, list) and len(v) > 1",
+        "len(v) if isinstance(v, list) else",
         // A counted loop reading another array's `.length`: checked a list, `len()` in the copy.
         "and type(types) is list:",
         "t >= len(types)",

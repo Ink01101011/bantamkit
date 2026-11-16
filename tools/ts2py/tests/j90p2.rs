@@ -90,9 +90,9 @@ fn j90p2_lowerings_are_taken_and_answer_like_node() {
         // The hash chain.
         "hash_hex(\"sha1\", x) if sha1 else hash_hex(\"sha256\", x)",
         // The callbacks, inline.
-        "all(_js_is_array(r) and len(r) == 2 and isinstance(r[0], str) for r in rows)",
+        "all(isinstance(r, list) and len(r) == 2 and isinstance(r[0], str) for r in rows)",
         "any(_js_is_number(r) and _js_gt(r, 1) for r in rows)",
-        "[len(r) if _js_is_array(r) else _js_typeof(r) for r in rows]",
+        "[len(r) if isinstance(r, list) else _js_typeof(r) for r in rows]",
         "[r for r in rows if _js_truthy(r)]",
         // One body, two names; and two bodies where they differ.
         "_twice__typed = twice",

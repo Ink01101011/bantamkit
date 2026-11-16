@@ -555,6 +555,15 @@ pub struct Lowerer<'s> {
     fast_init_done: bool,
     /// J89-3: an assignment in the proven copy gave a carried `let` a value not proven a number.
     fast_carry_failed: bool,
+    /// J90-P3: the proven copies enclosing `fast` (a counted loop nested in another's copy),
+    /// innermost last: a binding the outer copy declares keeps its key inside the inner one.
+    fast_outer: Vec<FastLoop>,
+    /// J90-P3: module `const`s bound to a positive integer literal (a counted loop's stride).
+    int_consts: HashMap<String, u64>,
+
+    /// J90-P3: lowering the general loop of a proven copy (the path a failed guard takes): a
+    /// counted loop nested in it is lowered once, without a copy of its own.
+    in_fallback: usize,
 }
 
 /// J89-3: what `fast_loop_plan` found in a counted loop's body.
@@ -570,6 +579,21 @@ struct LoopScan {
     filled: HashSet<String>,
     /// J90-P: plain arrays whose `.length` the body reads (source names).
     measured: HashSet<String>,
+    /// J90-P3: the variables of counted loops nested in the body.
+    loop_vars: HashSet<String>,
+    /// J90-P3: per plain array read at `i + c`, the largest `c` (0 for `x[i]`).
+    offsets: HashMap<String, u64>,
+    /// J90-P3: plain arrays some read of which is an operand of arithmetic or a comparison
+    /// (directly, or through a `const` the body declares from it): their elements are checked
+    /// numbers. The others are only bounds-checked and read as they are.
+    numeric_arrays: HashSet<String>,
+    /// J90-P3: a `const` the body declares from `x[i + c]`, by name: the array `x`.
+    from_read: HashMap<String, String>,
+    /// J90-P3: the expression `scan_expr` is about to walk is a SINK, where a value is only
+    /// stored or tested and no code can run on it: an array literal's element, `push`'s argument,
+    /// an `if` test, a `const` initializer. Anywhere else, reading an element (or a `const` read
+    /// from one) makes its array `numeric_arrays`.
+    sink: bool,
 }
 
 /// J89-3: a counted loop `fast_loop` versions: the bound's Python code, and the guard's parts.
@@ -582,6 +606,13 @@ struct LoopPlan {
     filled: BTreeSet<String>,
     /// J90-P: plain arrays whose `.length` the body reads, checked lists before the loop.
     measured: BTreeSet<String>,
+    /// J90-P3: the stride (`i += S`), 1 for `i += 1` / `i++`.
+    step: u64,
+    /// J90-P3: per plain array, the largest offset `c` of a read `x[i + c]`.
+    offsets: BTreeMap<String, u64>,
+    /// J90-P3: plain arrays read only as values (never an operand): bounds-checked, not
+    /// `_js_doubles`-checked, and each read proves nothing about its element.
+    pass: BTreeSet<String>,
     speculated: Vec<String>,
     carried: Vec<String>,
     declared: HashSet<String>,
@@ -603,6 +634,8 @@ struct FastLoop {
     typed: HashSet<String>,
     /// Plain arrays the body reads by `i`, checked by `_js_doubles` (source names).
     plain: HashSet<String>,
+    /// J90-P3: plain arrays the body reads by `i` (or `i + c`) as values only, bounds-checked.
+    pass: HashSet<String>,
     /// Fresh local arrays (`fresh_arrays`) the body writes at `i`, checked a list long enough.
     filled: HashSet<String>,
     /// Outer `let`s the body assigns and uses as operands, checked a number before the loop and
@@ -701,6 +734,9 @@ impl<'s> Lowerer<'s> {
             fast: None,
             fast_init_done: false,
             fast_carry_failed: false,
+            fast_outer: Vec::new(),
+            int_consts: HashMap::new(),
+            in_fallback: 0,
         }
     }
 
@@ -728,11 +764,15 @@ impl<'s> Lowerer<'s> {
     fn var_key(&self, name: &str) -> Option<Key> {
         if let Some(i) = self.scopes.iter().rposition(|s| s.contains(name)) {
             // J89-3: a binding the proven copy of a counted loop declares is its own key there.
-            let ver = match &self.fast {
-                Some(fast) if i + 1 == self.scopes.len() && fast.declared.contains(name) => {
-                    fast.span
-                }
-                _ => 0,
+            // J90-P3: or the enclosing copy that declares it, when copies nest.
+            let ver = if i + 1 == self.scopes.len() {
+                self.fast
+                    .iter()
+                    .chain(self.fast_outer.iter().rev())
+                    .find(|fast| fast.declared.contains(name))
+                    .map_or(0, |fast| fast.span)
+            } else {
+                0
             };
             return Some(Key::Var {
                 typed: self.typed,
@@ -1170,6 +1210,14 @@ impl<'s> Lowerer<'s> {
                                     }
                                     if v.kind == VariableDeclarationKind::Const {
                                         self.module_consts.insert(id.name.to_string());
+                                        if let Some(Expression::NumericLiteral(n)) = init
+                                            && n.value >= 1.0
+                                            && n.value.fract() == 0.0
+                                            && n.value <= 1024.0
+                                        {
+                                            self.int_consts
+                                                .insert(id.name.to_string(), n.value as u64);
+                                        }
                                         if !public
                                             && matches!(init, Some(Expression::ArrayExpression(_)))
                                         {
@@ -1453,16 +1501,20 @@ impl<'s> Lowerer<'s> {
                         l.starts_with(&format!("        return {}(", sig.typed_py))
                     })
                 });
+            // J90-P3: line for line up to the compiler's own temporaries (`_js_caught3` in one
+            // body, `_js_caught9` in the other): each is local to its body, so renaming them
+            // consistently changes nothing the body does.
             let same = guard_at.is_some_and(|k| {
                 let typed = &out[typed_at..];
                 let head = |l: &str, name: &str| {
                     l.strip_prefix(&format!("def {name}(")).map(str::to_string)
                 };
+                let a: Vec<&String> = typed[1..k].iter().chain(&typed[k..]).collect();
+                let b: Vec<&String> = untyped[1..k].iter().chain(&untyped[k + 2..]).collect();
                 typed.len() + 2 == untyped.len()
                     && head(&typed[0], &sig.typed_py).is_some()
                     && head(&typed[0], &sig.typed_py) == head(&untyped[0], &sig.py)
-                    && typed[1..k] == untyped[1..k]
-                    && typed[k..] == untyped[k + 2..]
+                    && canonical_temps(&a) == canonical_temps(&b)
             });
             if let Some(k) = guard_at.filter(|_| same) {
                 out.truncate(typed_at);
@@ -1930,6 +1982,56 @@ impl<'s> Lowerer<'s> {
         matches!((strip(e), &self.fast), (Expression::Identifier(id), Some(fast)) if id.name == fast.var.as_str())
     }
 
+    /// J90-P3: `e` may be evaluated twice: a local name, or a literal index into one (a read
+    /// of a list or a dict element runs no code).
+    fn twice_safe(&self, e: &Expression<'_>) -> bool {
+        match strip(e) {
+            Expression::Identifier(id) => self.is_scoped(id.name.as_str()),
+            Expression::ComputedMemberExpression(m) => {
+                matches!(strip(&m.object), Expression::Identifier(id) if self.is_scoped(id.name.as_str()))
+                    && matches!(strip(&m.expression), Expression::NumericLiteral(_))
+            }
+            _ => false,
+        }
+    }
+
+    /// J90-P3: `c` when `e` is `var + c` (or `var` itself, 0), `c` a whole-number literal or a
+    /// module `const` bound to one.
+    fn index_offset(&self, e: &Expression<'_>, var: &str) -> Option<u64> {
+        match strip(e) {
+            Expression::Identifier(id) if id.name == var => Some(0),
+            Expression::BinaryExpression(b) if b.operator == BinaryOperator::Addition => {
+                if !matches!(strip(&b.left), Expression::Identifier(x) if x.name == var) {
+                    return None;
+                }
+                self.int_literal(&b.right)
+            }
+            _ => None,
+        }
+    }
+
+    /// J90-P3: a whole-number literal from 0 to 1024, or a module `const` bound to one.
+    fn int_literal(&self, e: &Expression<'_>) -> Option<u64> {
+        match strip(e) {
+            Expression::NumericLiteral(n)
+                if n.value >= 0.0 && n.value.fract() == 0.0 && n.value <= 1024.0 =>
+            {
+                Some(n.value as u64)
+            }
+            Expression::Identifier(id) if !self.is_scoped(id.name.as_str()) => {
+                self.int_consts.get(id.name.as_str()).copied()
+            }
+            _ => None,
+        }
+    }
+
+    /// J90-P3: in the proven copy of a counted loop, the offset `c` of an index `i + c` (0 for
+    /// `i` itself) into an array the copy reads directly.
+    fn fast_offset(&self, e: &Expression<'_>) -> Option<u64> {
+        let fast = self.fast.as_ref()?;
+        self.index_offset(e, &fast.var)
+    }
+
     fn is_scoped(&self, name: &str) -> bool {
         self.scopes.iter().any(|scope| scope.contains(name))
     }
@@ -2296,6 +2398,9 @@ impl<'s> Lowerer<'s> {
     /// compiled or caller code runs while it loops); no closure, no other member read, no nested
     /// loop. `None`: the loop is lowered once, as before.
     fn fast_loop_plan(&mut self, f: &ForStatement<'_>) -> Option<LoopPlan> {
+        if self.in_fallback > 0 {
+            return None;
+        }
         let Some(ForStatementInit::VariableDeclaration(v)) = &f.init else {
             return None;
         };
@@ -2317,30 +2422,34 @@ impl<'s> Lowerer<'s> {
         {
             return None;
         }
-        // The update: `i += 1`, `i = i + 1`, `i++`, `++i`.
-        let one = |e: &Expression<'_>| matches!(strip(e), Expression::NumericLiteral(n) if n.value == 1.0);
+        // The update: `i += 1`, `i = i + 1`, `i++`, `++i`; J90-P3: or a stride `i += S` /
+        // `i = i + S`, `S` a positive whole-number literal or a module `const` bound to one.
+        let stride = |e: &Expression<'_>| self.int_literal(e).filter(|s| *s >= 1);
         let is_var = |e: &Expression<'_>| matches!(strip(e), Expression::Identifier(x) if x.name == var.as_str());
-        let update_ok = match f.update.as_ref() {
-            Some(Expression::UpdateExpression(u)) => {
-                u.operator == UpdateOperator::Increment
-                    && matches!(&u.argument, SimpleAssignmentTarget::AssignmentTargetIdentifier(x) if x.name == var.as_str())
+        let step = match f.update.as_ref() {
+            Some(Expression::UpdateExpression(u))
+                if u.operator == UpdateOperator::Increment
+                    && matches!(&u.argument, SimpleAssignmentTarget::AssignmentTargetIdentifier(x) if x.name == var.as_str()) =>
+            {
+                Some(1)
             }
-            Some(Expression::AssignmentExpression(a)) => {
-                let target = matches!(&a.left, AssignmentTarget::AssignmentTargetIdentifier(x) if x.name == var.as_str());
-                target
-                    && match a.operator {
-                        AssignmentOperator::Addition => one(&a.right),
-                        AssignmentOperator::Assign => {
-                            matches!(strip(&a.right), Expression::BinaryExpression(b) if b.operator == BinaryOperator::Addition && is_var(&b.left) && one(&b.right))
+            Some(Expression::AssignmentExpression(a)) if matches!(&a.left, AssignmentTarget::AssignmentTargetIdentifier(x) if x.name == var.as_str()) => {
+                match a.operator {
+                    AssignmentOperator::Addition => stride(&a.right),
+                    AssignmentOperator::Assign => match strip(&a.right) {
+                        Expression::BinaryExpression(b)
+                            if b.operator == BinaryOperator::Addition && is_var(&b.left) =>
+                        {
+                            stride(&b.right)
                         }
-                        _ => false,
-                    }
+                        _ => None,
+                    },
+                    _ => None,
+                }
             }
-            _ => false,
+            _ => None,
         };
-        if !update_ok {
-            return None;
-        }
+        let step = step?;
         let mut scan = LoopScan {
             var: var.clone(),
             ..LoopScan::default()
@@ -2430,14 +2539,23 @@ impl<'s> Lowerer<'s> {
         {
             return None;
         }
+        // J90-P3: an array read only as a value is bounds-checked alone (its elements may be
+        // anything: each read proves nothing about its element).
+        let (plain, pass): (BTreeSet<String>, BTreeSet<String>) = scan
+            .plain
+            .into_iter()
+            .partition(|x| scan.numeric_arrays.contains(x));
         Some(LoopPlan {
             var,
             bound,
             bound_name,
             typed: scan.typed.into_iter().collect(),
-            plain: scan.plain.into_iter().collect(),
+            plain,
             filled: scan.filled.into_iter().collect(),
             measured: scan.measured.into_iter().collect(),
+            step,
+            offsets: scan.offsets.into_iter().collect(),
+            pass,
             speculated,
             carried,
             declared: scan.declared,
@@ -2465,7 +2583,9 @@ impl<'s> Lowerer<'s> {
         self.refusals.truncate(refusals);
         out.push(format!("{}else:", pad(indent)));
         self.fast_init_done = true;
+        self.in_fallback += 1;
         self.c_for_loop(f, indent + 1, out);
+        self.in_fallback -= 1;
         self.fast_init_done = false;
     }
 
@@ -2491,11 +2611,43 @@ impl<'s> Lowerer<'s> {
         for t in &plan.typed {
             guard.push(format!("{b} <= len({})", py_name(t, false, false)));
         }
+        // J90-P3: the last index a read `x[i + c]` reaches is `last + c`, `last` the largest
+        // value `range(i, b, step)` takes (none when `b <= i`).
+        let step = plan.step;
+        let in_range = |x: &str, c: u64| -> String {
+            if step == 1 {
+                if c == 0 {
+                    format!("{b} <= len({x})")
+                } else {
+                    format!("{b} + {c} <= len({x})")
+                }
+            } else {
+                let plus = if c == 0 {
+                    String::new()
+                } else {
+                    format!(" + {c}")
+                };
+                format!("({b} <= {i} or {i} + ({b} - 1 - {i}) // {step} * {step}{plus} < len({x}))")
+            }
+        };
         for x in &plan.plain {
+            let c = plan.offsets.get(x).copied().unwrap_or(0);
             let x = py_name(x, false, false);
             guard.push(format!("type({x}) is list"));
-            guard.push(format!("{b} <= len({x})"));
-            guard.push(format!("_js_doubles({x}, {i}, {b})"));
+            guard.push(in_range(&x, c));
+            if step == 1 && c == 0 {
+                guard.push(format!("_js_doubles({x}, {i}, {b})"));
+            } else if step == 1 {
+                guard.push(format!("_js_doubles({x}, {i}, {b} + {c})"));
+            } else {
+                guard.push(format!("_js_doubles({x}, {i}, len({x}))"));
+            }
+        }
+        for x in &plan.pass {
+            let c = plan.offsets.get(x).copied().unwrap_or(0);
+            let x = py_name(x, false, false);
+            guard.push(format!("type({x}) is list"));
+            guard.push(in_range(&x, c));
         }
         for x in &plan.filled {
             let x = py_name(x, false, false);
@@ -2519,8 +2671,13 @@ impl<'s> Lowerer<'s> {
         }
         out.push(format!("{p}if {}:", guard.join(" and ")));
         // The loop starts at the value the init gave `i` (a Python `range` reads it once).
+        let stride = if step == 1 {
+            String::new()
+        } else {
+            format!(", {step}")
+        };
         out.push(format!(
-            "{}for {i} in range({i}, {b}):  # noqa: B020",
+            "{}for {i} in range({i}, {b}{stride}):  # noqa: B020",
             pad(indent + 1)
         ));
         let saved = self.fast.replace(FastLoop {
@@ -2529,9 +2686,13 @@ impl<'s> Lowerer<'s> {
             var: plan.var.clone(),
             typed: plan.typed.iter().cloned().collect(),
             plain: plan.plain.iter().cloned().collect(),
+            pass: plan.pass.iter().cloned().collect(),
             filled: plan.filled.iter().cloned().collect(),
             carried: carried.iter().cloned().collect(),
         });
+        if let Some(outer) = saved.clone() {
+            self.fast_outer.push(outer);
+        }
         let depth = self.narrow.len();
         let mut narrowed = vec![plan.var.clone()];
         narrowed.extend(plan.speculated.iter().cloned());
@@ -2552,8 +2713,13 @@ impl<'s> Lowerer<'s> {
         self.breaks.push(BreakTarget::Loop);
         self.body(&f.body, indent + 2, out);
         self.breaks.pop();
+        // J90-P3: a nested copy that assigns a carried `let` a value not proven a number does not
+        // flag it here, but the nested loop's general loop (lowered in this copy too) does.
         let ok = !std::mem::replace(&mut self.fast_carry_failed, failed);
         self.narrow.truncate(depth);
+        if saved.is_some() {
+            self.fast_outer.pop();
+        }
         self.fast = saved;
         ok
     }
@@ -2579,7 +2745,60 @@ impl<'s> Lowerer<'s> {
                 .argument
                 .as_ref()
                 .is_none_or(|e| self.scan_expr(e, sc, false)),
+            // J90-P3: `throw new Error('...')`: it leaves the loop and runs no compiled code.
+            Statement::ThrowStatement(t) => match strip(&t.argument) {
+                Expression::NewExpression(n) => {
+                    matches!(strip(&n.callee), Expression::Identifier(id) if id.name == "Error" && !self.is_local("Error"))
+                        && n.arguments.iter().all(|a| {
+                            matches!(
+                                a.as_expression().map(strip),
+                                Some(Expression::StringLiteral(_))
+                            )
+                        })
+                }
+                _ => false,
+            },
+            // J90-P3: a counted loop nested in the body (`for (let k = a; k < b; k += S)`): its
+            // variable and every binding it declares are the body's, and its own reads by `k` are
+            // reads by a local (`scan_expr`); it gets its own proven copy when it is lowered.
+            Statement::ForStatement(f) => {
+                let Some(ForStatementInit::VariableDeclaration(v)) = &f.init else {
+                    return false;
+                };
+                if v.kind != VariableDeclarationKind::Let || v.declarations.len() != 1 {
+                    return false;
+                }
+                let d = &v.declarations[0];
+                let BindingPattern::BindingIdentifier(id) = &d.id else {
+                    return false;
+                };
+                if id.name.as_str() == sc.var || f.test.is_none() {
+                    return false;
+                }
+                sc.declared.insert(id.name.to_string());
+                sc.assigned.insert(id.name.to_string());
+                sc.loop_vars.insert(id.name.to_string());
+                let init_ok = d.init.as_ref().is_some_and(|e| self.scan_expr(e, sc, true));
+                let update_ok = match f.update.as_ref() {
+                    Some(Expression::AssignmentExpression(a)) => {
+                        matches!(&a.left, AssignmentTarget::AssignmentTargetIdentifier(x) if x.name == id.name)
+                            && self.scan_assign(a, sc)
+                    }
+                    Some(Expression::UpdateExpression(u)) => {
+                        matches!(&u.argument, SimpleAssignmentTarget::AssignmentTargetIdentifier(x) if x.name == id.name)
+                    }
+                    _ => false,
+                };
+                init_ok
+                    && update_ok
+                    && f.test
+                        .as_ref()
+                        .is_some_and(|t| self.scan_expr(t, sc, false))
+                    && self.scan_stmt(&f.body, sc)
+            }
             Statement::IfStatement(i) => {
+                // J90-P3: a bare name tested is a sink (`_js_truthy` runs no code).
+                sc.sink = matches!(strip(&i.test), Expression::Identifier(_));
                 self.scan_expr(&i.test, sc, false)
                     && self.scan_stmt(&i.consequent, sc)
                     && i.alternate.as_ref().is_none_or(|a| self.scan_stmt(a, sc))
@@ -2596,6 +2815,18 @@ impl<'s> Lowerer<'s> {
                         return false;
                     }
                     sc.declared.insert(id.name.to_string());
+                    // J90-P3: a `const` read from `x[i + c]`: a later operand use of it is an
+                    // operand use of `x`'s element.
+                    if v.kind == VariableDeclarationKind::Const
+                        && let Some(Expression::ComputedMemberExpression(m)) =
+                            d.init.as_ref().map(strip)
+                        && let Expression::Identifier(object) = strip(&m.object)
+                        && self.index_offset(&m.expression, &sc.var).is_some()
+                    {
+                        sc.from_read
+                            .insert(id.name.to_string(), object.name.to_string());
+                        sc.sink = true;
+                    }
                     d.init.as_ref().is_none_or(|e| self.scan_expr(e, sc, false))
                 })
             }
@@ -2695,7 +2926,11 @@ impl<'s> Lowerer<'s> {
                         .is_some_and(|k| self.fresh_arrays.contains(&k))
                 {
                     sc.pushed.insert(name.to_string());
-                    return args_ok(self, sc, false);
+                    // J90-P3: the pushed value is a sink.
+                    return c.arguments[0].as_expression().is_some_and(|e| {
+                        sc.sink = true;
+                        self.scan_expr(e, sc, false)
+                    });
                 }
                 false
             }
@@ -2707,6 +2942,7 @@ impl<'s> Lowerer<'s> {
     /// Float64Array), so a name there is checked a number before the loop.
     fn scan_expr(&self, e: &Expression<'_>, sc: &mut LoopScan, numeric: bool) -> bool {
         use BinaryOperator as Op;
+        let sink = std::mem::replace(&mut sc.sink, false);
         match e {
             Expression::NumericLiteral(_)
             | Expression::BooleanLiteral(_)
@@ -2720,12 +2956,37 @@ impl<'s> Lowerer<'s> {
                 if numeric {
                     sc.numeric.insert(name.to_string());
                 }
+                if !sink && let Some(array) = sc.from_read.get(name) {
+                    sc.numeric_arrays.insert(array.clone());
+                }
                 true
             }
-            Expression::ParenthesizedExpression(x) => self.scan_expr(&x.expression, sc, numeric),
-            Expression::TSNonNullExpression(x) => self.scan_expr(&x.expression, sc, numeric),
-            Expression::TSAsExpression(x) => self.scan_expr(&x.expression, sc, numeric),
-            Expression::TSSatisfiesExpression(x) => self.scan_expr(&x.expression, sc, numeric),
+            // J90-P3: an array literal's elements, each a sink (stored as it is).
+            Expression::ArrayExpression(a) => a.elements.iter().all(|el| match el {
+                ArrayExpressionElement::SpreadElement(_) | ArrayExpressionElement::Elision(_) => {
+                    false
+                }
+                other => other.as_expression().is_some_and(|x| {
+                    sc.sink = true;
+                    self.scan_expr(x, sc, false)
+                }),
+            }),
+            Expression::ParenthesizedExpression(x) => {
+                sc.sink = sink;
+                self.scan_expr(&x.expression, sc, numeric)
+            }
+            Expression::TSNonNullExpression(x) => {
+                sc.sink = sink;
+                self.scan_expr(&x.expression, sc, numeric)
+            }
+            Expression::TSAsExpression(x) => {
+                sc.sink = sink;
+                self.scan_expr(&x.expression, sc, numeric)
+            }
+            Expression::TSSatisfiesExpression(x) => {
+                sc.sink = sink;
+                self.scan_expr(&x.expression, sc, numeric)
+            }
             Expression::BinaryExpression(b) => {
                 let numeric_op = matches!(
                     b.operator,
@@ -2772,11 +3033,27 @@ impl<'s> Lowerer<'s> {
                 let Expression::Identifier(object) = strip(&m.object) else {
                     return false;
                 };
-                if !at_var {
-                    return false;
+                let name = object.name.to_string();
+                // J90-P3: `x[i + c]`, a constant offset past the loop variable.
+                if let Some(c) = self.index_offset(&m.expression, &sc.var) {
+                    let at = sc.offsets.entry(name.clone()).or_insert(0);
+                    *at = (*at).max(c);
+                    if !sink {
+                        sc.numeric_arrays.insert(name.clone());
+                    }
+                    sc.plain.insert(name);
+                    return true;
                 }
-                sc.plain.insert(object.name.to_string());
-                true
+                // J90-P3: `x[k]`, `k` a binding the body declares (a nested loop's variable): a
+                // read the general lowering makes, of an array checked a list before the loop.
+                let _ = at_var;
+                match strip(&m.expression) {
+                    Expression::Identifier(k) if sc.loop_vars.contains(k.name.as_str()) => {
+                        sc.measured.insert(name);
+                        self.scan_expr(&m.expression, sc, true)
+                    }
+                    _ => false,
+                }
             }
             Expression::StaticMemberExpression(m) => {
                 if m.optional || m.property.name != "length" {
@@ -3547,19 +3824,25 @@ impl<'s> Lowerer<'s> {
                         .with_fact(Some(&Fact::or_undefined(Fact::f64())));
                 }
                 // J89-3: in the proven copy of a counted loop, an element of a plain array its guard
-                // checked (`_js_doubles`): a proven number.
-                if self.is_fast_index(&m.expression)
+                // checked (`_js_doubles`): a proven number. J90-P3: at `i + c` too, and an element
+                // of an array the guard only bounds-checked, read as it is (proving nothing).
+                if let Some(c) = self.fast_offset(&m.expression)
                     && let Expression::Identifier(id) = strip(&m.object)
-                    && self
-                        .fast
-                        .as_ref()
-                        .is_some_and(|f| f.plain.contains(id.name.as_str()))
+                    && let Some(fast) = self.fast.as_ref()
+                    && (fast.plain.contains(id.name.as_str())
+                        || fast.pass.contains(id.name.as_str()))
                 {
+                    let fact = if fast.plain.contains(id.name.as_str()) {
+                        Fact::num()
+                    } else {
+                        Fact::default()
+                    };
                     let py = py_name(id.name.as_str(), false, false);
-                    let var = py_name(&self.fast.as_ref().unwrap().var, false, false);
+                    let var = py_name(&fast.var, false, false);
+                    let at = if c == 0 { var } else { format!("{var} + {c}") };
                     return Py {
                         pure: true,
-                        ..Py::atom(format!("{py}[{var}]")).with_fact(Some(&Fact::num()))
+                        ..Py::atom(format!("{py}[{at}]")).with_fact(Some(&fact))
                     };
                 }
                 // A literal key is a name (`xs['map']`); a computed one is checked at run time
@@ -5566,6 +5849,27 @@ impl<'s> Lowerer<'s> {
         let Some(args) = self.args(&c.arguments, None, false) else {
             return Py::atom("None");
         };
+        // J90-P3: `Array.isArray(x)` is `_js_is_array`'s own test, inline (no call).
+        if helper == "_js_is_array" && args.len() == 1 {
+            return Py::boolean(format!("isinstance({}, list)", args[0]), ATOM);
+        }
+        // J90-P3: `Number.isInteger(x)`, `x` a name or an element read (evaluated twice, no
+        // effect): a plain int a double holds exactly is `_js_number_is_integer`'s first answer
+        // (True), inline; anything else asks it.
+        if helper == "_js_number_is_integer"
+            && args.len() == 1
+            && c.arguments[0]
+                .as_expression()
+                .is_some_and(|e| self.twice_safe(e))
+        {
+            let x = &args[0];
+            return Py::boolean(
+                format!(
+                    "(type({x}) is int and -2**53 <= {x} <= 2**53 or _js_number_is_integer({x}))"
+                ),
+                ATOM,
+            );
+        }
         returned(ret, format!("{helper}({})", args.join(", ")))
     }
 
@@ -6987,6 +7291,57 @@ fn method_as_value(name: &str) -> String {
     format!("method .{name} read as a value (a method may only be called directly)")
 }
 
+/// J90-P3: the lines with every compiler temporary (`_js_caught`, `_js_error`, `_js_fn`,
+/// `_js_arg`, `_js_t`, `_js_first`, `_js_obj`, `_js_switch`, `_js_item` followed by digits, as a
+/// whole name) renumbered in the order it first appears: two bodies that differ only in which
+/// numbers their temporaries got are equal here.
+fn canonical_temps(lines: &[&String]) -> Vec<String> {
+    const TEMPS: [&str; 9] = [
+        "caught", "error", "fn", "arg", "t", "first", "obj", "switch", "item",
+    ];
+    let word = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut out = Vec::with_capacity(lines.len());
+    for line in lines {
+        let bytes = line.as_bytes();
+        let mut text = String::with_capacity(line.len());
+        let mut at = 0;
+        while at < bytes.len() {
+            let start_ok = at == 0 || !word(bytes[at - 1]);
+            let mut taken = None;
+            if start_ok && line[at..].starts_with("_js_") {
+                for temp in TEMPS {
+                    let rest = &line[at + 4..];
+                    if let Some(digits) = rest.strip_prefix(temp) {
+                        let n = digits.bytes().take_while(u8::is_ascii_digit).count();
+                        let end = at + 4 + temp.len() + n;
+                        if n > 0 && (end == bytes.len() || !word(bytes[end])) {
+                            taken = Some(end);
+                            break;
+                        }
+                    }
+                }
+            }
+            match taken {
+                Some(end) => {
+                    let name = &line[at..end];
+                    let next = seen.len();
+                    let k = *seen.entry(name.to_string()).or_insert(next);
+                    text.push_str(&format!("\u{0}{k}"));
+                    at = end;
+                }
+                None => {
+                    let ch = line[at..].chars().next().unwrap();
+                    text.push(ch);
+                    at += ch.len_utf8();
+                }
+            }
+        }
+        out.push(text);
+    }
+    out
+}
+
 fn pad(indent: usize) -> String {
     "    ".repeat(indent)
 }
@@ -7217,6 +7572,10 @@ fn truthy(value: Py) -> Py {
     } else if value.is_str {
         // J87: a proven `str` is falsy exactly when empty, in both languages.
         Py::boolean(format!("{} != \"\"", value.at(CMP + 1)), CMP)
+    } else if value.is_num && value.pure && !value.top && value.prec == ATOM {
+        // J90-P3: a proven number named once (a name, an element read): falsy exactly when it is
+        // `0`, `-0` or NaN (`x == x` is false only for NaN).
+        Py::boolean(format!("{c} != 0 and {c} == {c}", c = value.code), AND)
     } else {
         Py::boolean(format!("_js_truthy({})", value.code), ATOM)
     }
