@@ -2834,6 +2834,62 @@ loop measured 3%). What the hand-written Python did there instead is skip the se
 Each is an answer the generated module gives as Node does and the hand-written one did not; the
 speed it bought is the gap above.
 
+### Per-call shape guards, and the floor they leave (#316 G4, J90-P5)
+
+**Adapter members audited.** `--suite ts2py` lists, with the TypeScript checker, every member the
+compiled sources read off an object an adapter builds and asks the adapter what it provides: a
+member read and not provided is red, so the `Stats.ino` class of difference cannot hide again
+(`tools/ts2py/RULES.md`, *J90-P5 rules*; red with `ino` removed, and with `meta` dropped from
+`parseNative`'s dict). None is missing today.
+
+**What moved.** Three per-call guards in the adapters, each a C-speed check of a value's shape that
+hands the value over as it is and otherwise takes the unchanged path: `_lifted` (`dumpJsValue`)
+for lists, plain dicts and plain Maps of strings, safe ints and nested lists / dicts of them;
+`hash_hex` / `Hash.update` for any string without a surrogate; `_os_text` likewise. No TypeScript
+changed, so Node's answers and timings are unchanged.
+
+| path (n = 9 interleaved, median ms [min..max]) | Python 9c6bc181 | Python e59e9661 | Python J90-P5 | Node e59e9661 | Node J90-P5 |
+|---|---|---|---|---|---|
+| hot index build (14 sources) | 406.9 [402.5..440.4] | 496.1 [493.8..499.7] | 483.0 [478.7..486.5] | 261.2 | 264.3 |
+| held query x20 | 6.1 [5.5..7.8] | 8.5 [8.3..9.9] | 8.5 [8.2..8.9] | 3.1 | 3.0 |
+| full refresh | 16.6 [16.1..18.5] | 27.2 [26.2..27.7] | 26.1 [25.1..28.0] | 35.1 | 36.0 |
+| cold build | 85.4 [84.0..88.1] | 94.3 [93.9..125.2] | 89.7 [88.8..93.3] | 32.1 | 30.9 |
+| cold query x20 | 36.0 [35.7..36.5] | 57.7 [57.3..57.9] | 57.6 [57.2..59.8] | 20.9 | 21.2 |
+| compaction with `keep` | 51.1 [50.6..52.6] | 63.1 [62.4..65.0] | 58.6 [58.3..59.6] | 28.1 | 28.7 |
+| first `memory_save` | 32.2 [31.7..33.4] | 41.8 [41.3..43.3] | 40.1 [39.4..43.3] | 27.2 | 27.1 |
+
+**The floor, measured, path by path.** All seven are still slower than the hand-written module.
+
+- *Cold query* (+60%, 1.1 ms a query): the row loop is 727 us generated against 173 us
+  hand-written over the same 3,324 rows; the hand-written loop checks nothing (`for name, seg,
+  _field, tf in rows`, `owners.get(name) == seg`, a `Counter`), and the body alone with no check
+  is 167 us. Any sound fast copy must check each row (a list of four, two strings, a number a
+  double holds) because a short row, a `true`, a `-0` or an int past 2^53 answers differently in
+  JS (J90-P4's list): that check alone is 45-65 ns a row, and with every helper inlined the loop
+  is still 314-374 us. A per-row guard that proves only the row's own items moved nothing (761
+  us): the time is in the Map reads and `+` on a Map value, which no row guard proves, and a
+  fallback row that stores an unproven sum rules out a Map value fact (RULES.md, *J90-P5 rules*).
+  The shard read adds about 140 us over `json.loads` (ints exact past 2^53, NaN refused) and the
+  owners map 65 us (`_js_get` of each segment's id).
+- *Hot index build* (+19%): `derive` 125 ms against 75 ms. Tokenizing is the same 37 ms on both
+  sides; the rest is the per-token count (`c[fi] = c[fi]! + 1` on a Map value, four helpers a
+  token where the hand-written module calls `Counter(toks)` once a field) and the per-term
+  postings: inlining every helper of that closure by hand moved the build 483 -> 472 ms. Parsing
+  natives reads each file three times (`parseNative`'s own read for `meta`, then `safeRead`)
+  where the hand-written module read it twice: 27 ms of `pyReadText`.
+- *Full refresh* (+57%): the head write is 14 ms against 6 ms (the lazy tail parsed by the exact
+  JSON reader on first need, 3.7 ms, which the hand-written module paid at open; the head's
+  `_lifted`, now 2.0 ms, where `df` holds index-like keys that `_js_own_keys` must order).
+- *Held query* (+39%): per-shard `lookup` / `decodeSegments` helpers on segments read from JSON,
+  unchanged by this unit.
+- *Cold build, compaction, first save* (+5%, +15%, +25%): what remains after the dump guard is
+  the same row and Map helpers as the cold query, and `_js_rows` over rows the body could mutate
+  (a list snapshot would not see an append JS sees, so the generator stays).
+
+What the hand-written code skipped on these paths is J90-P4's list: JSON ints past 2^53 summed and
+compared exactly where JS rounds, rows trusted without a shape check, a short row read by
+unpacking where JS reads `undefined`.
+
 ## Concurrency
 
 Measured, not assumed: 12 pipelined saves all land in order; a recall behind a save **sees**

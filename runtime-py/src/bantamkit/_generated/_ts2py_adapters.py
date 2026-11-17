@@ -8,6 +8,7 @@ import fnmatch as _fnmatch
 import functools as _functools
 import gzip as _gzip
 import hashlib as _hashlib
+import itertools as _itertools
 import json as _json
 import math as _math
 import os as _os
@@ -510,9 +511,7 @@ def _node_path(path, what):
         error = _JsTypeError("The argument 'path' must be a string without null bytes")
         error.code = "ERR_INVALID_ARG_VALUE"
         raise error
-    if not path.isascii() and any(0xD800 <= ord(c) <= 0xDFFF for c in path):
-        path = "".join(_os_char(c) if 0xD800 <= ord(c) <= 0xDFFF else c for c in path)
-    return path
+    return _os_text(path)
 
 
 class Stats(_JsObject):
@@ -1003,7 +1002,11 @@ def py_wordchar(ch, *_):
 def _os_text(text):
     if text.isascii():
         return text
-    return "".join(_os_char(c) if 0xD800 <= ord(c) <= 0xDFFF else c for c in text)
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return "".join(_os_char(c) if 0xD800 <= ord(c) <= 0xDFFF else c for c in text)
+    return text
 
 
 def py_realpath(path, *_):
@@ -1042,7 +1045,7 @@ class Hash(_JsObject):
                 "ts2py: hash.update of anything but a 'utf8' string or a Buffer is outside the"
                 " subset"
             )
-        self._live().update(_os_text(data).encode("utf-8", "surrogateescape"))
+        self._live().update(_hash_bytes(data))
         return self
 
     def digest(self, encoding=_JS_UNDEFINED, *_):
@@ -1053,9 +1056,16 @@ class Hash(_JsObject):
         return out
 
 
+def _hash_bytes(text):
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError:
+        return _os_text(text).encode("utf-8", "surrogateescape")
+
+
 def hash_hex(algorithm, data):
-    if type(data) is str and data.isascii():
-        return _HASHES[algorithm](data.encode()).hexdigest()
+    if type(data) is str:
+        return _HASHES[algorithm](_hash_bytes(data)).hexdigest()
     return Hash(algorithm).update(data, "utf8").digest("hex")
 
 
@@ -2130,6 +2140,36 @@ def _lift_ints_safe(ints):
     return -_SAFE_INT <= min(ints) and max(ints) <= _SAFE_INT
 
 
+_LIFT_LIST = frozenset({list})
+_LIFT_DICT = frozenset({dict})
+_LIFT_STR = frozenset({str})
+_LIFT_FLAT = _LIFT_SAME | {int, list, dict}
+
+
+def _lift_values_same(values):
+    kinds = set(map(type, values))
+    if kinds <= _LIFT_SAME:
+        return True
+    if not kinds <= _LIFT_FLAT:
+        return False
+    if int in kinds and not _lift_ints_safe(
+        values if kinds == _LIFT_INT else [v for v in values if type(v) is int]
+    ):
+        return False
+    if list in kinds:
+        lists = values if kinds == _LIFT_LIST else [v for v in values if type(v) is list]
+        if not _lift_values_same(list(_itertools.chain.from_iterable(lists))):
+            return False
+    if dict in kinds:
+        dicts = values if kinds == _LIFT_DICT else [v for v in values if type(v) is dict]
+        keys = list(_itertools.chain.from_iterable(dicts))
+        if not set(map(type, keys)) <= _LIFT_STR or any(map(str.isdigit, keys)):
+            return False
+        if not _lift_values_same(list(_itertools.chain.from_iterable(map(dict.values, dicts)))):
+            return False
+    return True
+
+
 def _lifted(value):
     kind = type(value)
     if kind in _LIFT_SAME:
@@ -2143,20 +2183,20 @@ def _lifted(value):
             return int(value)
         return value
     if kind is list:
-        kinds = set(map(type, value))
-        if kinds <= _LIFT_SAME or (kinds == _LIFT_INT and _lift_ints_safe(value)):
+        if _lift_values_same(value):
             return value
         return [_lifted(item) for item in value]
     if kind is dict:
         keys = _js_own_keys(value)
-        kinds = set(map(type, value.values()))
-        if (
-            kinds <= _LIFT_SAME or (kinds == _LIFT_INT and _lift_ints_safe(value.values()))
-        ) and keys == list(value):
+        if keys == list(value) and _lift_values_same(list(value.values())):
             return value
         return {key: _lifted(value[key]) for key in keys}
     if value is _JS_UNDEFINED:
         return None
+    if kind is _JsMap and value._keys is None:
+        entries = value._entries
+        if set(map(type, entries)) <= _LIFT_STR and _lift_values_same(list(entries.values())):
+            return dict(entries)
     if isinstance(value, _JsMap):
         return {_js_str(key): _lifted(item) for key, item in value}
     if kind is _JsBigInt:

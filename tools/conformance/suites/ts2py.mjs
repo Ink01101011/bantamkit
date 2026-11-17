@@ -33,6 +33,10 @@
  * against Node's `toLowerCase()`, and pins the answers J89-7 used to refuse as literals.
  * `runtime/sort …` (J90-P2) sorts seeded arrays with NaN under four comparators with that runtime's
  * `_js_m_sort` against Node's `.sort`, the order and the comparator's calls.
+ * `adapter/…` (J90-P5) lists, with the TypeScript checker, every member the compiled sources read
+ * off an object an adapter builds (`lib/adaptermembers.mjs`) and asks the committed adapters what
+ * each provides: a member read and not provided is red (it would read `undefined`, silently, as
+ * `Stats.ino` did until J90-P4), and so is a read of an adapter type no row claims.
  *
  * WHY THE PYTHON ARMS READ THE FIXTURE THEMSELVES. `ref/ts2py_ref.py` opens the file with
  * `json.load`; the cases are not sent as a payload, because the payload goes through
@@ -59,6 +63,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { adapterReads } from '../lib/adaptermembers.mjs';
 
 export const name = 'ts2py';
 export const summary = 'workplan three ways: TypeScript, ts2py-generated Python and bantamkit.workplan against one expected file';
@@ -332,6 +337,39 @@ export async function run(ctx) {
       cases.push({ name: `runtime/sort agrees with node: ${items.length} items #${i}`, kind: 'json', expected, actual: got[i] });
     });
     notes.push(`runtime sort: ${arrays.length} arrays x ${SORTS.length} comparators against node, with the calls`);
+  }
+
+  // J90-P5: every member the compiled modules read off an adapter's object is one it provides.
+  {
+    const audit = adapterReads(repoRoot, [SOURCE, ...CODEC_SOURCES, ...G1_SOURCES]);
+    const classes = Object.keys(audit.classes).sort();
+    const got = ctx.runPython(REF, { adapters: { classes, scratch: join(bed, 'adapters') } }).adapters;
+    cases.push({ name: 'adapter/every read of an adapter type has a row', kind: 'json', expected: [], actual: audit.unclassified });
+    for (const cls of classes) {
+      const read = audit.classes[cls];
+      cases.push({
+        name: `adapter/${cls} provides every member compiled code reads (${read.join(', ')})`,
+        kind: 'json',
+        expected: [],
+        actual: read.filter((m) => !got.classes[cls].includes(m)),
+      });
+    }
+    for (const [provider, rows] of Object.entries(audit.dicts).sort()) {
+      const samples = got.dicts[provider] ?? [];
+      for (const row of rows) {
+        const shaped = samples.filter((d) => Object.entries(row.literals).every(([k, v]) => d[k] === v));
+        const best = shaped.length === 0 ? row.members : shaped
+          .map((d) => row.members.filter((m) => !Object.hasOwn(d, m)))
+          .reduce((a, b) => (b.length < a.length ? b : a));
+        cases.push({
+          name: `adapter/${provider} ${JSON.stringify(row.literals)} provides ${row.members.join(', ')}`,
+          kind: 'json',
+          expected: [],
+          actual: best,
+        });
+      }
+    }
+    notes.push(`adapter members: ${audit.count} reads of members declared outside the compiled sources, ${classes.length} adapter classes and ${Object.keys(audit.dicts).length} dict producers checked`);
   }
   return { cases, notes };
 }

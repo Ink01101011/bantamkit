@@ -956,3 +956,53 @@ Measured and NOT taken: lowering a fresh local `Map`'s `get` / `set` inline
 instead of comprehensions) did not move the 14 heads' 2.7 ms at all: the keys are terms and names
 read from JSON (unproven), so no Map fact or typed method body reaches the per-row helpers that are
 the gap. See docs/porting.md (*J90-P4*) for the floor.
+
+## J90-P5 rules (#316 G4: the adapter member audit; per-call shape guards in the adapters)
+
+**Adapter members are audited, not assumed.** `Stats.ino` (J90-P4) hid because a read of a member
+an adapter object does not list answers `undefined`. `--suite ts2py` now walks every property read
+in the compiled sources with the TypeScript checker (`tools/conformance/lib/adaptermembers.mjs`),
+keeps the reads whose member is declared OUTSIDE the compiled sources (2,254 on this tree), and
+sorts each into a row: an adapter class (`Stats`, `BigIntStats`, `Hash`, `TextDecoder`, `Date`,
+`SkillStore`, `coldFs`, `retentionFs`), whose `_js_own` must list the member; a dict an adapter or
+shim builds (`parseNative`, `pyRelativeScan`, `parseConfigDocument`, `parseJson`, `fileLinks`,
+the component's `_context_in`), which `ref/ts2py_ref.py` calls on sample inputs and whose dicts
+must carry the member (matched on a discriminant such as `kind` / `t`); or a read the runtime
+answers itself (a JS builtin, a module name the adapter table resolves at compile time, a Buffer
+method, an exception's `code`). A read no row claims is red (`adapter/every read of an adapter
+type has a row`), and so is a member a row's provider lacks. Today none is missing. Red proof (a
+scratch worktree of this change): `ino` removed from `Stats` / `BigIntStats` as efda7291 had them
+-> `adapter/BigIntStats provides every member compiled code reads (ino, isFile, mtimeNs, size)`
+answers `["ino"]`; `meta` dropped from `parse_native`'s dict -> the `parse_native` row red.
+
+**Per-call shape guards (adapters.py).** Each checks a value's shape once, at C speed, and hands
+the value over as it is; anything that fails takes the general path, which is unchanged.
+
+| Guard | Holds when | Otherwise |
+|---|---|---|
+| `_lift_values_same` in `_lifted` (`dumpJsValue`): a list, a plain dict, or a plain `_JsMap` (not a subclass, `_keys is None`, every key a `str`) handed to `json.dumps` unconverted (the Map as `dict(_entries)`) | every value, a level at a time over all values at once: a str / bool / None, a safe int, a list whose items all are, a dict whose keys are all `str`, none all digits (so `_js_own_keys` is its own order), and whose values all are | value by value, as before (`fromJs`): a float, `-0`, an unsafe int, a BigInt, `undefined`, a Map waiting to be settled or with a key that is not its own tag, an index-like key |
+| `_hash_bytes` (`hash_hex`, `Hash.update`): any `str` hashed as its strict UTF-8 | the strict codec encodes it (it refuses exactly the surrogate code points, the only ones `_os_text` changes) | `_os_text`, then UTF-8 with surrogateescape, per character |
+| `_os_text` / `_node_path` | as `_hash_bytes` | the per-character join |
+
+Pinned in `tests/j90p5.rs`: `probe()` and `fuzz(3000)` of `tests/fixtures/j90p5_probe.ts` equal to
+what Node v26.13.0 printed (canonical-index keys, `'01'` / `'-1'` / `'4294967295'` / `'٣'`, an own
+`__proto__`, a Map's number key colliding with its string, a Map from an object's entries, `-0`,
+`2^53` and past it, NaN, `1e21`, `undefined`, the `avgdl` float key), and 20,000 seeded Python
+values through `_lifted` equal to the value-by-value algorithm it shortcuts, with the fast path
+TAKEN for rows, docs and a Map of lists; 20,000 strings (Thai, astral, every lone-surrogate kind)
+through `hash_hex`, `Hash.update`, `_os_text` and `_node_path` equal to the per-character path.
+Mutations, each red: the digit-key test dropped, the `_keys is None` test dropped, the safe-int
+test dropped, the str-key test of the Map dropped, the list items unchecked, `_hash_bytes`
+encoding with surrogatepass, `_os_text` without its strict-codec test. Two are equivalent on
+every reachable input and stay green: the dict's str-key test (a dict reaching `_lifted` has
+string keys) and `type(...) is _JsMap` widened to `isinstance` (`_JsReadMap` iterates as its base).
+
+**Measured and NOT taken: a per-row guarded copy of `for (const [a, b, , d] of rows)`.** On the
+cold query's row loop (3,324 rows, `micro_loop.py`): the general loop 727 us; a per-row guard
+proving `a`, `b` str and `d` a number with the body otherwise as lowered 761 us (facts alone move
+nothing: the body's cost is the Map reads and `+` on a Map value, which no row guard proves);
+the guard plus `Map.get` / `set` / `??` inline 610 us; everything inline with a runtime-checked
+int `+` 314-374 us; the hand-written loop, which checks nothing, 173 us; the body alone with no
+check at all 167 us. The check itself (about 45-65 ns a row, a separate pass or fused) is the
+floor, and a per-row fallback that stores an unproven sum into the same Map rules out a Map value
+fact. Not worth a compiler rule for at most 13% of one query.

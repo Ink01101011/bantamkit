@@ -3,6 +3,7 @@
     {"fixture": str, "generated": str} -> {"generated": [answer], "legacy": [answer]}
     {"lower": {"runtime": str, "inputs": [str]}} -> {"lower": [answer]}   (J89-7)
     {"sort": {"runtime": str, "arrays": [[number | "NaN"]]}} -> {"sort": [answer]}   (J90-P2)
+    {"adapters": {"classes": [str], "scratch": str}} -> {"adapters": {...}}   (J90-P5)
 
 `fixture` is `tools/conformance/fixtures/workplan-cases.json`, read HERE with `json.load` and
 never handed over as a payload: the payload travels through `JSON.stringify`, which would turn
@@ -93,8 +94,70 @@ def _sort(rt, items) -> list[str]:
     return out
 
 
+def _dicts_in(value, out):
+    # Every plain dict reachable from an adapter's answer (through lists, dicts and `_JsMap`s).
+    from bantamkit._generated._ts2py_runtime import _JsMap
+
+    work = [value]
+    while work:
+        item = work.pop()
+        if isinstance(item, dict):
+            out.append(item)
+            work.extend(item.values())
+        elif isinstance(item, list):
+            work.extend(item)
+        elif isinstance(item, _JsMap):
+            work.extend(item._entries.values())
+    return out
+
+
+def _adapters(request) -> dict:
+    """J90-P5: what each adapter object REALLY provides. A class: its `_js_own` (the members
+    `_js_object_get` answers; anything else is `undefined`). A dict producer: every dict it built
+    over sample inputs that reach each of its shapes, as `{key: str literal or null}` so the Node
+    side can match a discriminant (`kind`, `t`)."""
+    import types
+
+    from bantamkit._generated import _ts2py_adapters as adapters
+    from bantamkit.memory import component
+
+    classes = {name: sorted(getattr(adapters, name)._js_own) for name in request["classes"]}
+    fact = Path(request["scratch"]) / "native_fact.md"
+    fact.parent.mkdir(parents=True, exist_ok=True)
+    fact.write_text(
+        "---\nname: a-fact\ndescription: a fact\ntype: project\nlinks: [b]\n---\nbody\n",
+        encoding="utf-8",
+    )
+    samples = {
+        "parse_native": [adapters.parse_native(str(fact))],
+        "py_relative_scan": [adapters.py_relative_scan("met 3 days ago and yesterday, then")],
+        "parse_config_document": [
+            adapters.parse_config_document(text) for text in ("", "- 1\n", "a: [x, 1]\nb: 2\n")
+        ],
+        "parse_json": [adapters.parse_json('{"a": [1, 1.5, "s", true, null, {}]}')],
+        "file_links": [adapters.file_links(str(fact), [])],
+        "component._context_in": [
+            component._context_in(
+                types.SimpleNamespace(weights={}, strong_window=["p"], graph=None)
+            )
+        ],
+    }
+    dicts = {
+        name: [
+            {k: (v if isinstance(v, str) else None) for k, v in d.items()}
+            for answer in answers
+            for d in _dicts_in(answer, [])
+        ]
+        for name, answers in samples.items()
+    }
+    return {"classes": classes, "dicts": dicts}
+
+
 def main() -> None:
     request = json.load(sys.stdin)
+    if "adapters" in request:
+        sys.stdout.write(json.dumps({"adapters": _adapters(request["adapters"])}))
+        return
     if "sort" in request:
         runtime = _load(request["sort"]["runtime"])
         sys.stdout.write(json.dumps({"sort": [_sort(runtime, a) for a in request["sort"]["arrays"]]}))

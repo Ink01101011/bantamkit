@@ -7,6 +7,7 @@ import fnmatch as _fnmatch
 import functools as _functools
 import gzip as _gzip
 import hashlib as _hashlib
+import itertools as _itertools
 import json as _json
 import math as _math
 import os as _os
@@ -571,9 +572,7 @@ def _node_path(path, what):
         error = _JsTypeError("The argument 'path' must be a string without null bytes")
         error.code = "ERR_INVALID_ARG_VALUE"
         raise error
-    if not path.isascii() and any(0xD800 <= ord(c) <= 0xDFFF for c in path):
-        path = "".join(_os_char(c) if 0xD800 <= ord(c) <= 0xDFFF else c for c in path)
-    return path
+    return _os_text(path)
 
 
 class Stats(_JsObject):
@@ -1159,10 +1158,16 @@ def py_wordchar(ch, *_):
 
 
 def _os_text(text):
-    """`text` with each lone surrogate as the OS receives it (`_os_char`)."""
+    """`text` with each lone surrogate as the OS receives it (`_os_char`). J90-P5: a text the strict
+    UTF-8 codec encodes holds no surrogate code point (it refuses exactly those), so it is its own
+    answer, found at C speed."""
     if text.isascii():
         return text
-    return "".join(_os_char(c) if 0xD800 <= ord(c) <= 0xDFFF else c for c in text)
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return "".join(_os_char(c) if 0xD800 <= ord(c) <= 0xDFFF else c for c in text)
+    return text
 
 
 def py_realpath(path, *_):
@@ -1208,7 +1213,7 @@ class Hash(_JsObject):
             )
         # Node's UTF-8, a lone surrogate as U+FFFD, under the G2 path policy (`_os_char`): a POSIX
         # surrogateescape code point is the real byte it stands for.
-        self._live().update(_os_text(data).encode("utf-8", "surrogateescape"))
+        self._live().update(_hash_bytes(data))
         return self
 
     def digest(self, encoding=_JS_UNDEFINED, *_):
@@ -1219,13 +1224,25 @@ class Hash(_JsObject):
         return out
 
 
+def _hash_bytes(text):
+    """The bytes `Hash.update(text, 'utf8')` hashes: `_os_text(text)` as UTF-8 with
+    surrogateescape. J90-P5: a string with no surrogate code point is its own `_os_text` (only a
+    surrogate is changed there), and its strict UTF-8 is what surrogateescape writes, so strict
+    `encode()` answers it at C speed; the strict codec refuses exactly the surrogates, which take
+    the per-character path."""
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError:
+        return _os_text(text).encode("utf-8", "surrogateescape")
+
+
 def hash_hex(algorithm, data):
     """J90-P2: `createHash(algorithm).update(data, 'utf8').digest('hex')` in one call (ts2py
-    lowers that chain, `algorithm` a literal `'sha256'` or `'sha1'`, to it): an ASCII `str` is its
-    own UTF-8 and has no surrogate, so its bytes are `data.encode()`; anything else is the three
-    calls, with their refusals."""
-    if type(data) is str and data.isascii():
-        return _HASHES[algorithm](data.encode()).hexdigest()
+    lowers that chain, `algorithm` a literal `'sha256'` or `'sha1'`, to it): a `str` is hashed as
+    its bytes at once (J90-P5: any `str`, through `_hash_bytes`, not only an ASCII one); anything
+    else is the three calls, with their refusals."""
+    if type(data) is str:
+        return _HASHES[algorithm](_hash_bytes(data)).hexdigest()
     return Hash(algorithm).update(data, "utf8").digest("hex")
 
 
@@ -2546,6 +2563,46 @@ def _lift_ints_safe(ints):
     return -_SAFE_INT <= min(ints) and max(ints) <= _SAFE_INT
 
 
+_LIFT_LIST = frozenset({list})
+_LIFT_DICT = frozenset({dict})
+_LIFT_STR = frozenset({str})
+# J90-P5: the kinds a value may have and still be its own `_lifted` (see `_lift_values_same`).
+_LIFT_FLAT = _LIFT_SAME | {int, list, dict}
+
+
+def _lift_values_same(values):
+    """J90-P5: the per-call shape guard of `_lifted`. True only when EVERY value of `values` (a
+    list) is equal to its own `_lifted`, so the container holding them may be handed to
+    `json.dumps` unconverted: a string, boolean or null; a safe int; a list whose items all are; a
+    plain dict whose keys are all strings, none of them all digits (so `_js_own_keys` is its own
+    order), and whose values all are. Checked a level at a time over all the values at once
+    (`map(type, ...)`, one `min` and `max` of the ints, the lists' items and the dicts' keys and
+    values chained), at C speed. Anything else (a float, a Map, undefined, a BigInt, an unsafe int,
+    a key `_js_own_keys` would move) answers False, and `_lifted` takes its general path, value
+    by value, which is what Node's `fromJs` reads. False is always safe."""
+    kinds = set(map(type, values))
+    if kinds <= _LIFT_SAME:
+        return True
+    if not kinds <= _LIFT_FLAT:
+        return False
+    if int in kinds and not _lift_ints_safe(
+        values if kinds == _LIFT_INT else [v for v in values if type(v) is int]
+    ):
+        return False
+    if list in kinds:
+        lists = values if kinds == _LIFT_LIST else [v for v in values if type(v) is list]
+        if not _lift_values_same(list(_itertools.chain.from_iterable(lists))):
+            return False
+    if dict in kinds:
+        dicts = values if kinds == _LIFT_DICT else [v for v in values if type(v) is dict]
+        keys = list(_itertools.chain.from_iterable(dicts))
+        if not set(map(type, keys)) <= _LIFT_STR or any(map(str.isdigit, keys)):
+            return False
+        if not _lift_values_same(list(_itertools.chain.from_iterable(map(dict.values, dicts)))):
+            return False
+    return True
+
+
 def _lifted(value):
     """`value` as `fromJs` reads it (runtime-ts/src/pyjson.ts), as the Python value `json.dumps`
     is handed: a number that is a safe integer (`Number.isSafeInteger`) and not -0 is an int, any
@@ -2565,20 +2622,24 @@ def _lifted(value):
             return int(value)
         return value
     if kind is list:
-        kinds = set(map(type, value))
-        if kinds <= _LIFT_SAME or (kinds == _LIFT_INT and _lift_ints_safe(value)):
+        if _lift_values_same(value):
             return value
         return [_lifted(item) for item in value]
     if kind is dict:
         keys = _js_own_keys(value)
-        kinds = set(map(type, value.values()))
-        if (
-            kinds <= _LIFT_SAME or (kinds == _LIFT_INT and _lift_ints_safe(value.values()))
-        ) and keys == list(value):
+        if keys == list(value) and _lift_values_same(list(value.values())):
             return value
         return {key: _lifted(value[key]) for key in keys}
     if value is _JS_UNDEFINED:
         return None
+    # J90-P5: a plain Map (not a subclass) whose every key is its own tag (`_keys is None`: a str
+    # or a safe int), all of them strings, in insertion order (not waiting to be settled), whose
+    # values pass the shape guard: the dict of its entries, which is what the general path below
+    # builds (`String(key)` of a string is the string; each value its own `_lifted`).
+    if kind is _JsMap and value._keys is None:
+        entries = value._entries
+        if set(map(type, entries)) <= _LIFT_STR and _lift_values_same(list(entries.values())):
+            return dict(entries)
     if isinstance(value, _JsMap):
         return {_js_str(key): _lifted(item) for key, item in value}
     if kind is _JsBigInt:
