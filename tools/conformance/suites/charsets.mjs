@@ -330,7 +330,24 @@ export async function run(ctx) {
     );
     return { cases, notes };
   }
+  // J90-P8F (#316 G4): from CPython 3.13 the reference answers through 3.12.13's frozen registry
+  // (`charsets_ref.py`, `pinned`), the one the product decodes through on every interpreter. The
+  // generator reads the LIVE registry, which 3.13/3.14 grew, so its byte-compare is asked of a
+  // 3.11/3.12 reference only and WITHHELD above it, named in a note; every table, alias and
+  // module case below still runs, against the pinned registry.
   cases.push({
+    name: 'the reference answers the pinned 3.12 registry exactly when it is CPython 3.13 or later, against a literal',
+    kind: 'json',
+    expected: { pinned: !/^3\.1[12]\./.test(python.version) },
+    actual: { pinned: python.pinned === true },
+  });
+  if (python.pinned) {
+    notes.push(
+      `1 case withheld from Python 3.13 (the reference is ${python.version}): \`src/charsets.ts is what ` +
+        'scripts/charsets-table.py writes for the live registry` — charsets.ts is 3.12.13\'s registry, ' +
+        "which the product pins; run the reference on 3.12 to arm it",
+    );
+  } else cases.push({
     name: 'src/charsets.ts is what scripts/charsets-table.py writes for the live registry (header line excluded)',
     kind: 'bytes',
     expected: python.generated.replace(HEADER, ''),

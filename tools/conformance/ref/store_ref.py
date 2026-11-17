@@ -52,6 +52,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src"))
 
+from bantamkit import stdlib312
 from bantamkit.memory.store import (
     INDEX_PRESSURE_PERCENT,
     MemoryStore,
@@ -59,6 +60,52 @@ from bantamkit.memory.store import (
     tokens,
     undegraded_index_ceiling,
 )
+
+# J90-P8F (#316 G4): from CPython 3.13 the standard library answers some of these questions
+# differently from 3.12, the version the port reproduces (`bantamkit/stdlib312.py` names each
+# change), and the PRODUCT asks `stdlib312` there. So from 3.13 the reference asks it too: the
+# expected answer stays CPython 3.12's on every interpreter. Below 3.13 it is the live library,
+# as before, and `runtime-py/tests/test_stdlib312.py` holds the two equal on that interpreter.
+_PINNED = sys.version_info >= (3, 13)
+
+
+def _resolve(path: str) -> Path:
+    return stdlib312.path_resolve(path) if _PINNED else Path(path).resolve()
+
+
+def _win_is_absolute(raw: str) -> bool:
+    return stdlib312.win_is_absolute(raw) if _PINNED else PureWindowsPath(raw).is_absolute()
+
+
+def _nt_isabs(raw: str) -> bool:
+    return stdlib312.nt_isabs(raw) if _PINNED else ntpath.isabs(raw)
+
+
+def _suffix(path: PurePath) -> str:
+    return stdlib312.path_suffix(path) if _PINNED else path.suffix
+
+
+def _with_suffix(path: PurePath, suffix: str) -> PurePath:
+    """`path.with_suffix(suffix)`; from 3.13, CPython 3.12's `PurePath.with_suffix`, copied.
+
+    3.14 counts a lone trailing dot as a suffix (GH-82805), so `a.` + `.md.tmp` is `a.md.tmp`
+    there and `a..md.tmp` on 3.12 and in the port. No product path asks this: it is the
+    harness's own reference for `pyWithSuffix`, so the 3.12 code lives here and not in
+    `stdlib312`.
+    """
+    if not _PINNED:
+        return path.with_suffix(suffix)
+    sep, altsep = ("\\", "/") if isinstance(path, PureWindowsPath) else ("/", "")
+    if sep in suffix or altsep and altsep in suffix:
+        raise ValueError(f"Invalid suffix {suffix!r}")
+    if suffix and not suffix.startswith(".") or suffix == ".":
+        raise ValueError(f"Invalid suffix {suffix!r}")
+    name = path.name
+    if not name:
+        raise ValueError(f"{path!r} has an empty name")
+    old_suffix = stdlib312.path_suffix(name)
+    name = name + suffix if not old_suffix else name[: -len(old_suffix)] + suffix
+    return path.with_name(name)
 
 
 def b64(text: str) -> str:
@@ -244,7 +291,7 @@ def main() -> None:
                 elif kind == "read":
                     Path(a).read_text(encoding="utf-8")
                 elif kind == "resolve":
-                    Path(a).resolve()
+                    _resolve(a)
                 else:
                     raise SystemExit(f"unknown oserror kind {kind!r}")
                 messages.append({"ok": True})
@@ -275,7 +322,7 @@ def main() -> None:
         out = {
             "joined": [b64(str(PurePath(*[unb64(p) for p in parts]))) for parts in request["joins"]],
             "suffixed": [
-                b64(str(PurePath(unb64(p)).with_suffix(unb64(s)))) for p, s in request["suffixes"]
+                b64(str(_with_suffix(PurePath(unb64(p)), unb64(s)))) for p, s in request["suffixes"]
             ],
         }
     elif op == "winpaths":
@@ -298,14 +345,14 @@ def main() -> None:
             ],
             "str": [b64(str(PureWindowsPath(r))) for r in raws],
             "parents": [[b64(str(x)) for x in PureWindowsPath(r).parents] for r in raws],
-            "absolute": [PureWindowsPath(r).is_absolute() for r in raws],
+            "absolute": [_win_is_absolute(r) for r in raws],
             # `ntpath.isabs` and `PureWindowsPath.is_absolute` DISAGREE, and CPython's own
             # source calls the difference a legacy bug. `realpath` is ntpath's caller, so
             # both readings have to be reproduced and neither may stand in for the other.
-            "ntisabs": [ntpath.isabs(r) for r in raws],
+            "ntisabs": [_nt_isabs(r) for r in raws],
             "ntsplit": [[b64(x) for x in ntpath.split(r)] for r in raws],
             "name": [b64(PureWindowsPath(r).name) for r in raws],
-            "suffix": [b64(PureWindowsPath(r).suffix) for r in raws],
+            "suffix": [b64(_suffix(PureWindowsPath(r))) for r in raws],
             "joined": [
                 b64(str(PureWindowsPath(*[unb64(p) for p in parts]))) for parts in request["joins"]
             ],
@@ -313,7 +360,7 @@ def main() -> None:
                 b64(ntpath.join(*[unb64(p) for p in parts])) for parts in request["joins"]
             ],
             "suffixed": [
-                b64(str(PureWindowsPath(unb64(p)).with_suffix(unb64(s))))
+                b64(str(_with_suffix(PureWindowsPath(unb64(p)), unb64(s))))
                 for p, s in request["suffixes"]
             ],
         }

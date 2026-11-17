@@ -1860,7 +1860,35 @@ async function runIn(ctx, home) {
         lists.push(spec);
       }
     }
-    const py = ctx.runPython(REF, { op: 'sortnames', lists });
+    // J90-P8F (#316 G4): ARMED BELOW CPython 3.13 ONLY. 3.13 relaxed `count_run`'s notion of a
+    // descending run (gh-116554, "Relax list.sort()'s notion of 'descending' runs"), so which
+    // pair `sorted` compares first — and so which two type names a TypeError carries — moved:
+    // measured, the 3.13.18 and 3.14.10 references part from the port on the first list whose
+    // incomparable pair a non-strict descending run reaches (byte 11725 of 3.5 MB). That is
+    // the REFERENCE moving, not the product: neither runtime sorts these names with
+    // `sorted` — the Python store runs the compiled `sort_scored`, this port's own listsort
+    // spelled out — so both answer 3.12's order on every interpreter. 3.12's C listsort cannot
+    // be run from a 3.13 interpreter, so from 3.13 the case is WITHHELD — named and counted
+    // in a note, as the winpaths case is below 3.12 (J63-1b) — rather than left a permanent
+    // red or given a `ruling:`, which is for a difference somebody chose.
+    const sortRef = ctx.runPython(REF, { op: 'version' });
+    const [sortMajor, sortMinor] = sortRef.version_info;
+    const sortArmed = sortMajor === 3 && sortMinor < 13;
+    cases.push({
+      name: 'the recall tie-break is armed exactly when the reference is below 3.13, against a literal',
+      kind: 'json',
+      expected: { armed: sortMajor === 3 && sortMinor <= 12 },
+      actual: { armed: sortArmed },
+    });
+    if (!sortArmed) {
+      notes.push(
+        `1 case withheld from Python 3.13 (the reference is ${sortRef.version}): \`the recall ` +
+          `tie-break over ${lists.length} generated lists\` — the port follows 3.12's listsort ` +
+          "and 3.13's count_run compares in a different order (gh-116554); run the reference on " +
+          '3.11 or 3.12 to arm it',
+      );
+    }
+    const py = sortArmed ? ctx.runPython(REF, { op: 'sortnames', lists }) : { lists: [] };
     const nodeAnswers = lists.map((spec) => {
       const scored = spec.map(([score, text], i) => ({ score, name: pyyaml.constructPlain(text), i }));
       try {
@@ -1870,13 +1898,13 @@ async function runIn(ctx, home) {
       }
     });
     const raised = py.lists.filter((r) => r.error !== undefined).length;
-    cases.push({
+    if (sortArmed) cases.push({
       name: `the recall tie-break over ${lists.length} generated lists (${raised} of them raise)`,
       kind: 'json',
       expected: py.lists,
       actual: nodeAnswers,
     });
-    notes.push(
+    if (sortArmed) notes.push(
       `tie-break: ${lists.length} generated (score, name) lists, n from 2 to 300; ` +
         `CPython's sorted raises TypeError on ${raised} of them and the port reproduces the ` +
         'order or the sentence for every one',

@@ -48,6 +48,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src"))
 
 import jsonschema
+from bantamkit import stdlib312
 from bantamkit.assets import load_schema, load_skill, load_tool
 from bantamkit.contract import _pattern_unsupported, extract_json, load_contract, schema_error
 from jsonschema.exceptions import best_match
@@ -59,6 +60,15 @@ def b64(text: str) -> str:
 
 def unb64(text: str) -> str:
     return base64.b64decode(text.encode("ascii")).decode("utf-8", "surrogatepass")
+
+
+def _raw_decode(text: str):
+    """`json.JSONDecoder().raw_decode(text)`; from CPython 3.13, 3.12's error sentence
+    (`stdlib312.json_raw_decode`), which `contract.extract_json` raises on every interpreter:
+    3.13 reports a trailing comma at the comma (gh-113149, J90-P8F). The live decoder below 3.13."""
+    if sys.version_info >= (3, 13):
+        return stdlib312.json_raw_decode(json.JSONDecoder(), text)
+    return json.JSONDecoder().raw_decode(text)
 
 
 def caught(exc: BaseException) -> dict:
@@ -88,7 +98,7 @@ def main() -> None:
         results = []
         for text in payload["texts"]:
             try:
-                obj, end = json.JSONDecoder().raw_decode(unb64(text))
+                obj, end = _raw_decode(unb64(text))
             except BaseException as e:  # noqa: BLE001
                 results.append(caught(e))
             else:
@@ -156,7 +166,14 @@ def main() -> None:
                 except Exception:  # noqa: BLE001 - re.error, OverflowError, ValueError alike
                     results.append("error")
                     continue
-                results.append("".join("1" if compiled.search(s) else "0" for s in strings))
+                # J90-P8F: from 3.13 the search is `stdlib312.re_search`, CPython 3.12's, which the
+                # product's validator asks (3.14 lets `\\B` match the empty string, gh-124130).
+                search = (
+                    (lambda s, p=pattern: stdlib312.re_search(p, s))
+                    if sys.version_info >= (3, 13)
+                    else compiled.search
+                )
+                results.append("".join("1" if search(s) else "0" for s in strings))
         json.dump({"results": results}, sys.stdout)
         return
 

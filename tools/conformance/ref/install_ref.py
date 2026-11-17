@@ -20,6 +20,7 @@ import sys
 from importlib import metadata
 from pathlib import Path
 
+from bantamkit import stdlib312
 from bantamkit.mcpserver import (
     INSTALL_SHAPES,
     _derive_install,
@@ -52,8 +53,12 @@ def answer(scenario: dict) -> dict:
 
 
 def _exists(source: str) -> bool | None:
+    # J90-P8F: `Path.exists()` as CPython 3.12 answers it, which `build_identity` asks on every
+    # interpreter (`stdlib312.path_exists`): 3.14 answers `False` for a denied stat, where 3.12
+    # raises and this reports `None`. The live method below 3.13.
+    exists = stdlib312.path_exists if sys.version_info >= (3, 13) else Path.exists
     try:
-        return Path(source).exists()
+        return exists(Path(source))
     except OSError:
         return None
 

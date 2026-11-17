@@ -38,6 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "runtime-py" / "src"))
 
+from bantamkit import stdlib312
 from bantamkit.memory.component import (
     Memory,
     _layer_label,
@@ -51,6 +52,11 @@ from bantamkit.memory.layers import (
     resolve_project_store,
 )
 
+
+def _resolve(raw: str) -> Path:
+    """`Path(raw).resolve()`; from CPython 3.13, 3.12's (`stdlib312.path_resolve`), which the
+    product asks: 3.13 stopped raising `RuntimeError("Symlink loop from %r")` (J90-P8F)."""
+    return stdlib312.path_resolve(raw) if sys.version_info >= (3, 13) else Path(raw).resolve()
 
 def b64(text: str) -> str:
     return base64.b64encode(text.encode("utf-8", "surrogatepass")).decode("ascii")
@@ -221,7 +227,7 @@ def main() -> None:
     elif op == "resolve_path":
         out = {
             "resolved": [
-                guard(lambda r=r: b64(str(Path(unb64(r)).resolve()))) for r in request["raws"]
+                guard(lambda r=r: b64(str(_resolve(unb64(r))))) for r in request["raws"]
             ]
         }
     elif op == "parents":

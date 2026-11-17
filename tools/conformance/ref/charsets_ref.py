@@ -36,21 +36,46 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 GENERATOR = REPO / "runtime-ts" / "scripts" / "charsets-table.py"
 
+# J90-P8F (#316 G4): FROM CPython 3.13 THE REGISTRY ASKED IS 3.12.13's, NOT THE LIVE ONE. 3.13
+# and 3.14 added aliases (`cp00858`, `windows_31j`, `iso_8859_8_i`, ...) and changed one table
+# (`palmos` 0x9B), and `charsets.ts` is 3.12.13's registry by its own header. The PRODUCT now
+# resolves a label through that frozen registry on every interpreter (`bantamkit.stdlib312.
+# codec_decode`, over `bantamkit._codecs312`), so that is the reference from 3.13: the tables
+# are decoded through `codec_decode`, the module and alias lists are `_codecs312`'s. Below 3.13
+# nothing changes: the live registry, as before, and `runtime-py/tests/test_stdlib312.py` holds
+# `_codecs312` equal to it on 3.12. `pinned` tells the suite which one answered.
+PINNED = sys.version_info >= (3, 13)
+if PINNED:
+    sys.path.insert(0, str(REPO / "runtime-py" / "src"))
+    from bantamkit import _codecs312, stdlib312
 
-def _table(codec: str) -> str | None:
+
+def _decode(raw: bytes, codec: str) -> str:
+    if PINNED:
+        return stdlib312.codec_decode(raw, codec, errors="replace")
+    return raw.decode(codec, errors="replace")
+
+
+def _known(codec: str) -> bool:
+    if PINNED:
+        return stdlib312.codec_module(codec) is not None
     try:
         codecs.lookup(codec)
     except LookupError:
+        return False
+    return True
+
+
+def _table(codec: str) -> str | None:
+    if not _known(codec):
         return None
-    return "".join(bytes([b]).decode(codec, errors="replace") for b in range(256))
+    return "".join(_decode(bytes([b]), codec) for b in range(256))
 
 
 def _multi_singles(codec: str) -> str | None:
-    try:
-        codecs.lookup(codec)
-    except LookupError:
+    if not _known(codec):
         return None
-    chars = [bytes([b]).decode(codec, errors="replace") for b in range(128, 256)]
+    chars = [_decode(bytes([b]), codec) for b in range(128, 256)]
     return "".join(c if len(c) == 1 else "�" for c in chars)
 
 
@@ -81,8 +106,10 @@ def main() -> None:
             "stderr": (done.stderr or "")[-4000:],
             "stdout_bytes": len(done.stdout or ""),
         },
-        "modules": sorted(m.name for m in pkgutil.iter_modules(encodings.__path__)),
-        "aliases": dict(encodings.aliases.aliases),
+        "pinned": PINNED,
+        "modules": sorted(_codecs312.CODEC_MODULES_312) if PINNED
+        else sorted(m.name for m in pkgutil.iter_modules(encodings.__path__)),
+        "aliases": dict(_codecs312.CODEC_ALIASES_312) if PINNED else dict(encodings.aliases.aliases),
         "tables": {c: _table(c) for c in payload.get("codecs", [])},
         "multi_singles": {c: _multi_singles(c) for c in payload.get("multi", [])},
     }
