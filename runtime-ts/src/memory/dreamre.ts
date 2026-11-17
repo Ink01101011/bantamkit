@@ -10,7 +10,7 @@
  * matches what CPython's `\s`, `\b`, `\d` and `re.IGNORECASE` match (`dream.ts`'s header, notes 1-4).
  * The patterns are a port of `dream.py`'s `_RELATIVE`, `_UNRESOLVED`, `_STAMPED`, `_BULLET` and
  * `_SLOT`, so Python IS the reference: the generated `dream` reaches them through ts2py ADAPTERS
- * (`tools/ts2py/src/adapters.rs`) that run those CPython patterns, exactly as the hand-written
+ * (`tools/ts2py-bantamkit/ts2py.toml`) that run those CPython patterns, exactly as the hand-written
  * `dream.py` ran them. Node's answers are unchanged by the move: the regexes are the ones
  * `dream.ts` held, byte for byte, and the scans return what `dream.ts` read off them.
  *

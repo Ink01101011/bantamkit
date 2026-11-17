@@ -494,9 +494,12 @@ by that file's seeded fuzz.
 in their SHIPPED form (`ts2py::shipped`): the leading comment block and one note line, then every
 line but the full-line comments and the docstring of each function or class whose body goes on
 after it; nothing inside a triple-quoted string is touched. `tests/shipped.rs` holds the shipped
-runtime and adapters to the source's `ast.dump` (docstrings aside), and
-`runtime-py/tests/test_ts2py_fresh.py` spells the same rule. The documentation stays in
-`tools/ts2py/src/`, the only copy anyone edits.
+runtime, and the host's `tests/shipped_adapters.rs` (bantamkit's, under `tools/ts2py-bantamkit/`)
+the shipped adapters, to the source's `ast.dump` (docstrings aside), and
+`runtime-py/tests/test_ts2py_fresh.py` spells the same rule. The documentation stays in the
+sources, the only copies anyone edits: `tools/ts2py/python/ts2py/runtime.py` for the runtime and
+the host's adapter module (bantamkit's `tools/ts2py-bantamkit/adapters.py`) for the adapters
+(J90-PKG).
 
 ## Proven shapes for JSON-derived arrays (J90-P3, #316 G4)
 

@@ -6,7 +6,7 @@
  * TypeScript REDUCTION of that call to the three answers `load_grants` asks of the document.
  * `layers.ts` is compiled to Python by `tools/ts2py`; this module is not. The generated layers
  * module reaches `firstTokenTab` and `parseConfigDocument` through ts2py ADAPTERS onto PyYAML
- * (`tools/ts2py/src/adapters.rs`), which is the orchestrator's ruling on J89-5's stop: Python
+ * (`tools/ts2py-bantamkit/ts2py.toml`), which is the orchestrator's ruling on J89-5's stop: Python
  * keeps PyYAML for the config, as #315 kept it for fact files. Node's answers are unchanged by the
  * move: the functions below are the ones `layers.ts` held, byte for byte.
  *

@@ -1,13 +1,13 @@
 # bantamkit's host file for ts2py (#337): everything bantamkit-specific the compiler reads.
 # The compiler (tools/ts2py) holds no bantamkit name; it is handed this file with `--config`.
 #
-# generator and shipped_note keep the bytes of runtime-py/src/bantamkit/_generated/ exactly as
-# they were before the compiler became its own package (J90-PKG). shipped_note still names
-# tools/ts2py/src/, where the runtime and the adapters lived until then: the runtime's documented
-# source is now tools/ts2py/python/ts2py/runtime.py and the adapters' is adapters.py beside this
-# file. Changing either line rewrites the two support modules, so it waits for the owner.
+# generator keeps the bytes of runtime-py/src/bantamkit/_generated/ exactly as they were before
+# the compiler became its own package (J90-PKG). shipped_note names where the two support
+# modules' documented sources live since then: the runtime's is tools/ts2py/python/ts2py/runtime.py
+# and the adapters' is adapters.py beside this file (J90-D repointed it from tools/ts2py/src/;
+# it is the one line of _ts2py_runtime.py and _ts2py_adapters.py that changed).
 generator = "tools/ts2py"
-shipped_note = "# Shipped form (J90-P2): its comments and docstrings are in tools/ts2py/src/."
+shipped_note = "# Shipped form (J90-P2): comments are in tools/ts2py/python/ts2py/ and tools/ts2py-bantamkit/."
 adapter_source = "adapters.py"
 
 # J90-P7 (#316 G4): a module-level name of a generated module that hand-written Python rebinds or

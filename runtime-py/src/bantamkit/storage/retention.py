@@ -8,7 +8,7 @@ the Python surface the hand-written module had, converted at every crossing (`Pa
 strings, dicts as Maps where the TypeScript takes a Map, the cold index through the
 `storage.coldindex` shim, `parse_now`'s refusal as a `ValueError`).
 
-Three seams stay CPython (`tools/ts2py/src/adapters.rs`, *J90-3*): the archive's fsynced write
+Three seams stay CPython (`tools/ts2py-bantamkit/ts2py.toml`, *J90-3*): the archive's fsynced write
 (`retentionFs`, `retentionfs.ts`; a test swaps `retention_fs.writeArchive`), the detached spawn
 (`maybe_spawn` starts `python -m bantamkit.storage.retention <cwd> <home>`,
 `retentionspawn.ts`), and the child's second half, written here: the generated `child_sweep`

@@ -1,7 +1,7 @@
 # ts2py runtime support: the JavaScript semantics the generated code leans on.
 # Pure standard library. Every name starts with `_js_`, `_Js` or `_JS_`, and ts2py refuses a
 # TypeScript identifier with one of those prefixes, so nothing here can be shadowed by source.
-# Shipped form (J90-P2): its comments and docstrings are in tools/ts2py/src/.
+# Shipped form (J90-P2): comments are in tools/ts2py/python/ts2py/ and tools/ts2py-bantamkit/.
 import base64 as _js_base64
 import bisect as _js_bisect
 import decimal as _js_decimal

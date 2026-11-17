@@ -61,7 +61,7 @@ modules*, also in `docs/install.md`; cargo is needed only for this). A stale or 
 file is refused by the F4 byte-compare in `node tools/conformance/run.mjs --suite ts2py` and
 by `runtime-py/tests/test_ts2py_fresh.py`. The public Python name stays a hand-written shim
 beside it (`bantamkit/memory/store.py` over `_generated/store.py`); an import ts2py does not
-compile reaches Python only through a measured row in `tools/ts2py/src/adapters.rs`.
+compile reaches Python only through a measured row in `tools/ts2py-bantamkit/ts2py.toml`.
 
 For a generated module, the "lands in both runtimes" rule above is met by regenerating — one
 TypeScript change is both halves — plus a conformance case that compares the two answers, as

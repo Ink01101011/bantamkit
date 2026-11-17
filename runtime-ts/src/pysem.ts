@@ -236,9 +236,9 @@ export function pyRepr(s: string): string {
 // `round(x, n)`, `math.log`, `math.log1p`, `float ** float`, `unicodedata.normalize('NFKC', s)
 // .lower()` and `unicodedata.category(ch)[0] in 'LNM'`. Each is written here once, with the Node
 // spelling the two modules used before (moved, not changed), so ts2py's adapter seam maps each
-// onto the CPython function it ports (`tools/ts2py/src/adapters.rs`). ts2py refuses `Math.log`,
-// `Math.log1p` and `Math.pow`: Node's are not CPython's (J89-2 measured, macOS arm64, Node
-// 26.13 against CPython 3.12, 30,000 doubles: `Math.log` differs in the last bit on 549,
+// onto the CPython function it ports (`tools/ts2py-bantamkit/ts2py.toml`). ts2py refuses
+// `Math.log`, `Math.log1p` and `Math.pow`: Node's are not CPython's (J89-2 measured, macOS arm64,
+// Node 26.13 against CPython 3.12, 30,000 doubles: `Math.log` differs in the last bit on 549,
 // `Math.log1p` on 561, `Math.pow(x, 0.37)` on 131, `Math.pow(0.5, x)` on none), and V8's own
 // answer is not one function of its input across platforms (a straight port of its fdlibm `log`
 // still differs on 86 of 40,021 on arm64, where the compiler fuses multiply-adds), so no Python

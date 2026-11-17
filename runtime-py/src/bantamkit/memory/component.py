@@ -5,7 +5,7 @@
 `tools/ts2py` (`docs/porting.md`, *Generated modules*; do not edit it, regenerate it), so the two
 runtimes run one source and every sentence an agent reads off its memory is spelled once. The
 modules component.ts calls that are not compiled yet are the hand-written ones, reached through
-adapter rows (`tools/ts2py/src/adapters.rs`): the
+adapter rows (`tools/ts2py-bantamkit/ts2py.toml`): the
 skill layer (`skills.SkillStore`, `skill_roots`, `triggers_enabled`, `SkillStore.fire` over
 `replynative.frame` and `skillmine.tokenize_label`), the touch modules (`touch.context`'s via
 admission, `recall_file`'s repository half), `assets.load_skill` and `str.lower()`.

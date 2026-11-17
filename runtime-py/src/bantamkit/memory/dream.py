@@ -5,7 +5,8 @@ compiled from `runtime-ts/src/memory/dream.ts` by `tools/ts2py` (`docs/porting.m
 modules*; do not edit it, regenerate it), so the two runtimes run one source and
 `tools/conformance/suites/dream.mjs` compares them. The CPython patterns the pass matches with
 (`_RELATIVE`, `_UNRESOLVED`, `_STAMPED`, `_BULLET`, `_SLOT`, `\\s+`) and `int()` of a count are this
-module's own, unchanged, reached through the `dreamre.ts` adapters (`tools/ts2py/src/adapters.py`).
+module's own, unchanged, reached through the `dreamre.ts` adapters
+(`tools/ts2py-bantamkit/adapters.py`).
 
 This module is the SHIM: the Python surface the hand-written pass had, converted at every crossing.
 The result shapes stay frozen dataclasses of Python values (a name as `yaml.safe_load` built it);

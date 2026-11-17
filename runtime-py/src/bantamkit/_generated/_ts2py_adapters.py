@@ -1,7 +1,7 @@
 # ts2py adapters: hand-written Python for the imports and Node globals ts2py does not compile.
-# Every name here is declared in tools/ts2py/src/adapters.rs with the reason it is faithful, and
-# RULES.md (Adapters) records how each was measured. Nothing else may be imported this way.
-# Shipped form (J90-P2): its comments and docstrings are in tools/ts2py/src/.
+# Every name here is declared in tools/ts2py-bantamkit/ts2py.toml with the reason it is faithful,
+# and RULES.md (Adapters) records how each was measured. Nothing else may be imported this way.
+# Shipped form (J90-P2): comments are in tools/ts2py/python/ts2py/ and tools/ts2py-bantamkit/.
 import datetime as _datetime
 import errno as _errno
 import fnmatch as _fnmatch
