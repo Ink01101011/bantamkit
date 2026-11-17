@@ -35,6 +35,20 @@ tests skip):
 The conformance suite (`node tools/conformance/run.mjs --all`) compares the Python answers with
 the Node build's, so build that first: `cd runtime-ts && npm ci && npm run build`.
 
+**Every supported CPython is a gate, not only the repo venv's 3.12** (#316 G4, J90-P8F). Python
+must give Node's answer on 3.11, 3.12, 3.13 and 3.14, and 3.13/3.14 changed some of the answers
+3.12 gave (`docs/porting.md`, *CPython 3.13 and 3.14 answer 3.12's answers*). Make a venv per
+interpreter the same way (`<python3.X> -m venv <dir> && <dir>/bin/pip install -e
+"runtime-py[dev,mcp]"`) and run the suites and pytest against each:
+
+```bash
+node tools/conformance/run.mjs --all --python <venv-3.11>/bin/python
+node tools/conformance/run.mjs --all                                  # the repo venv, 3.12
+node tools/conformance/run.mjs --all --python <venv-3.13>/bin/python
+node tools/conformance/run.mjs --all --python <venv-3.14>/bin/python
+<venv-3.14>/bin/python -m pytest runtime-py/tests -q
+```
+
 Check the install:
 
 ```bash

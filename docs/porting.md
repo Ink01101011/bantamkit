@@ -53,6 +53,12 @@ line where CPython puts 678 bytes on **stdout**, the constant had already gone s
 usage string anywhere in the runtime, only a `ParserSpec` in `cli.ts` that the formatter
 renders at whatever width `shutil.get_terminal_size()` would have reported.
 
+The formatter is 3.12's. CPython 3.13 rewrote how a usage line wraps (a mutually exclusive group
+may now break across lines) and how `invalid choice` lists the choices (CPython 3.11.15 lists
+them with reprs too), so on every interpreter the Python CLIs parse with 3.12.13's own
+`argparse`, vendored verbatim as `bantamkit/_argparse312.py` (`stdlib312.argparse`, J90-P8F), and
+every `-h` stays the one this port renders.
+
 **`textwrap` had to be written.** `grep -rln 'textwrap\|wrap('` over `runtime-ts/src/`
 returned nothing and Node has no stdlib equivalent, so `wrap`/`fill` are a port of
 `TextWrapper`, not a call into one.
@@ -211,6 +217,11 @@ them, and the port reproduces the order or the sentence for **50,000 of 50,000**
 Two shortcuts were tried and refuted. "Raise if any equal-score pair is incomparable" makes
 the right *decision* 20,000/20,000 but the wrong *sentence* 1,087/30,000. "Just call `<` where
 the scores tie" raises `'NoneType' and 'NoneType'` where CPython answers an order.
+
+The order is 3.12's. CPython 3.13 relaxed `count_run` (gh-116554), so its own `sorted` now probes
+other pairs first; the Python store sorts with the compiled `sort_scored`, the same spelled-out
+listsort, so both runtimes still answer 3.12's order on 3.13 and 3.14, and the 50,000-list case
+is armed against a 3.11/3.12 reference only (J90-P8F).
 
 ## `ex-flow`: a fifth library, evaluated and rejected
 
@@ -2316,7 +2327,9 @@ modules. The hand-written `json.loads` / `parseJson` pairs (`hookadapter`, `host
 1,200 deep makes `hookadapter._previous_prompt` answer `''` on 3.11 and `'first prompt'` on 3.12,
 3.13 and Node. CPython 3.13 also changed `json.loads`'s refusal for a trailing comma (`Illegal
 trailing comma before end of object: … (char 6)` where 3.11 and 3.12 say `Expecting property name
-enclosed in double quotes: … (char 7)`), so `parse_json`'s message moves with the version. The
+enclosed in double quotes: … (char 7)`), so `parse_json`'s message moves with the version. (Closed
+by J90-P8F: every `json.loads` in the package, the adapter's included, now raises 3.12's sentence;
+see *CPython 3.13 and 3.14 answer 3.12's answers*.) The
 sidecar's bare `catch` cannot see it, but `j89_5a_queries_adapters_answer_like_node` fails with
 `TS2PY_PYTHON` set to 3.13. PyYAML's depth for the grants config does not move with the version
 (492 nested flow sequences at the top level on 3.11, 3.12 and 3.13), but it does move with the
@@ -3097,6 +3110,83 @@ ledger named by its store's path matched by content). Node answers the same but 
 already pinned: the ruled gzip row of the status line (207 bytes, *J90-P4*) and the YAML refusal
 sentence of five native facts (`YAML_REASONS_PY` / `YAML_REASONS_NODE`, `storage-index`); the same
 files are skipped on both sides.
+
+### CPython 3.13 and 3.14 answer 3.12's answers (#316 G4, J90-P8F)
+
+J90-P8 installed every wheel it built and ran the suites under each interpreter, which put 3.13
+and 3.14 through the conformance suites for the first time (CI and every earlier gate ran 3.11 and
+3.12). They failed, on the PURE wheel as on the compiled one, so the cause was the interpreter and
+not mypyc: the Node port reproduces CPython 3.12, and 3.13 and 3.14 changed some of the answers
+3.12 gave. `requires-python = ">=3.11"` promises both, and the wheels ship for both, so each
+change is pinned: Python now gives 3.12's answer, which is Node's, on every interpreter. Nothing
+changed on 3.12, and no ruling was added: every difference below could be pinned. On 3.11 one
+answer moved, toward Node: CPython 3.11.15's `invalid choice` sentence, which its gate had never
+run (J90-P8 ran eleven suites against 3.11, not `cli` or `memorycli`).
+
+**Where the pins live.** `runtime-py/src/bantamkit/stdlib312.py` is the one hand-written module
+that asks the standard library a question whose answer moved, each function either 3.12's own
+code or the live answer corrected by a rule exact for the one change it undoes (its docstring
+names each). The adapters (`tools/ts2py-bantamkit/adapters.py`) and the hand-written modules ask
+it instead of the library: `Path.exists()`/`is_file()`/`is_dir()`/`resolve()` and `json.loads`
+were rewritten to `stdlib312.path_exists(...)` and so on at every call site under
+`runtime-py/src/bantamkit` (126 sites, by an AST rewrite; `os.DirEntry`, `zipfile.Path` and
+other non-`pathlib` objects still answer with their own method). The CLIs parse with
+`bantamkit/_argparse312.py`, CPython 3.12.13's `argparse.py` vendored verbatim
+(`stdlib312.argparse`), on every interpreter: on 3.12.13 it is the interpreter's own file byte
+for byte, and 3.11.15 needs it too. A label-driven decode
+resolves through `bantamkit/_codecs312.py`, 3.12.13's alias table and module list, the registry
+`runtime-ts/src/charsets.ts` already holds. `runtime-py/tests/test_stdlib312.py` pins the 3.12
+literals on every interpreter and, below 3.13, that each pin IS the live library; removing a pin
+turns it red on 3.13 or 3.14 (measured by swapping each pin back to the library: json, resolve
+and the suffix red on both, the datetime sentences and the predicates red on 3.14).
+
+| what moved | CPython change | failing before (suite / node) | who differed | pinned in |
+|---|---|---|---|---|
+| a trailing comma: `Illegal trailing comma before end of object` at the comma, not 3.12's `Expecting property name enclosed in double quotes` (or `Expecting value`) at the next non-blank | 3.13, gh-113149 (`Lib/json/decoder.py`, `Modules/_json.c`) | shiftwork 3 (`unparseable-checkpoint`, `unparseable-non-ascii-offset`); validate 29 (`raw_decode/...`); cargo `j89_5a` under `TS2PY_PYTHON` 3.13 | hand-written `shiftwork._read_valid` and `contract.extract_json`; the `parse_json` adapter; the validate reference | `stdlib312.json_loads` / `json_raw_decode` / `pin_json_error` |
+| a `\uXXXX` escape whose four digits end the document: `Unterminated string starting at` the opening quote, not 3.12's `Invalid \uXXXX escape` at the `u` (3.12's C `scanstring` tested `next + 4 >= len`) | 3.13.x and 3.14.x (`Modules/_json.c`; 3.13.18 and 3.14.10 both answer it) | validate 1 on 3.14 (`raw_decode/... "\u00e9`) | `contract.extract_json`; the validate reference | `stdlib312.pin_json_error` (`_ends_in_u_escape`) |
+| `\B` matches an EMPTY string; 3.12's `SRE_AT_NON_BOUNDARY` answered no whenever the whole string was empty | 3.14, gh-124130 | validate 3 (`pattern/dialect/178 "\B"`, `2427 "\A\B"`, `2725 "$\B"`) | the JSON Schema `pattern` search (`contract._BoundedRe`, its child); the validate reference | `stdlib312.re_search` / `without_nonboundary` (each `\B` outside a class made a never-match, for an empty string only, after the pattern is compiled as given) |
+| `re.error` is `re.PatternError` (`error` kept as an alias), so the pattern child named it `PatternError`, which `builtins` lacks | 3.13 | none measured (the parent re-raised it as `RuntimeError`) | `contract._PatternChild` | the child reports `error` for any `re.error` |
+| `list.sort`'s `count_run` takes non-strictly descending runs, so the first incomparable pair, and the TypeError's two type names, moved | 3.13, gh-116554 ("Relax list.sort()'s notion of 'descending' runs") | store 1 (`the recall tie-break over 50000 generated lists`) | the REFERENCE: both runtimes sort recall with the compiled `sort_scored` | the case is armed below 3.13 only, withheld above with a note (the J63-1b shape), plus a literal case on the arming |
+| `Path.resolve()` no longer raises `RuntimeError("Symlink loop from %r")` for a loop in non-strict mode | 3.13 (pathlib docs, "Changed in version 3.13: symlink loops are treated like other errors") | store 1 (`str(OSError) and the symlink-loop RuntimeError`), recall-strings 1 (`Path.resolve(): ... and the loop`) | the `py_resolve` adapter, `shiftwork._real_target`, the references | `stdlib312.path_resolve` (3.12's `check_eloop` over `os.path.realpath`) |
+| `PureWindowsPath.is_absolute()` became `ntpath.isabs()`, which stopped calling `/x` absolute | 3.13, gh-44626 | store 1 (`ntpath.splitroot and PureWindowsPath parsing`) | the `py_is_absolute` adapter on Windows; the reference | `stdlib312.win_is_absolute`, `nt_isabs` |
+| the `IOBase` finalizer reports a failed `close()` through `sys.unraisablehook` | 3.13, gh-62948 | wire 2 (`j66-3: #181 stdout closed mid-answer`): `Exception ignored in: <_io.BufferedWriter name=7>` / `BrokenPipeError` on stderr | `mcpstdio.serve_stdio` | fd 1 is claimed by `serve_stdio` itself (the SDK's own `_claim_fd`, no new private name); on a broken pipe the buffer's descriptor is pointed at the null device and flushed (`_quiet_dead_pipe`) |
+| `argparse` wraps a usage line inside a mutually exclusive group, and spells `invalid choice: ... (choose from 'a', 'b')` with reprs | 3.13 (`Lib/argparse.py`: `_check_value` joins `repr(str(choice))` where 3.12.13 joins `str`, and `_format_usage` wraps group parts; 413 diff lines from 3.12.13 to 3.13.18, 995 to 3.14.10, which also colours help) | cli 4, memorycli 8 (`help-columns-*`, `usage-block*`, `bad-choice`, `install-bad-host`); and on CPython 3.11.15, whose `_check_value` also joins reprs, cli 1 + memorycli 2 (`install-bad-host`, `bad-choice`, `list-bad-filter`) | `mcpserver`, `memory.__main__`, `criticreplay`, `evalrun` | `stdlib312.argparse`: 3.12.13's module, vendored, on every interpreter |
+| `encodings.aliases` grew (`cp00858`, `windows_31j`, `ibm01140`; 3.14 `iso_8859_8_i`, `cseuckr`, `ms874`, ...) and `palmos` 0x9B became U+203A | 3.13 and 3.14 (`Lib/encodings/aliases.py`; `palmos.py`, gh-135995 "Missing char in palmos encoding") | charsets 3 (`charsets.ts is what the generator writes`, `CODEC_ALIASES`, `single-byte palmos`) | `docread._decoded_body`; the reference | `stdlib312.codec_decode` over `_codecs312`; the charsets reference answers the pinned registry from 3.13 and the generator byte-compare is withheld there with a note |
+| `punycode` decodes bytes past the last `-` without ASCII-checking them, so `errors="replace"` swallows what 3.12 raised on | 3.13 (`Lib/encodings/punycode.py`) | docread 3 (`charset-raises-punycode.eml`), pytest 1 | `docread._decoded_body` | 3.12's ASCII check, asked first |
+| `html.parser` unescapes attribute values through `_unescape_attrvalue` -> `_replace_attr_charref` -> `unescape`, so `unescape` left `parse_starttag`'s own names | 3.13.x/3.14.x security releases (HTML5 attribute and CDATA handling) | docread 2 (`xmp-charref-4301.html`), pytest 2 (`HTML_UNESCAPE_BOUNDED` False, the whole-markup fallback in use) | `docread._with_bounded_unescape` | every module function that reaches `unescape` is rebuilt over the capped namespace (`_bounded_namespace`); on 3.12 that set is empty |
+| `date`/`datetime`/`timezone` range sentences: `month must be in 1..12, not 13`, `day 30 must be in range 1..28 for month 2 in year 2026`, `year must be in 1..9999, not 0`, no full stop after the offset repr | 3.14, gh-109798 | store 6 (`frontmatter scalar: date ... / datetime ...`), recall-strings 1 (`load_grants over the config family`) | `factcodec`'s PyYAML read (and `divergence.parse_fact`, `skillfile`), the grants-config adapter | `stdlib312.pin_datetime_error` (`factcodec.safe_load`) |
+| `Path.exists()`/`is_file()`/`is_dir()` answer `False` for every `OSError`; 3.12 re-raised all but ENOENT/ENOTDIR/EBADF/ELOOP, so an EACCES parent RAISED (and `save`'s check before a write must) | 3.14 (`Lib/pathlib`: the predicates call `os.path.exists`/`isdir`/`isfile`) | store 1 (`facts is readable but not traversable`), install 2 (`an origin that could not be STATTED`: the reference), pytest 2 (`restore` names the unreadable directory) | the `py_exists`/`py_is_dir`/`py_is_file` adapters and every hand-written call | `stdlib312.path_exists` / `path_is_dir` / `path_is_file` (3.12's `_ignore_error`) |
+| `PurePath.suffix` of `a.` is `.` | 3.14, GH-82805 | store 1 (`PurePath / and with_suffix`) | the `py_suffix` adapter; the reference's `with_suffix` | `stdlib312.path_suffix`; the store reference carries 3.12's `with_suffix` from 3.13 (no product path asks it) |
+| `io.DEFAULT_BUFFER_SIZE` 8 KiB -> 128 KiB | 3.14 | pytest 1 (`the two render failure rigs straddle the measured stdout buffer`) | the TEST's rig: 40 cells no longer passed the crossover | the large rig scales with the buffer, `max(40, io.DEFAULT_BUFFER_SIZE // 256)` (40 below 3.14, 512 on it) |
+
+**The references.** Where a conformance reference asks the library itself (`store_ref.py`,
+`layers_ref.py`, `charsets_ref.py`, `validate_ref.py`, `install_ref.py`), it asks the live library below 3.13, exactly as before, and
+the pin from 3.13, so the expected answer is 3.12's on every interpreter; `test_stdlib312.py` is
+what makes those one reference. Two cases cannot be asked of a 3.13 interpreter at all (3.12's C
+listsort; the generator's live registry), and those are withheld there with a note naming them,
+the shape J63-1b uses for the winpaths case below 3.12, never a `ruling:`.
+
+**Installed-layout pytest nodes.** Eleven nodes failed from an installed wheel on every
+interpreter, 3.11 and 3.12 included, because each asks about the checkout's layout (the asset pack
+at `<repo>/assets`, force-included only when a wheel is built). `conftest.checkout_only` skips them
+when the imported package has a `bantamkit-*.dist-info` beside it, with `CHECKOUT-ONLY` in the
+reason, and runs them unchanged in a checkout; `test_packaging.py::
+test_checkout_only_skips_do_not_fire_in_a_checkout` requires the condition false in one.
+
+**Gates (J90-P8F, macOS arm64; 3.11.15 python-build-standalone, 3.12.13 the repo venv, 3.13.18 and
+3.14.10 Homebrew).** `node tools/conformance/run.mjs --all`: 3.12 23,659 cases, 0 failures; 3.13
+23,657, 0; 3.14 23,657, 0 (240 ruled-different there against 242: CPython 3.14's Unicode 16.0
+makes U+1C89 a letter, as Node's 17.0 does, so `skillaudit` compares those two cases instead of
+ruling them); 3.11 23,658, 0. The compiled build (the cp313/cp314 wheels the J90-P8 hook builds
+from the sdist, installed, `runtime-py/src/bantamkit` a copy of the install): 3.13 23,650, 0 and
+3.14 23,650, 0, `build_identity` `mypyc (23 compiled, 1 interpreted)` (seven store cases fewer:
+the scratch tree has no `.bantamkit/memory` corpus). Full pytest: 3.11 5,395 passed, 3.12 5,396,
+3.13 5,392, 3.14 5,391, none failed; from an installed compiled wheel with `src/bantamkit` linked
+to it, 3.13 5,381 and 3.14 5,380 passed with the 11 `CHECKOUT-ONLY` skips. ts2py `cargo test`
+54/54 and the host crate 72/72, both again with `TS2PY_PYTHON` a 3.13 venv, the host crate 72/72
+under a bare 3.14 too (a bare 3.13 has no PyYAML, which `j89_5b` needs); clippy and fmt clean.
+`npm test` 2,467 passed, 0 failed, 47 skipped. ruff clean.
+
 
 ## Concurrency
 
