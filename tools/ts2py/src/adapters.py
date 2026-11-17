@@ -7,6 +7,7 @@ import fnmatch as _fnmatch
 import functools as _functools
 import gzip as _gzip
 import hashlib as _hashlib
+import io as _io
 import json as _json
 import math as _math
 import os as _os
@@ -24,6 +25,7 @@ from __RUNTIME__ import (
     _js_lifted,
     _js_m_toLowerCase,
     _js_num,
+    _js_py_round_float9,
     _js_truthy,
     _JsBigInt,
     _JsError,
@@ -634,13 +636,14 @@ class BigIntStats(Stats):
     )
 
     def __init__(self, st, *_):
-        self.__dict__.update(
-            _js_st=st,
-            size=_JsBigInt(st.st_size),
-            mtimeNs=_JsBigInt(st.st_mtime_ns),
-            mtimeMs=_JsBigInt(st.st_mtime_ns // 1_000_000),
-            ino=_JsBigInt(st.st_ino),
-        )
+        # J90-P7B: the five fields stored one by one (no keyword dict built per stat).
+        ns = st.st_mtime_ns
+        fields = self.__dict__
+        fields["_js_st"] = st
+        fields["size"] = _JsBigInt(st.st_size)
+        fields["mtimeNs"] = _JsBigInt(ns)
+        fields["mtimeMs"] = _JsBigInt(ns // 1_000_000)
+        fields["ino"] = _JsBigInt(st.st_ino)
 
 
 def stat_sync(path, *rest):
@@ -649,7 +652,9 @@ def stat_sync(path, *rest):
     bigint = False
     if rest:
         options = rest[0]
-        if len(rest) > 1 or not isinstance(options, dict) or set(options) != {"bigint"}:
+        # J90-P7B: "exactly the key `bigint`" without a set built per call.
+        only = len(rest) == 1 and isinstance(options, dict) and len(options) == 1
+        if not (only and "bigint" in options):
             raise TypeError("ts2py: fs.statSync options other than bigint are outside the subset")
         bigint = _js_truthy(options["bigint"])
     st = _os.stat(_node_path(path, "fs.statSync"))
@@ -662,7 +667,9 @@ def lstat_sync(path, *rest):
     bigint = False
     if rest:
         options = rest[0]
-        if len(rest) > 1 or not isinstance(options, dict) or set(options) != {"bigint"}:
+        # J90-P7B: "exactly the key `bigint`" without a set built per call.
+        only = len(rest) == 1 and isinstance(options, dict) and len(options) == 1
+        if not (only and "bigint" in options):
             raise TypeError("ts2py: fs.lstatSync options other than bigint are outside the subset")
         bigint = _js_truthy(options["bigint"])
     st = _os.lstat(_node_path(path, "fs.lstatSync"))
@@ -836,7 +843,13 @@ def read_file_bytes(path):
 
 
 def _posix_dirname(path):
-    """`path.posix.dirname` (lib/path.js), statement for statement."""
+    """`path.posix.dirname` (lib/path.js), statement for statement. J90-P7B: a path that does not
+    end in `/` and whose last `/` is past its second unit is everything before that `/` (the loop
+    stops there, at its first slash after a non-slash), found in C."""
+    if path and path[-1] != "/":
+        cut = path.rfind("/")
+        if cut > 1:
+            return path[:cut]
     if not path:
         return "."
     has_root = path[0] == "/"
@@ -857,7 +870,11 @@ def _posix_dirname(path):
 
 
 def _posix_basename(path):
-    """`path.posix.basename` (lib/path.js) with no suffix argument."""
+    """`path.posix.basename` (lib/path.js) with no suffix argument. J90-P7B: a path that does not
+    end in `/` is everything after its last `/` (the loop's `end` is its length, `start` one past
+    that slash), found in C."""
+    if path and path[-1] != "/":
+        return path[path.rfind("/") + 1 :]
     start = 0
     end = -1
     matched_slash = True
@@ -1126,9 +1143,10 @@ def ensure_bantamkit_gitignore(directory, created, *_):
 # ---------------------------------------------------------------- J89-2 (#316 G3): usage, retrieval
 
 
-def py_round_float9(x, *_):
-    """`pyRoundFloat9` (runtime-ts/src/pysem.ts): CPython's `round(x, 9)`, which it ports."""
-    return round(x if type(x) is float else _js_num(x), 9)
+# `pyRoundFloat9` (runtime-ts/src/pysem.ts), CPython's `round(x, 9)`: moved to the runtime as
+# `_js_py_round_float9`, unchanged (#316 G4, J90-P7B), so a compiled build compiles it (a recall
+# rounds every score: 10,000 calls at 5,000 facts, each a call into this interpreted module).
+py_round_float9 = _js_py_round_float9
 
 
 def py_log(x, *_):
@@ -1664,11 +1682,34 @@ class PyUnicodeDecodeError(_JsError):
 
 def py_read_text(path, *_):
     """`pyReadText` (pyfs.ts): `Path.read_text(encoding='utf-8')`, which it ports; a decode failure
-    is `PyUnicodeDecodeError` with CPython's message."""
+    is `PyUnicodeDecodeError` with CPython's message. J90-P7B: a POSIX path `PurePath` leaves as it
+    is (`_pure_as_is`) is opened as `read_text` opens it, `io.open(path, encoding='utf-8')`, without
+    building the `Path`."""
     try:
-        return _pathlib.Path(_store_path(path, "pyReadText")).read_text(encoding="utf-8")
+        path = _store_path(path, "pyReadText")
+        if _pure_as_is(path):
+            # `io.open`, as `Path.open` calls it: a spy on `builtins.open` sees no more than before.
+            with _io.open(path, encoding="utf-8") as handle:  # noqa: UP020
+                return handle.read()
+        return _pathlib.Path(path).read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
         raise PyUnicodeDecodeError(str(error)) from None
+
+
+def _pure_as_is(path):
+    """`str(PurePath(path)) == path`, by a sufficient test (J90-P7B): POSIX, not empty, and no part
+    `PurePosixPath` rewrites (a doubled `/`, a `.` part, a trailing `/`). Any other path is False,
+    and goes through `Path`."""
+    return (
+        _os.name != "nt"
+        and path != ""
+        and path != "."
+        and path[-1] != "/"
+        and "//" not in path
+        and "/./" not in path
+        and not path.startswith("./")
+        and not path.endswith("/.")
+    )
 
 
 def py_replace(source, target, *_):

@@ -1103,3 +1103,29 @@ Not taken, measured (docs/porting.md, *mypyc*): compiling the adapter module (it
 `BantamError`, a `cmp_codepoint` without a function attribute and a native `_JsReadMap`; built that
 way it segfaulted on the first index build); native generated classes (they would need
 `_js_object_get` and `Object.freeze` rewritten off `__dict__` and `__setattr__`).
+
+## J90-P7B rules: three shortcuts beside the generated modules, each equal to what it shortcuts (#316 G4)
+
+No lowering changed. Three pieces of the Python ts2py writes beside the generated modules answer
+faster, each pinned equal to the code it shortcuts in `tests/j90p7b.rs`:
+
+- **`pyRoundFloat9` is the runtime's `_js_py_round_float9`** (the adapters' `py_round_float9` is
+  that function), so a compiled build compiles it, and it carries `pysem.ts`'s own J68-5 fast path:
+  a float `0 < x` with `y = x * 1e9 < 2**40` whose fraction is more than 1e-3 from one half is the
+  nearer whole over 1e9. Every other value is CPython's `round(x, 9)`. Pinned equal (value, sign,
+  type) over 400,000 seeded values, near-ties included; a mutant without the 1e-3 band differs on
+  19,314 of 40,000 exact ties.
+- **`path.basename` / `path.dirname` on POSIX** answer a path that does not end in `/` from its last
+  `/` (`rfind`, in C): `basename` everything after it, `dirname` everything before it when it is
+  past the second unit. Any other path takes the statement-for-statement port. Pinned equal to the
+  port over every path of up to seven units drawn from `a`, `/`, `.`, `é`.
+- **`pyReadText`** opens a path `_pure_as_is` accepts (POSIX, non-empty, no doubled `/`, no `.`
+  part, no trailing `/`: a sufficient test of `str(PurePath(p)) == p`) with `io.open`, as
+  `Path.read_text` itself does, without building the `Path`. Pinned: `_pure_as_is` never accepts a
+  path `PurePath` rewrites, and the answer (text, or exception type and message) equals
+  `Path(p).read_text(encoding='utf-8')` for a file, a CRLF file, a non-UTF-8 file, a directory and
+  a missing path, each spelled five ways.
+
+`fs.statSync` / `fs.lstatSync` check their one option without building a set, and `BigIntStats`
+stores its five fields one by one: the same dict, in the same order.
+

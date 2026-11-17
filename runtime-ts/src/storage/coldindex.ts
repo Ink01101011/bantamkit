@@ -67,7 +67,10 @@ const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof
 export const COLD_NOT_JSON = 'the file is not JSON';
 
 function readJson(p: string): unknown {
-  const text = coldFs.readFileSync(p);
+  return parseJson(coldFs.readFileSync(p));
+}
+
+function parseJson(text: string): unknown {
   try {
     return JSON.parse(text);
   } catch {
@@ -112,6 +115,12 @@ export class ColdIndex {
   readonly name: string;
   readonly dir: string;
   readonly manifestPath: string;
+  /**
+   * Per shard, the text it was last parsed from and the table that gave (#316 G4, J90-P7B): a shard
+   * read again (every read still goes through `coldFs`) and found byte for byte the same is not
+   * parsed and checked again. The table is only ever read, here and by the writers.
+   */
+  private parsed = new Map<number, [string, Map<string, ColdRow[]>]>();
 
   constructor(name: string, home: string, coldDir: string | null = null) {
     if (typeof name !== 'string' || name === '' || name === '.' || name === '..' || /[/\\]/.test(name)) {
@@ -210,9 +219,17 @@ export class ColdIndex {
   }
 
   private shard(i: number): Map<string, ColdRow[]> {
+    let text: string;
+    try {
+      text = coldFs.readFileSync(this.shardPath(i));
+    } catch (e) {
+      throw new ColdIndexError(`cold index shard ${String(i).padStart(2, '0')} unreadable: ${errMessage(e)}`);
+    }
+    const held = this.parsed.get(i);
+    if (held !== undefined && held[0] === text) return held[1];
     let data: unknown;
     try {
-      data = readJson(this.shardPath(i));
+      data = parseJson(text);
     } catch (e) {
       throw new ColdIndexError(`cold index shard ${String(i).padStart(2, '0')} unreadable: ${errMessage(e)}`);
     }
@@ -221,7 +238,9 @@ export class ColdIndex {
     if (!isObj(terms) || !Object.keys(terms).every((k) => isRows(terms[k]))) {
       throw new ColdIndexError(`cold index shard ${String(i).padStart(2, '0')} is not this version's shape`);
     }
-    return new Map(Object.entries(terms) as Array<[string, ColdRow[]]>);
+    const table = new Map(Object.entries(terms) as Array<[string, ColdRow[]]>);
+    this.parsed.set(i, [text, table]);
+    return table;
   }
 
   /** `[name, segmentId, tfSum]` best first, then by name; reads only the shards `terms` hash to. */

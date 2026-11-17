@@ -974,6 +974,33 @@ def _j90_index(d: Path) -> dict:
         "left": sorted(n.replace(sha, "<sha>") for n in os.listdir(tdir) if n.endswith(".tmp")),
         "names": list(again.names()),
     }
+    # J90-P7B: the second line a write reuses only when this process wrote it (lib/storage_j90.mjs).
+    root, home = bed("tail", "facts", facts[:2])
+    hi = h.HotIndex(root, "facts", home)
+    hi.refresh("fast")
+
+    def line2() -> str:
+        return hi.path.read_text(encoding="utf-8").split("\n")[1]
+
+    def full():
+        x = h.HotIndex(root, "facts", home)
+        x.refresh("full")
+        return x
+
+    canon = line2()
+    full()
+    again = line2() == canon
+    raw = hi.path.read_text(encoding="utf-8")
+    cut = raw.index("\n") + 1
+    hi.path.write_text(raw[:cut] + raw[cut:].replace('"df":{', '"df": {', 1), encoding="utf-8", newline="\n")
+    spaced = line2() != canon
+    full()
+    respelled = line2() == canon
+    (root / "facts" / "beta.md").write_text(_J90_FACT.format(n="beta", d="beta words moved"), encoding="utf-8", newline="\n")
+    moved = full()
+    beta = moved.doc("beta")
+    out["tail"] = {"again": again, "spaced": spaced, "respelled": respelled, "patched": line2() != canon,
+                   "beta": beta["description"] if beta else None}
     # J90-2: a source through a dangling symlink and one through a live symlink (lib/storage_j90.mjs).
     (d / "links" / "real").mkdir(parents=True)
     os.symlink("missing-target", d / "links" / "dangle")
@@ -1084,6 +1111,17 @@ def _j90_cold(d: Path) -> dict:
     compacted = ci.compact()
     out["temps"] = {"before": before, "add": add, "compact": temps(), "compacted": compacted,
                     "query": [list(r) for r in ci.query(["word"])]}
+    # J90-P7B: a shard is parsed again whenever its text is not the one last parsed (lib/storage_j90.mjs).
+    ci = fresh("reparse")
+    q1 = [list(r) for r in ci.query(["word"])]
+    at = next(ci.shard_path(i) for i in range(16) if b'"word"' in ci.shard_path(i).read_bytes())
+    kept = at.read_bytes()
+    sub(at, b'"word":[["alpha","000001","description",1],["beta","000001","description",1]',
+        b'"word":[["alpha","000001","description",1],["beta","000001","description",2]')
+    same = len(at.read_bytes()) == len(kept)
+    q2 = [list(r) for r in ci.query(["word"])]
+    at.write_bytes(kept)
+    out["reparse"] = {"q1": q1, "same": same, "q2": q2, "q3": [list(r) for r in ci.query(["word"])]}
     return out
 
 

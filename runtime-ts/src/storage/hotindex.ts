@@ -145,6 +145,12 @@ interface IndexData {
   tailBytes: Buffer | null;
   /** The second line of a head read whole, parsed, until it is merged in. */
   tailObj: Record<string, unknown> | null;
+  /**
+   * `tailLine` of `files`, `docs`, `df` and `lens` as they are, when known: set by a write, or by
+   * `completeTail` when the second line read is the one this process wrote there (`WROTE_TAIL`);
+   * `null` from the moment a patch changes any of them (#316 G4, J90-P7B).
+   */
+  tailText: string | null;
 }
 
 /**
@@ -255,10 +261,26 @@ export function encodeSegments(rows: ReadonlyArray<readonly [number, number, num
 
 /** The head's bytes: `HEAD_KEYS` on the first line, `TAIL_KEYS` on the second, one object. */
 export function headText(d: Record<string, unknown>): string {
-  const head = dumpIndex(Object.fromEntries(HEAD_KEYS.map((k) => [k, d[k]])));
-  const tail = dumpIndex(Object.fromEntries(TAIL_KEYS.map((k) => [k, d[k]])));
-  return `${head.slice(0, -1)},\n${tail.slice(1)}`;
+  return `${headLine(d)},\n${tailLine(d)}`;
 }
+
+/** `headText`'s first line less its closing brace. */
+function headLine(d: Record<string, unknown>): string {
+  return dumpIndex(Object.fromEntries(HEAD_KEYS.map((k) => [k, d[k]]))).slice(0, -1);
+}
+
+/** `headText`'s second line: the `TAIL_KEYS` object less its opening brace. */
+function tailLine(d: Record<string, unknown>): string {
+  return dumpIndex(Object.fromEntries(TAIL_KEYS.map((k) => [k, d[k]]))).slice(1);
+}
+
+/**
+ * The second line this process last wrote at each head path (#316 G4, J90-P7B). A head read back
+ * whose second line is exactly that text holds what `tailLine` gives for the docs it parses to, so
+ * a write that changed none of them (a full refresh that found nothing moved) writes the text again
+ * instead of dumping the docs again: the same bytes, without the dump. One entry per index path.
+ */
+const WROTE_TAIL = new Map<string, string>();
 
 /** Three token counts, one per FIELD_BOOST field: the reference's `_is_lens`. */
 const isLens = (v: unknown): v is [number, number, number] =>
@@ -665,7 +687,7 @@ export class HotIndex {
   /** The held head with its second line parsed; one that is not the shape written rebuilds. */
   private whole(): IndexData {
     const data = this.loaded();
-    if (!completeTail(data)) this.rebuild(Date.now());
+    if (!completeTail(data, this.path)) this.rebuild(Date.now());
     return this.data!;
   }
 
@@ -737,7 +759,7 @@ export class HotIndex {
       }
       // The directory moved: list it, and trust the recorded stat of a file whose
       // (mtime_ns, size) did not change.
-      if (!completeTail(data) || !this.check(data)) {
+      if (!completeTail(data, this.path) || !this.check(data)) {
         this.rebuild(nowMs);
         return 'rebuilt';
       }
@@ -748,7 +770,7 @@ export class HotIndex {
       this.write(before);
       return 'patched';
     }
-    if (!completeTail(data) || !this.check(data)) {
+    if (!completeTail(data, this.path) || !this.check(data)) {
       this.rebuild(nowMs);
       return 'rebuilt';
     }
@@ -883,10 +905,11 @@ export class HotIndex {
       shards: { postings: [...prints.postings], words: [...prints.words] },
       tailBytes,
       tailObj,
+      tailText: null,
     };
     // A head read whole has its second line parsed already: check it now, as a head always was.
     // Only `headText`'s two lines defer it.
-    if (tailObj !== null && !completeTail(data)) return null;
+    if (tailObj !== null && !completeTail(data, this.path)) return null;
     return data;
   }
 
@@ -907,28 +930,29 @@ export class HotIndex {
         texts.push([this.shardPath(family, i), dumpIndex({ fingerprint: fp, terms: held[1] })]);
       }
     }
-    texts.push([
-      this.path,
-      headText({
-        version: d.version,
-        kind: d.kind,
-        source: d.source,
-        dir_mtime_ns: d.dir_mtime_ns,
-        full_at: d.full_at,
-        files: d.files,
-        docs: d.docs,
-        skipped: d.skipped,
-        loose: d.loose,
-        df: d.dfRaw ?? d.df,
-        avgdl: d.avgdl,
-        lens: d.lensRaw ?? d.lens,
-        lens_total: d.lensTotal,
-        boost: d.boost,
-        cols: d.cols,
-        fingerprint: d.fingerprint,
-        shards: d.shards,
-      }),
-    ]);
+    const all: Record<string, unknown> = {
+      version: d.version,
+      kind: d.kind,
+      source: d.source,
+      dir_mtime_ns: d.dir_mtime_ns,
+      full_at: d.full_at,
+      files: d.files,
+      docs: d.docs,
+      skipped: d.skipped,
+      loose: d.loose,
+      df: d.dfRaw ?? d.df,
+      avgdl: d.avgdl,
+      lens: d.lensRaw ?? d.lens,
+      lens_total: d.lensTotal,
+      boost: d.boost,
+      cols: d.cols,
+      fingerprint: d.fingerprint,
+      shards: d.shards,
+    };
+    // `headText(all)`, with the second line dumped only when no write or read already holds it.
+    const tail = d.tailText ?? tailLine(all);
+    d.tailText = tail;
+    texts.push([this.path, `${headLine(all)},\n${tail}`]);
     try {
       fs.mkdirSync(path.dirname(this.path), { recursive: true });
       exclusive(this.path, () => {
@@ -963,6 +987,7 @@ export class HotIndex {
     }
     this.persisted = true;
     this.headStat = this.statHead();
+    WROTE_TAIL.set(this.path, tail);
   }
 
   private store(): MemoryStore {
@@ -987,6 +1012,11 @@ export class HotIndex {
 
   /** A native directory's `*.md` paths but `MEMORY.md`, in code-point order, files or not. */
   private mdPaths(): string[] {
+    return this.mdNames().map((n) => pyJoin(this.dir, n));
+  }
+
+  /** `mdPaths`' names: each path is `pyJoin(this.dir, name)`, whose basename is the name. */
+  private mdNames(): string[] {
     let names: string[];
     try {
       names = fs.readdirSync(this.dir);
@@ -994,18 +1024,17 @@ export class HotIndex {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
       throw e;
     }
-    return names
-      .filter((n) => n.endsWith('.md') && n !== 'MEMORY.md')
-      .sort(cmpCodepoint)
-      .map((n) => pyJoin(this.dir, n));
+    return names.filter((n) => n.endsWith('.md') && n !== 'MEMORY.md').sort(cmpCodepoint);
   }
 
   private statListing(): Array<[string, string, number]> {
     const out: Array<[string, string, number]> = [];
     // `listing`'s files, each stated once (#316 G4, J90-P4): a native path is kept when its one
     // stat finds a file, where `listing` stats it for `isFile` and again here for its print.
+    // A native file is listed by name (`mdNames`) and joined here: its name is its basename.
     const native = this.kind !== 'facts';
-    for (const p of native ? this.mdPaths() : this.listing()) {
+    for (const f of native ? this.mdNames() : this.listing()) {
+      const p = native ? pyJoin(this.dir, f) : f;
       let st: fs.BigIntStats;
       try {
         st = fs.statSync(p, { bigint: true });
@@ -1013,7 +1042,7 @@ export class HotIndex {
         continue; // gone between the listing and the stat: it is not there
       }
       if (native && !st.isFile()) continue;
-      out.push([path.basename(p), st.mtimeNs.toString(), Number(st.size)]);
+      out.push([native ? f : path.basename(p), st.mtimeNs.toString(), Number(st.size)]);
     }
     return out;
   }
@@ -1043,6 +1072,7 @@ export class HotIndex {
       shards: { postings: [], words: [] },
       tailBytes: null,
       tailObj: null,
+      tailText: null,
     };
     this.shards = new Map();
     this.patch(data, this.statListing(), true);
@@ -1063,8 +1093,10 @@ export class HotIndex {
   private patch(data: IndexData, stats: Array<[string, string, number]>, force = false): boolean {
     const { files, docs, skipped } = data;
     const loose = new Set(data.loose);
-    const order = new Map<string, number>(stats.map(([n], i) => [n, i]));
-    const nowFiles = new Map<string, [string, number]>(stats.map(([n, m, s]) => [n, [m, s]]));
+    // One pass, and `order` only past the early return (#316 G4, J90-P7B: a full refresh that finds
+    // nothing moved built both maps through a destructuring callback per file).
+    const nowFiles = new Map<string, [string, number]>();
+    for (const [n, m, s] of stats) nowFiles.set(n, [m, s]);
     const redo = new Set<string>();
     for (const [name, now] of nowFiles) {
       const was = files.get(name);
@@ -1072,6 +1104,9 @@ export class HotIndex {
     }
     const gone = new Set([...files.keys()].filter((n) => !nowFiles.has(n)));
     if (redo.size === 0 && gone.size === 0 && !force) return false;
+    data.tailText = null;
+    const order = new Map<string, number>();
+    stats.forEach(([n], i) => order.set(n, i));
     const derivedFrom = derivedKey(docs);
     // Only when something moved: a duplicate may now hold its name, or still not.
     for (const name of nowFiles.keys()) if ((skipped.get(name) ?? '').startsWith(DUPLICATE)) redo.add(name);
@@ -1284,16 +1319,21 @@ function columns(docs: Map<string, IndexDoc>, data: IndexData): IndexCols {
   return cols;
 }
 
-/** The parsed second line of `data`'s head, merged in once; false when it is not the shape written. */
-function completeTail(data: IndexData): boolean {
+/**
+ * The parsed second line of `data`'s head (read from `headPath`), merged in once; false when it is
+ * not the shape written.
+ */
+function completeTail(data: IndexData, headPath: string): boolean {
   const bytes = data.tailBytes;
   let got: unknown = data.tailObj;
   if (bytes === null && got === null) return true;
   data.tailBytes = null;
   data.tailObj = null;
+  let text: string | null = null;
   if (bytes !== null) {
     try {
-      got = JSON.parse(`{${pyDecodeUtf8(bytes)}`);
+      text = pyDecodeUtf8(bytes);
+      got = JSON.parse(`{${text}`);
     } catch {
       return false;
     }
@@ -1312,6 +1352,8 @@ function completeTail(data: IndexData): boolean {
   data.docs = new Map(entries(tail.docs)) as Map<string, IndexDoc>;
   data.dfRaw = tail.df; // converted by `df()` when asked
   data.lensRaw = tail.lens; // read lazily by `lens()`
+  // The line this process wrote here, read back unchanged: `tailLine` of what it parsed to.
+  if (text !== null && text === WROTE_TAIL.get(headPath)) data.tailText = text;
   return true;
 }
 

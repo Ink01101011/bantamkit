@@ -8,6 +8,7 @@ import fnmatch as _fnmatch
 import functools as _functools
 import gzip as _gzip
 import hashlib as _hashlib
+import io as _io
 import json as _json
 import math as _math
 import os as _os
@@ -25,6 +26,7 @@ from ._ts2py_runtime import (
     _js_lifted,
     _js_m_toLowerCase,
     _js_num,
+    _js_py_round_float9,
     _js_truthy,
     _JsBigInt,
     _JsError,
@@ -559,20 +561,21 @@ class BigIntStats(Stats):
     )
 
     def __init__(self, st, *_):
-        self.__dict__.update(
-            _js_st=st,
-            size=_JsBigInt(st.st_size),
-            mtimeNs=_JsBigInt(st.st_mtime_ns),
-            mtimeMs=_JsBigInt(st.st_mtime_ns // 1_000_000),
-            ino=_JsBigInt(st.st_ino),
-        )
+        ns = st.st_mtime_ns
+        fields = self.__dict__
+        fields["_js_st"] = st
+        fields["size"] = _JsBigInt(st.st_size)
+        fields["mtimeNs"] = _JsBigInt(ns)
+        fields["mtimeMs"] = _JsBigInt(ns // 1_000_000)
+        fields["ino"] = _JsBigInt(st.st_ino)
 
 
 def stat_sync(path, *rest):
     bigint = False
     if rest:
         options = rest[0]
-        if len(rest) > 1 or not isinstance(options, dict) or set(options) != {"bigint"}:
+        only = len(rest) == 1 and isinstance(options, dict) and len(options) == 1
+        if not (only and "bigint" in options):
             raise TypeError("ts2py: fs.statSync options other than bigint are outside the subset")
         bigint = _js_truthy(options["bigint"])
     st = _os.stat(_node_path(path, "fs.statSync"))
@@ -583,7 +586,8 @@ def lstat_sync(path, *rest):
     bigint = False
     if rest:
         options = rest[0]
-        if len(rest) > 1 or not isinstance(options, dict) or set(options) != {"bigint"}:
+        only = len(rest) == 1 and isinstance(options, dict) and len(options) == 1
+        if not (only and "bigint" in options):
             raise TypeError("ts2py: fs.lstatSync options other than bigint are outside the subset")
         bigint = _js_truthy(options["bigint"])
     st = _os.lstat(_node_path(path, "fs.lstatSync"))
@@ -728,6 +732,10 @@ def read_file_bytes(path):
 
 
 def _posix_dirname(path):
+    if path and path[-1] != "/":
+        cut = path.rfind("/")
+        if cut > 1:
+            return path[:cut]
     if not path:
         return "."
     has_root = path[0] == "/"
@@ -748,6 +756,8 @@ def _posix_dirname(path):
 
 
 def _posix_basename(path):
+    if path and path[-1] != "/":
+        return path[path.rfind("/") + 1 :]
     start = 0
     end = -1
     matched_slash = True
@@ -974,8 +984,7 @@ def ensure_bantamkit_gitignore(directory, created, *_):
 
 
 
-def py_round_float9(x, *_):
-    return round(x if type(x) is float else _js_num(x), 9)
+py_round_float9 = _js_py_round_float9
 
 
 def py_log(x, *_):
@@ -1396,9 +1405,26 @@ class PyUnicodeDecodeError(_JsError):
 
 def py_read_text(path, *_):
     try:
-        return _pathlib.Path(_store_path(path, "pyReadText")).read_text(encoding="utf-8")
+        path = _store_path(path, "pyReadText")
+        if _pure_as_is(path):
+            with _io.open(path, encoding="utf-8") as handle:  # noqa: UP020
+                return handle.read()
+        return _pathlib.Path(path).read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
         raise PyUnicodeDecodeError(str(error)) from None
+
+
+def _pure_as_is(path):
+    return (
+        _os.name != "nt"
+        and path != ""
+        and path != "."
+        and path[-1] != "/"
+        and "//" not in path
+        and "/./" not in path
+        and not path.startswith("./")
+        and not path.endswith("/.")
+    )
 
 
 def py_replace(source, target, *_):

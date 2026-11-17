@@ -4084,6 +4084,23 @@ def _js_lift_values_same(values):
     return True
 
 
+def _js_py_round_float9(x, *_):
+    """`pyRoundFloat9` (runtime-ts/src/pysem.ts): CPython's `round(x, 9)`, which it ports. The
+    adapters' `py_round_float9`, moved here (#316 G4, J90-P7B) with `pyRoundFloat9`'s own fast
+    path (J68-5): for a float `0 < x` with `y = x * 1e9 < 2**40` whose fraction is more than 1e-3
+    from one half, the nearer whole `y` over 1e9 IS what `round` answers (`y` is within 2**-13 of
+    the exact `x * 10**9`, and one IEEE division of that whole number by 1e9 is the double its
+    decimal parses to), without CPython's decimal string. Every other value is `round`'s."""
+    if type(x) is float and x > 0.0:
+        y = x * 1e9
+        if y < 1099511627776.0:
+            whole = _js_math.floor(y)
+            frac = y - whole
+            if abs(frac - 0.5) > 1e-3:
+                return (whole if frac < 0.5 else whole + 1) / 1e9
+    return round(x if type(x) is float else _js_num(x), 9)
+
+
 def _js_lifted(value):
     """`value` as `fromJs` reads it (runtime-ts/src/pyjson.ts), as the Python value `json.dumps`
     is handed: a number that is a safe integer (`Number.isSafeInteger`) and not -0 is an int, any

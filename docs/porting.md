@@ -3019,6 +3019,79 @@ total, all modules, `-g0` + `strip -x`, raw / zip -9: cp311 8,414,344 / 2,209,45
 `mypy_extensions` is not needed at run time (the runtime falls back to an identity decorator).
 Compile time, all modules: about 35 s per interpreter on this machine.
 
+### The compiled build's last three losses closed (#316 G4, J90-P7B)
+
+J90-P7's compiled build lost full refresh (all four interpreters), cold query (3.11, 3.14) and the
+#204 bar (3.14). Each was profiled first (cProfile for the interpreted parts, macOS `sample` for
+the compiled ones); what each turned out to be, and what closed it:
+
+- **Full refresh was the head's second line dumped again.** A full refresh that finds nothing moved
+  still rewrites the head (`full_at`), and `write` dumped `files`, `docs`, `df` and `lens` again:
+  4.6 ms of JSON plus 1.5 ms of UTF-16 slicing of a non-ASCII text, of a 17.9 ms refresh of 14
+  sources. `hotindex.ts` now keeps the second line it wrote (`IndexData.tailText`, cleared by any
+  patch that changes a doc) and, per process, the line it last wrote at each head path
+  (`WROTE_TAIL`): a head read back whose second line is exactly that text holds what `tailLine`
+  gives for what it parses to, so the write reuses it. A second line in any other spelling is dumped
+  again (case `J90-P7B a write reuses the second line only when this process wrote that text`). Also:
+  `patch` builds its maps in one loop and `order` only past its early return, and a native file is
+  listed by name (`mdNames`), so `statListing` takes no `path.basename` of a path it just joined.
+  The stale-temp sweep (`removeStaleTemps`) still lists the index directory on every write (2.3 ms
+  of the refresh): sweeping once per process breaks `J90-3F a hot index persist removes its own
+  stale temps` (a second index in the same process must still sweep), and a directory-mtime test is
+  blind to a temp made between a write and its stat and to a 1 s mtime clock, so it was not taken.
+- **Cold query was each query parsing the same shards again.** `ColdIndex.shard` now keeps, per
+  shard, the text it last parsed and the table it gave, and reuses the table when the text read
+  (still through `coldFs`, so the read count a test spies on is unchanged) is the same; no stat is
+  trusted (case `J90-P7B a cold shard rewritten to the same length is read as written`). Node and
+  Python both: cold query x20 3.12 36.2 (hand) / 12.4 (compiled) / 20.6 (pure); Node 21.9 -> 10.2.
+- **The bar was CPython's `round(x, 9)`**, 10,000 per recall at 5,000 facts (every doc scores
+  above 0 for that query), each through a decimal string (`float.__round__` -> `PyOS_snprintf`):
+  15% of a compiled recall, called from compiled code into the interpreted adapters. It is now the
+  runtime's `_js_py_round_float9` with `pyRoundFloat9`'s own J68-5 fast path (`tools/ts2py/
+  RULES.md`, *J90-P7B rules*). The rest of the 3.14 gap is the generic `Any` arithmetic mypyc writes
+  for the counted loops of `bm25Segments` (`binary_op1`, `PyNumber_Index`, `float_add` in the
+  samples): with `retrieval` left interpreted on 3.14 the bar was 7.98 against 8.27 compiled
+  (n = 7), and typed locals in the proven loop copies would need annotated functions (mypy skips
+  the body of an unannotated one, so an annotation inside it compiles to nothing) — not built.
+  Also exact and pinned: POSIX `path.basename` / `dirname` from the last `/`, `pyReadText` through
+  `io.open` for a path `PurePath` leaves as it is, `statSync`'s option check without a set.
+
+| path (n = 9 interleaved, median ms; hand [min..max]) | 3.11 hand / pure / mypyc | 3.12 | 3.13 | 3.14 | 3.12 J90-P7 pure / mypyc | Node J90-P7 / now |
+|---|---|---|---|---|---|---|
+| import | 129.28 [118.2..139.8] / 93.09 / 102.51 | 148.42 [141.3..183.8] / 103.73 / 119.28 | 150.86 [141.7..155.6] / 106.53 / 122.12 | 138.63 [136.4..158.1] / 106.32 / 121.97 | 105.10 / 116.38 | 30.19 / 20.59 |
+| hot index build | 423.51 [417.0..479.4] / 491.38 / 411.39 | 413.33 [405.1..465.1] / 483.10 / 412.60 | 440.43 [434.1..452.0] / 518.37 / 432.74 | 420.02 [410.4..436.8] / 489.79 / 435.07 | 484.76 / 419.95 | 278.82 / 269.17 |
+| open + query | 7.16 [5.6..7.9] / 6.90 / 6.22 | 6.85 [5.7..8.4] / 6.43 / 7.24 | 6.36 [5.6..7.4] / 6.38 / 5.97 | 6.50 [5.3..8.4] / 6.50 / 5.81 | 7.10 / 6.62 | 5.42 / 6.41 |
+| held query x20 | 5.50 [5.4..6.0] / 9.39 / 4.99 | 5.54 [5.5..5.8] / 8.88 / 5.42 | 5.64 [5.6..6.0] / 9.67 / 5.92 | 5.75 [5.6..6.4] / 9.13 / 6.20 | 8.75 / 5.45 | 2.79 / 3.04 |
+| full refresh | 16.12 [15.3..17.3] / 19.17 / 15.82 | 16.48 [16.1..18.3] / 19.00 / 16.35 | 17.71 [17.0..31.3] / 20.91 / 15.81 | 16.84 [16.3..20.1] / 19.27 / 16.45 | 26.17 / 23.21 | 35.70 / 17.34 |
+| cold build | 91.01 [89.4..96.6] / 93.97 / 44.27 | 85.02 [84.0..87.8] / 88.10 / 47.47 | 104.86 [103.4..106.8] / 110.13 / 51.36 | 84.87 [84.0..87.9] / 86.79 / 55.98 | 87.23 / 47.61 | 32.46 / 34.47 |
+| cold query x20 | 34.15 [33.7..35.7] / 21.01 / 11.31 | 36.18 [35.9..37.1] / 20.59 / 12.41 | 33.15 [32.6..35.8] / 24.40 / 13.11 | 33.44 [32.8..34.3] / 21.18 / 13.89 | 54.15 / 30.44 | 21.85 / 10.23 |
+| compaction with `keep` | 53.65 [52.4..60.5] / 59.09 / 33.62 | 51.77 [51.0..54.3] / 56.33 / 35.28 | 61.67 [60.5..64.1] / 69.38 / 36.47 | 51.65 [50.8..56.6] / 55.93 / 40.44 | 57.44 / 36.26 | 29.63 / 29.09 |
+| retention run | 1287.41 [1280.9..1344.0] / 1271.43 / 911.64 | 1241.82 [1235.4..1278.6] / 1217.55 / 956.30 | 1408.93 [1395.2..1426.8] / 1415.66 / 969.73 | 1222.03 [1216.8..1237.4] / 1189.16 / 955.30 | 1218.13 / 939.08 | 231.33 / 226.88 |
+| tier lines x5 | 1356.76 [1343.8..1411.6] / 719.03 / 662.89 | 1428.86 [1421.0..1460.0] / 769.45 / 691.57 | 1615.90 [1604.7..1634.7] / 792.95 / 721.60 | 1735.00 [1719.1..1794.8] / 801.77 / 747.84 | 769.69 / 680.42 | 256.63 / 251.82 |
+| first `memory_save` | 33.54 [32.8..37.6] / 40.73 / 28.11 | 32.45 [31.8..33.7] / 37.99 / 30.05 | 35.35 [35.0..36.5] / 46.21 / 30.99 | 32.86 [32.3..70.9] / 40.12 / 31.30 | 40.08 / 30.45 | 28.63 / 28.59 |
+| #204 bar recall p50 | 8.22 [7.6..8.6] / 7.81 / 6.84 | 8.20 [8.1..8.8] / 8.09 / 7.55 | 8.68 [8.5..8.8] / 8.94 / 8.34 | 8.49 [8.2..9.7] / 8.12 / 8.62 | 8.73 / 8.63 | 2.96 / 2.83 |
+
+Compiled, every path is at or below the hand-written module's median, or inside its spread (hot
+build 3.14 435.1 in 410.4..436.8, held query 3.13 / 3.14 5.92 / 6.20, the bar 3.14 8.62 in
+8.2..9.7). Pure (3.12) against J90-P7's pure: every median lower or inside its spread (held query
+8.88 in 8.4..9.6, cold build 88.10 in 86.1..91.5). Node against J90-P7's Node: full refresh 35.7 ->
+17.3, cold query 21.9 -> 10.2; open query 6.41 and held query 3.04 inside J90-P7's spreads (5.0..9.6,
+2.6..3.1).
+
+**Real data, byte for byte.** The user's stores copied to scratch (the repo's `.bantamkit/memory`
+and `.shiftwork`, `~/.bantamkit`, the 120 `~/.claude/projects/*/memory` directories: 31,779 files,
+245 MB), each side on its own fresh copy: retention twice and the tier lines around it, archive
+search, the jobs and facts cold indexes (add, query, compact, compact with `keep`), the facts hot
+indexes (query, postings), a hot index per native directory (fast and full refresh), the memory
+component's recall over seven queries on both stores, its dream dry run and compaction, then the
+dream applied across the two stores and compaction forced under a 9,000-byte budget (63 and 45
+facts archived). Python pure, Python mypyc 3.12, Python mypyc 3.14 and J90-P6 answer every one
+identically, and leave the same 28,452 files byte for byte (the usage ledgers' `ts` masked, a
+ledger named by its store's path matched by content). Node answers the same but in the two places
+already pinned: the ruled gzip row of the status line (207 bytes, *J90-P4*) and the YAML refusal
+sentence of five native facts (`YAML_REASONS_PY` / `YAML_REASONS_NODE`, `storage-index`); the same
+files are skipped on both sides.
+
 ## Concurrency
 
 Measured, not assumed: 12 pipelined saves all land in order; a recall behind a save **sees**

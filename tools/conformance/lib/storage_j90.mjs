@@ -158,6 +158,32 @@ async function index(runtimeTs, d) {
       names: [...again.names().keys()],
     };
   }
+  // J90-P7B: a write reuses the second line only when it is the text this process wrote there (a
+  // full refresh that changed nothing then writes it again, undumped); one read back in another
+  // spelling is dumped again, and a patch dumps the docs it changed.
+  [root, home] = bed('tail', 'facts', facts.slice(0, 2));
+  hi = new h.HotIndex(root, 'facts', home);
+  hi.refresh('fast');
+  {
+    const line2 = () => readFileSync(hi.path, 'utf8').split('\n')[1];
+    const canon = line2();
+    const full = () => {
+      const x = new h.HotIndex(root, 'facts', home);
+      x.refresh('full');
+      return x;
+    };
+    full();
+    const again = line2() === canon;
+    const raw = readFileSync(hi.path, 'utf8');
+    const cut = raw.indexOf('\n') + 1;
+    writeFileSync(hi.path, `${raw.slice(0, cut)}${raw.slice(cut).replace('"df":{', '"df": {')}`, 'utf8');
+    const spaced = line2() !== canon;
+    full();
+    const respelled = line2() === canon;
+    writeFileSync(join(root, 'facts', 'beta.md'), FACT('beta', 'beta words moved'), 'utf8');
+    const moved = full();
+    out.tail = { again, spaced, respelled, patched: line2() !== canon, beta: moved.doc('beta')?.description ?? null };
+  }
   // J90-2: a source through a symlink whose target is missing (`dangle`), and one through a live
   // symlink (`live` -> `real`). What the index names it by: its realpath's last part, and whether
   // `sha16` hashes the target's path.
@@ -264,6 +290,17 @@ async function cold(runtimeTs, d) {
   plantTemps(ci.dir, [['seg-000001.json.18.tmp', 'old']]);
   const compacted = ci.compact();
   out.temps = { before, add, compact: temps(), compacted, query: ci.query(['word']) };
+  // J90-P7B: a shard read again is parsed again unless its text is the one last parsed: a rewrite
+  // of the same length (a tf of 1 made 2) is read as written, and the old bytes back as before.
+  ci = fresh('reparse');
+  const q1 = ci.query(['word']);
+  const at = [...Array(16).keys()].map((i) => ci.shardPath(i)).find((p) => readFileSync(p, 'utf8').includes('"word"'));
+  const kept = readFileSync(at);
+  sub(at, '"word":[["alpha","000001","description",1],["beta","000001","description",1]', '"word":[["alpha","000001","description",1],["beta","000001","description",2]');
+  const same = readFileSync(at).length === kept.length;
+  const q2 = ci.query(['word']);
+  writeFileSync(at, kept);
+  out.reparse = { q1, same, q2, q3: ci.query(['word']) };
   return out;
 }
 
@@ -547,6 +584,10 @@ export function j90Cases(section, { py, nd, dirs }) {
     lit('J90-3F a hot index persist removes its own stale temps and nothing else', {
       left: ['0000000000000000.json.34.tmp', '<sha>.json.33.tmp', '<sha>.txt.35.tmp'], names: ['alpha', 'beta', 'gamma'],
     }, py.temps, nd.temps);
+    same('J90-P7B a write reuses the second line only when this process wrote that text', py.tail, nd.tail);
+    lit('J90-P7B a write reuses the second line only when this process wrote that text', {
+      again: true, spaced: true, respelled: true, patched: true, beta: 'beta words moved',
+    }, py.tail, nd.tail);
     same('J90-2 a source through a live symlink is named by its target on both sides', py.symlinks.live, nd.symlinks.live);
     lit('a source through a live symlink', ['real', true], py.symlinks.live, nd.symlinks.live);
   } else if (section === 'cold') {
@@ -595,6 +636,12 @@ export function j90Cases(section, { py, nd, dirs }) {
     // (both runtimes kept every one before: red on 2cca2564 on both sides).
     same('J90-3F a cold write removes its own stale temps and nothing else', py.temps, nd.temps);
     lit('J90-3F a cold write removes its own stale temps and nothing else', COLD_TEMPS_AFTER, py.temps, nd.temps);
+    // J90-P7B: a shard is parsed again whenever its text is not the one last parsed.
+    same('J90-P7B a cold shard rewritten to the same length is read as written', py.reparse, nd.reparse);
+    lit('J90-P7B a cold shard rewritten to the same length is read as written', {
+      q1: [['alpha', '000002', 1], ['beta', '000001', 1]], same: true,
+      q2: [['beta', '000001', 2], ['alpha', '000002', 1]], q3: [['alpha', '000002', 1], ['beta', '000001', 1]],
+    }, py.reparse, nd.reparse);
   } else if (section === 'retention') {
     const L = LITERALS.retention;
     same('retention constants', py.constants, nd.constants);

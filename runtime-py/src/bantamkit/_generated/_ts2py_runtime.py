@@ -3505,6 +3505,17 @@ def _js_lift_values_same(values):
     return True
 
 
+def _js_py_round_float9(x, *_):
+    if type(x) is float and x > 0.0:
+        y = x * 1e9
+        if y < 1099511627776.0:
+            whole = _js_math.floor(y)
+            frac = y - whole
+            if abs(frac - 0.5) > 1e-3:
+                return (whole if frac < 0.5 else whole + 1) / 1e9
+    return round(x if type(x) is float else _js_num(x), 9)
+
+
 def _js_lifted(value):
     kind = type(value)
     if kind in _JS_LIFT_SAME:
