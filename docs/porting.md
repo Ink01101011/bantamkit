@@ -430,7 +430,7 @@ Surprises worth keeping: `1e+17` is a **`str`**, not a float — PyYAML's float 
 | `index.md` and `save`'s budget rollback rewritten in place (J89-1 shared weakness; J89-1F, #316 G3) | **WAS the same weakness on both sides — fixed in both; agreeing before and after.** Before: `_rebuild_index` / `rebuildIndex` wrote `index.md` with `write_text` / `pyWriteText`, and `save`'s rollback after `MemoryBudgetExceeded` rewrote the fact the same way: truncate, then write. A write cut short left a PREFIX: measured at 64a69df8 under `ulimit -f 4`, `index.md` went from 3,800 bytes to the first 4,096 of the new index and the 6,000-byte fact the rollback was restoring to its first 4,096 bytes, on both sides. After: both go through a per-writer temp and a rename, exactly as the fact write does (`<path>.<pid>.<8 hex>.tmp`, `O_EXCL`, every byte written — Node loops over `writeSync`, G2's `writeAll` lesson; CPython's buffered writer loops itself — unlink on any failure): Python `store._write_text_atomic`, Node `pyfs.pyWriteTextAtomic`, and `_write_fact` / `writeFact` now call the same helper. A failed `index.md` write leaves the old file byte for byte; a failed rollback leaves the whole updated fact (never a prefix) and raises the write's `OSError`. Measured under ENOSPC too, in a 1 MiB tmpfs (Docker, CPython 3.13 and Node 22): at 64a69df8 `index.md` 3,800 -> 4,096 bytes on both; now unchanged on both, no temp left. Pinned by `--suite store`: `J89-1F a save whose index.md write is cut short — answer and tree`, `J89-1F a budget rollback whose fact write is cut short — answer and tree`, and four per-side `LITERAL: J89-1F <side>: …`. **Residual, not measured:** on Windows a rename onto a file another process holds open without `FILE_SHARE_DELETE` fails, so `index.md` now shares the fact write's exposure there (no Windows run). |
 | `storeId`, `skills._same`, `component._same_directory` — a dangling symlink, and a path below one (J89-1; J89-1F, #316 G3) | **WAS a difference — fixed in Node; now agreeing, so no ruling.** Before: Node resolved with `fs.realpathSync.native` and, on a throw, the parent resolved plus the name (`usage.ts`, `skills.ts`), or a lexical `path.resolve` (`component.ts`); the native call is strict, so a dangling symlink kept the LINK's own name where `os.path.realpath` follows it to the target text: one store had two usage ledgers, and a project under a dangling link to the home was two skill roots on Node, one on Python. After: all three call `pyfs.pyRealpath`, the port of `os.path.realpath(strict=False)` written once (`posixpath._joinrealpath` + `abspath` on POSIX; the `ntpath` non-strict arm `pyResolve` already used on Windows, unmeasured there), meant to be the `realpathSync.native` adapter's contract when these modules are generated. It also keeps the caller's spelling of a case-folded macOS name, as CPython does, where `realpath(3)` answered the filesystem's. Pinned by `--suite recall-usage` (`J89-1F storeId — a dangling symlink`, `— a path below a dangling symlink`, and per-side literals against each side's own target id) and `--suite skill-layer` (`J89-1F skill_roots: a project under a dangling symlink to the home` and its per-side literals). |
 | `storeId`, `skills._same`, `component._same_directory` — a lone surrogate outside U+DC80..U+DCFF (J89-1; J89-1F, #316 G3) | **WAS a difference — fixed in Python; now agreeing, so no ruling.** Before: `os.path.realpath` (or the `.encode("utf-8")` after it) raised `UnicodeEncodeError` for `s\ud800x`, out of `store_id` and out of `skill_roots`; Node answered, hashing and comparing the U+FFFD its fs writes. After: Python hands the path over through `usage.os_realpath`, which applies the G2 path policy (`_ts2py_adapters._os_char`: a code point `os.fsencode` cannot take is U+FFFD) before `os.path.realpath`, and hashes `encode("utf-8", "surrogateescape")`; so both hash U+FFFD. Pinned by `--suite recall-usage` `J89-1F storeId — a lone surrogate` and `--suite skill-layer` `J89-1F skill_roots: a home holding a lone U+D800`. The surrogateescape range is the target-specific row below. |
-| ~~G3 as Node~~: a store root holding a lone surrogate outside U+DC80..U+DCFF (J89-1; J89-1F; **closed by J89-4b**, #316 G3 U2) | **WAS RULED AS NODE — now agreeing, so no ruling.** Before generation Python raised `UnicodeEncodeError` (`surrogates not allowed`) from the first `mkdir` and wrote nothing, where Node's fs wrote U+FFFD and saved at `<base>/s�x`. Since J89-4b the generated store reaches the OS through the `pyfs` adapters, which take the G2 path policy (`_store_path` in `tools/ts2py/src/adapters.py`: a lone surrogate CPython cannot encode is U+FFFD), and the hot index adapter hands the hand-written index the same path, so both save at `s�x` and recall it (`saved`, recall 1). The `ruling:` case went STALE as designed (`--suite store`, 2 stale, 0 other failures) and is now `J89-4b a store root holding a lone U+D800 — both answer as node (was ruled G3 as Node)` with `LITERAL: J89-4b python's / node's answer for a store root holding a lone U+D800`. |
+| ~~G3 as Node~~: a store root holding a lone surrogate outside U+DC80..U+DCFF (J89-1; J89-1F; **closed by J89-4b**, #316 G3 U2) | **WAS RULED AS NODE — now agreeing, so no ruling.** Before generation Python raised `UnicodeEncodeError` (`surrogates not allowed`) from the first `mkdir` and wrote nothing, where Node's fs wrote U+FFFD and saved at `<base>/s�x`. Since J89-4b the generated store reaches the OS through the `pyfs` adapters, which take the G2 path policy (`_store_path` in `tools/ts2py-bantamkit/adapters.py`: a lone surrogate CPython cannot encode is U+FFFD), and the hot index adapter hands the hand-written index the same path, so both save at `s�x` and recall it (`saved`, recall 1). The `ruling:` case went STALE as designed (`--suite store`, 2 stale, 0 other failures) and is now `J89-4b a store root holding a lone U+D800 — both answer as node (was ruled G3 as Node)` with `LITERAL: J89-4b python's / node's answer for a store root holding a lone U+D800`. |
 | ~~G3 as Node~~: a store root holding a NUL (J89-1; J89-1F; **closed by J89-4b**, #316 G3 U2) | **WAS RULED AS NODE — now agreeing, so no ruling.** Before generation Python raised `ValueError: mkdir: embedded null character in path`; Node answered `MemoryValidationError: memory store could not be created: <root>; the directory is not there and this filesystem would not make it, so nothing was written`; both wrote nothing. Since J89-4b a `pyfs` adapter handed a NUL raises the `OSError` `asPyOSError` makes of Node's `ERR_INVALID_ARG_VALUE` (errno 0; `g3_store.rs` `j89_4b_store_os_seam_answers_like_node` pins its text to Node's), so the generated `ensureDirs` answers the store's own sentence on both sides. Cases: `J89-4b a store root holding a NUL — both answer as node (was ruled G3 as Node)` (the whole answer and the directory listing, which replaces the old refusal-bit companion) and a `LITERAL: J89-4b <side>'s answer …` per side. |
 
 **#200 (job70, the touch graph) adds no row to the table above.** Every touch surface is
@@ -1031,12 +1031,12 @@ Rust. After any edit to `workplan.ts`, `memory/pyyaml.ts`, `memory/factfile.ts`,
 deterministic, so an unchanged input rewrites the same bytes):
 
 ```
-cargo run --release --manifest-path tools/ts2py/Cargo.toml -- runtime-ts/src/workplan.ts \
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- --config tools/ts2py-bantamkit/ts2py.toml runtime-ts/src/workplan.ts \
   -o runtime-py/src/bantamkit/_generated/workplan.py --runtime-module ._ts2py_runtime
-cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- --config tools/ts2py-bantamkit/ts2py.toml \
   runtime-ts/src/memory/pyyaml.ts runtime-ts/src/memory/factfile.ts \
   --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
-cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- --config tools/ts2py-bantamkit/ts2py.toml \
   runtime-ts/src/pricing.ts runtime-ts/src/jobbudget.ts runtime-ts/src/storage/logsegment.ts \
   runtime-ts/src/eventlog.ts runtime-ts/src/tokenledger.ts runtime-ts/src/memory/usage.ts \
   runtime-ts/src/memory/retrieval.ts runtime-ts/src/memory/store.ts runtime-ts/src/memory/native.ts \
@@ -1045,11 +1045,16 @@ cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   runtime-ts/src/storage/coldindex.ts runtime-ts/src/storage/retention.ts \
   runtime-ts/src/storage/tiers.ts runtime-ts/src/storage/index.ts \
   --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
-cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- --config tools/ts2py-bantamkit/ts2py.toml \
   --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py
-cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- --config tools/ts2py-bantamkit/ts2py.toml \
   --emit-adapters runtime-py/src/bantamkit/_generated/_ts2py_adapters.py
 ```
+
+`--config tools/ts2py-bantamkit/ts2py.toml` is bantamkit's host file (#337): the compiler in
+`tools/ts2py` is its own package and holds no bantamkit name, so the adapter rows, the adapter
+module (`tools/ts2py-bantamkit/adapters.py`) and the names the headers print come from that file.
+Without it every import of a module outside the call is refused.
 
 (`~/.cargo/bin/cargo` when cargo is not on PATH.) Output is deterministic, so an unchanged
 source regenerates byte-identical files.
@@ -1058,11 +1063,11 @@ source regenerates byte-identical files.
 `# source-sha256: <hex>`, no longer equals sha256 of its TypeScript (`workplan.py` ↔
 `workplan.ts`, and since #315 `pyyaml.py` ↔ `memory/pyyaml.ts`, `factfile.py` ↔
 `memory/factfile.ts`, and since #316 G1 `pricing.py` ↔ `pricing.ts`, `jobbudget.py` ↔
-`jobbudget.ts`), when the committed runtime differs from `tools/ts2py/src/runtime.py`, when
-the committed adapters differ from `tools/ts2py/src/adapters.py` with its runtime import filled
+`jobbudget.ts`), when the committed runtime differs from `tools/ts2py/python/ts2py/runtime.py`, when
+the committed adapters differ from `tools/ts2py-bantamkit/adapters.py` with its runtime import filled
 in (both in their SHIPPED form since J90-P2: `--emit-runtime` / `--emit-adapters` leave the
 full-line comments and the docstrings in the source, statement for statement the same code,
-`tools/ts2py/tests/shipped.rs`; the test spells the same rule), or when `_generated/` holds a `.py` the test does not name. Every failure message prints the
+`tools/ts2py/tests/shipped.rs` and `tools/ts2py-bantamkit/tests/shipped_adapters.rs`; the test spells the same rule), or when `_generated/` holds a `.py` the test does not name. Every failure message prints the
 commands above. It needs no Rust. (J86-3 proved each red once: one byte appended to `factfile.ts`,
 a line appended to the committed adapters, a stray `_generated/stray.py`; 3 failed, 6 passed.) `node tools/conformance/run.mjs --suite ts2py` recompiles the
 TypeScript fresh on every run and compares Node, the fresh module and `bantamkit.workplan`
@@ -1271,7 +1276,7 @@ class itself: it extends the `BantamError` adapter, which is `bantamkit.client.B
 JS's Error face, so `except BantamError` still catches it and `str(exc)` is the sentence. The
 hand-written `jobbudget.BRIEF_EVENT` / `UNCOMMITTED_EVENT` are gone (nothing imported them).
 
-**The adapters (`tools/ts2py/src/adapters.rs`, measured in `tools/ts2py/RULES.md`, Adapters).**
+**The adapters (`tools/ts2py-bantamkit/ts2py.toml`, measured in `tools/ts2py/RULES.md`, Adapters).**
 Four where Python is the reference: `pyRepr` (`repr(str)`), `cmpCodepoint` (code-point order, what
 `sorted()` does), `assetsRoot` (`bantamkit.assets.assets_root()`, which `assets.ts` mirrors) and
 `BantamError` (`bantamkit.client.BantamError`, imported lazily so a module that does not use it
@@ -1285,7 +1290,7 @@ and `process.env` (each runtime reads its own environment).
 **The error shape across the fs seam (the #315 unknown).** `readFileSync`'s adapter raises the
 `OSError` CPython's `open()` raises for the path, class, `errno`, `strerror`, `filename` and text
 alike; a generated `catch` sees it as Node's fs Error, and where the TypeScript rethrows it or does
-not catch it the Python caller gets that very exception (`tools/ts2py/tests/g1.rs`,
+not catch it the Python caller gets that very exception (`tools/ts2py-bantamkit/tests/g1.rs`,
 `fs_errors_reach_python_as_cpython_raises_them`, a missing file and a directory). A `catch`
 catches only what JS could have thrown (`_js_catch`): a subset refusal (`ts2py: ...`), a
 `RecursionError` or any other Python exception propagates.
@@ -1409,7 +1414,7 @@ adapters onto Python itself.
   `ConnectionRefusedError`); the shim keeps the Python class name there.
 - `_split`, `_load` and `_is_old` stay importable (`touch/log.py`), now the generated functions.
 
-**The adapters** are in `tools/ts2py/src/adapters.rs` and measured in `tools/ts2py/RULES.md`
+**The adapters** are in `tools/ts2py-bantamkit/ts2py.toml` and measured in `tools/ts2py/RULES.md`
 (*Adapters (J88-2)*): 37 new rows. Node builtins (22): the `node:fs` calls the three modules make
 (`statSync`, `lstatSync`, `fstatSync` and `Stats`, `readdirSync`, `mkdirSync`, `renameSync`,
 `rmSync`, `linkSync`, `openSync`, `closeSync`, `writeSync`, `readSync`, `appendFileSync`),
@@ -1426,7 +1431,7 @@ and G4 have not generated yet (so the hand-written Python each ports is the func
 **The error shape and the writes.** Every fs adapter raises the `OSError` CPython raises for the
 call; a generated `catch` sees it as Node's fs Error, reads its `code` as libuv's errno name, and
 where the TypeScript does not catch it the Python caller gets that very exception
-(`tools/ts2py/tests/g2.rs`, `g2_fs_adapters_answer_like_node`: an uncaught `statSync` failure is
+(`tools/ts2py-bantamkit/tests/g2.rs`, `g2_fs_adapters_answer_like_node`: an uncaught `statSync` failure is
 `os.stat`'s own `FileNotFoundError`, class, errno, strerror, filename, args and text). A crash-safe
 write is the same order it was: `<target>.<pid>.<hex>.tmp` opened `wx` with mode 0o666, written,
 closed, renamed over the target, the temp removed when the rename is refused, and no fsync on
@@ -1587,7 +1592,7 @@ typed arrays whose elements are proven doubles (`Float64Array` as `array('d')`),
 flow from such arrays and from a `typeof x === 'number'` narrowing, and a comparator-to-key lowering
 for `(a, b) => f[b] - f[a] || a - b`. Until then `bantamkit.memory.retrieval` stays the hand-written
 reference, `retrieval.ts` stays as it was, and the J89-2 rules it would use are pinned by
-`tools/ts2py/tests/g3.rs`'s probe.
+`tools/ts2py-bantamkit/tests/g3.rs`'s probe.
 
 **Cost, measured (J89-2, macOS arm64, CPython 3.12.13; n = 9, medians; before = `b3e570be`, after =
 this tree).** Over 20% is flagged. The user paths run over a 307-fact store whose usage ledger holds
@@ -1715,7 +1720,7 @@ names; `W_TYPE` writes reach the generated Map; `GATE_FLOOR` is read at call tim
 ### The store's constructs (#316 G3 U2, J89-4a): ts2py compiles `memory/store.ts`; generating it is J89-4b's
 
 J89-4 counted 86 refusals compiling `runtime-ts/src/memory/store.ts` with the G1/G2/G3 call; J89-4a
-leaves none (`tools/ts2py/tests/g3_store.rs` `j89_4a_store_compiles_with_the_committed_modules`;
+leaves none (`tools/ts2py-bantamkit/tests/g3_store.rs` `j89_4a_store_compiles_with_the_committed_modules`;
 the rules and the 34 adapter rows are in `tools/ts2py/RULES.md`, J89-4a). `store.py` is still the
 hand-written module: no committed generated file changed (`workplan`, the codec, G1, G2, usage and
 retrieval recompile byte for byte), only the runtime and adapter support modules ts2py writes.
@@ -2160,7 +2165,7 @@ expected `memory/store.py` in its top three; the shim imports the codec's conver
 The orchestrator ruled the three findings J89-5a, J89-5b and J89-5c left unruled. The rule for all
 three: **a crash is a bug**, so where CPython raised out of a user path, Python takes Node's answer.
 Generation is not involved, and the generated modules are unchanged. Every Python change is an
-adapter in `tools/ts2py/src/adapters.py`, written out as `_generated/_ts2py_adapters.py`.
+adapter in `tools/ts2py-bantamkit/adapters.py`, written out as `_generated/_ts2py_adapters.py`.
 
 **The queries sidecar, nested.** `parse_json` (the `parseJson` adapter, which reads the sidecar
 for `readSidecar` and for the merge in `writeEntries`) now answers `json.loads`'s `RecursionError`
@@ -2325,7 +2330,7 @@ J89-R found two things that moved with the interpreter's Unicode table.
 `.toLowerCase()`. ts2py's runtime helper raised `TypeError` on any U+03A3 and on 55 code points.
 So on a fact present in both layers, a body, claim or description in ordinary Greek made Python's
 `memory_dream` fail, and the Stop hook's dream child exit 1 (and spawn again on every Stop). Main's
-Python and Node merged it, with the same bytes. The helper (`tools/ts2py/src/runtime.py`) now
+Python and Node merged it, with the same bytes. The helper (`tools/ts2py/python/ts2py/runtime.py`) now
 answers as Node 26.13 does, measured over every code point on CPython 3.11, 3.12, 3.13 and 3.14:
 - **The 55 code points.** CPython 3.11 to 3.13 have no lowercase for any of them (`Cn` there; 28 on
   3.14). Each maps one code point to one code point in Node. The helper maps them to Node's answer

@@ -253,7 +253,7 @@ calls, `max` 181 k calls 0.43 s self, `_js_strict_eq` 1.2 M, `_js_get` 727 k, `_
 
 What changed, semantics untouched:
 
-- **Runtime fast paths** (`tools/ts2py/src/runtime.py`): `===`, `+`, `<` `<=` `>` `>=` take two
+- **Runtime fast paths** (`tools/ts2py/python/ts2py/runtime.py`): `===`, `+`, `<` `<=` `>` `>=` take two
   plain ints inside ±2^53 or two `str` directly; `s[i]`/`xs[i]` with a plain int index;
   `.length` of an ASCII string is `len`; `[...].includes(str)`; `codePointAt(int)`;
   `fromCodePoint(int in 0..0x10FFFF)`; `push`/dispatch on a list. Each tests its own precondition
@@ -329,7 +329,7 @@ with this harness rather than budgeted from either number here.
 
 ### Estimate for #316, by dependency group
 
-**Method (rerunnable: `node tools/ts2py/census.mjs`, after `cd runtime-ts && npm ci`; one JSON
+**Method (rerunnable: `node tools/ts2py-bantamkit/census.mjs`, after `cd runtime-ts && npm ci`; one JSON
 row per group below, then the totals row. Committed by J86-6 and rerun 2026-11-15 under Node
 v26.13.0 at `ac433783` and at `76751838`, where this table was first written: every row below
 reproduced, both times).** A census walked every `runtime-ts/src/*.ts` module with the TypeScript
@@ -505,7 +505,7 @@ modules* → *Pricing and the job budget*.
 reaches the Python caller as CPython's own `OSError` from `open()` (class, errno, strerror,
 filename, args, text), whether a generated `catch` rethrows it or nothing catches it; a generated
 `catch` catches only what JS could have thrown, so a subset refusal is never swallowed
-(`tools/ts2py/tests/g1.rs`, `fs_errors_reach_python_as_cpython_raises_them`).
+(`tools/ts2py-bantamkit/tests/g1.rs`, `fs_errors_reach_python_as_cpython_raises_them`).
 
 **Differential.** `--suite pricing` 84 cases (3 new `load:` cases: a directory, an invalid UTF-8
 byte, a BOM; the directory case crashes the hand-written Python with `IsADirectoryError`, the
@@ -561,7 +561,7 @@ ledger and the log segment*.
 **Adapter measurements** (against Node 26.13): `path.dirname` / `basename` 60,000 random paths
 equal on each of posix and win32; the strict `TextDecoder` 40,000 byte strings equal (33,013
 refused by both); the fs, zlib and TextDecoder adapters a probe of 22 answers over a real directory (plus 17 `dirname` / `basename` samples)
-equal (`tools/ts2py/tests/g2.rs`); `gunzipSync` nine shapes (CPython's `b""` for an empty input is
+equal (`tools/ts2py-bantamkit/tests/g2.rs`); `gunzipSync` nine shapes (CPython's `b""` for an empty input is
 the one the adapter had to refuse); `gzipSync` stays ruled (300 of 300 inputs: Chromium zlib's
 deflate stream is not CPython's at level 6 either); non-ASCII `toLowerCase` over the 1,462 code
 points with a lowercase, 55 differ and are refused.

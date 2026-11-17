@@ -47,7 +47,7 @@ for these modules, and `tools/ts2py` (a Rust compiler built on oxc; its subset i
 | `pricing.py`, `tokenledger.py`, `jobbudget.py` | `pricing.ts`, `tokenledger.ts`, `jobbudget.ts` | 1 — Core (token accounting) | `bantamkit/<name>.py` |
 | `logsegment.py` | `storage/logsegment.ts` | 1 — Core | `bantamkit/storage/logsegment.py` |
 | `eventlog.py` | `eventlog.ts` | 5 — Composition | `bantamkit/eventlog.py` |
-| `_ts2py_runtime.py`, `_ts2py_adapters.py` | `tools/ts2py/src/runtime.py`, `adapters.py` | support, no layer | — |
+| `_ts2py_runtime.py`, `_ts2py_adapters.py` | `tools/ts2py/python/ts2py/runtime.py`, `tools/ts2py-bantamkit/adapters.py` | support, no layer | — |
 
 A generated module stays in the layer its TypeScript source is in; generation moves no
 boundary. Two seams keep it there:
@@ -57,8 +57,8 @@ boundary. Two seams keep it there:
   Python exceptions) and converts values at the crossing. A caller imports the shim, never
   `_generated/`.
 - **The adapters.** An import the compiler does not compile (a hand-written Python module, a
-  Node builtin such as `node:fs`) resolves only through a row in `tools/ts2py/src/adapters.rs`,
-  written in `tools/ts2py/src/adapters.py`; each row names why the Python is the same function
+  Node builtin such as `node:fs`) resolves only through a row in `tools/ts2py-bantamkit/ts2py.toml`,
+  written in `tools/ts2py-bantamkit/adapters.py`; each row names why the Python is the same function
   and the measurement that pins it. An import with no compiled module and no row is a compile
   error. JS semantics the subset needs (`===`, UTF-16 strings, `sort`) are in
   `_ts2py_runtime.py`.

@@ -54,12 +54,12 @@ To change one of these modules, edit the TypeScript, never `_generated/`, and re
 repository root (`~/.cargo/bin/cargo` when cargo is not on PATH):
 
 ```bash
-cargo run --release --manifest-path tools/ts2py/Cargo.toml -- runtime-ts/src/workplan.ts \
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- --config tools/ts2py-bantamkit/ts2py.toml runtime-ts/src/workplan.ts \
   -o runtime-py/src/bantamkit/_generated/workplan.py --runtime-module ._ts2py_runtime
-cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- --config tools/ts2py-bantamkit/ts2py.toml \
   runtime-ts/src/memory/pyyaml.ts runtime-ts/src/memory/factfile.ts \
   --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
-cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- --config tools/ts2py-bantamkit/ts2py.toml \
   runtime-ts/src/pricing.ts runtime-ts/src/jobbudget.ts runtime-ts/src/storage/logsegment.ts \
   runtime-ts/src/eventlog.ts runtime-ts/src/tokenledger.ts runtime-ts/src/memory/usage.ts \
   runtime-ts/src/memory/retrieval.ts runtime-ts/src/memory/store.ts runtime-ts/src/memory/native.ts \
@@ -68,11 +68,16 @@ cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
   runtime-ts/src/storage/coldindex.ts runtime-ts/src/storage/retention.ts \
   runtime-ts/src/storage/tiers.ts runtime-ts/src/storage/index.ts \
   --out-dir runtime-py/src/bantamkit/_generated --runtime-module ._ts2py_runtime
-cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- --config tools/ts2py-bantamkit/ts2py.toml \
   --emit-runtime runtime-py/src/bantamkit/_generated/_ts2py_runtime.py
-cargo run --release --manifest-path tools/ts2py/Cargo.toml -- \
+cargo run --release --manifest-path tools/ts2py/Cargo.toml -- --config tools/ts2py-bantamkit/ts2py.toml \
   --emit-adapters runtime-py/src/bantamkit/_generated/_ts2py_adapters.py
 ```
+
+`--config tools/ts2py-bantamkit/ts2py.toml` is bantamkit's host file (#337): the compiler in
+`tools/ts2py` is its own package and holds no bantamkit name, so the adapter rows, the adapter
+module (`tools/ts2py-bantamkit/adapters.py`) and the names the headers print come from that file.
+Without it every import of a module outside the call is refused.
 
 The output is deterministic: on an unchanged tree these five commands rewrite the same bytes. Two
 gates refuse a stale or hand-edited file: `runtime-py/tests/test_ts2py_fresh.py` (each module's
