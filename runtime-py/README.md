@@ -52,10 +52,13 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
 - **Same answers as the Node server.** The two share a memory store on disk, and every surface
   is compared between both runtimes by a conformance suite (`node tools/conformance/run.mjs
   --all` in the repository), so install whichever your host makes easy. Much of this package's
-  core (the memory store, recall, the fact-file codec, the event log, the token ledger, the work
-  planner) is compiled from the Node server's TypeScript by a Rust compiler in the repository and
-  shipped as plain Python under `bantamkit/_generated/`: `pip install` needs no Rust, and the
-  public Python API is unchanged.
+  core (the memory store, recall, the storage layer, the fact-file codec, the event log, the token
+  ledger, the work planner) is compiled from the Node server's TypeScript by a Rust compiler in
+  the repository and shipped as Python under `bantamkit/_generated/`: `pip install` needs no Rust
+  and no C compiler, and the public Python API is unchanged. On macOS (Apple silicon) and glibc
+  Linux (x86_64, aarch64), CPython 3.11–3.14, pip picks a wheel whose generated modules are also
+  compiled with mypyc (faster, same answers); everywhere else, Windows included, it installs the
+  pure-Python wheel. `build_identity`'s `compiled` field says which one runs.
 - **A Python library for small models, too.** `import bantamkit` lifts small-model agents
   (~1B–8B, any OpenAI-compatible endpoint) — see [Module API](#-module-api).
 

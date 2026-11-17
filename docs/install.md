@@ -93,6 +93,15 @@ cargo run --release --manifest-path tools/ts2py/Cargo.toml -- --config tools/ts2
 module (`tools/ts2py-bantamkit/adapters.py`) and the names the headers print come from that file.
 Without it every import of a module outside the call is refused.
 
+Where each piece lives since J90-PKG: the compiler, its runtime support
+(`tools/ts2py/python/ts2py/runtime.py`, the source of `_ts2py_runtime.py`) and its own tests
+(`cargo test --manifest-path tools/ts2py/Cargo.toml`) in `tools/ts2py/`; bantamkit's half in
+`tools/ts2py-bantamkit/`: the host file (`ts2py.toml`, every adapter row and its reason), the
+adapter module (`adapters.py`, the source of `_ts2py_adapters.py`), the census
+(`census.mjs`) and the tests that compile bantamkit's own modules
+(`cargo test --manifest-path tools/ts2py-bantamkit/Cargo.toml`). The rules each row was measured
+under stay in `tools/ts2py/RULES.md`.
+
 The output is deterministic: on an unchanged tree these five commands rewrite the same bytes. Two
 gates refuse a stale or hand-edited file: `runtime-py/tests/test_ts2py_fresh.py` (each module's
 `source-sha256` header against its TypeScript, no Rust needed) and
@@ -104,7 +113,9 @@ and [Porting → Generated modules](porting.md).
 ## Compiled wheels and the pure fallback
 
 Since #316 G4 (J90-P8), `pip install bantamkit` picks one of two builds of the
-same code, by the platform tag pip matches (PEP 425: the most specific compatible tag wins):
+same code, by the platform tag pip matches (PEP 425: the most specific compatible tag wins).
+Neither needs Rust or a C compiler on the installing machine: the compiled wheel ships its
+extensions built.
 
 | platform | CPython | wheel |
 |---|---|---|

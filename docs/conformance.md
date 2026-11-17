@@ -190,6 +190,13 @@ throws a `TypeError` costs neither the child's exit nor the sweep's record (red 
 The temp cases plant one temp older than the lock's stale window, one fresh, one of a name the writer
 does not write, one with no pid and a directory, so a sweep that removes too much fails as surely as
 one that removes nothing.
+**J90-P7 to J90-P8F added two axes: the build and the interpreter.** The same `--all` is a gate on
+the mypyc-compiled build (the extensions beside the `.py` files) as well as the pure one, and on
+CPython 3.11, 3.12, 3.13 and 3.14 through `--python <venv>/bin/python`
+(`docs/install.md`, the per-interpreter gate). Since J90-P8F, 3.13 and 3.14 give 3.12's answers,
+which are Node's, wherever bantamkit can pin the library. The cases each interpreter moved, and
+what still differs by interpreter (the Unicode database revision, for one), are in
+`docs/porting.md`, *CPython 3.13 and 3.14 answer 3.12's answers*.
 
 `cli`, `mcpreport`, `memorycli` and `statusline` are the odd ones out and deliberately so:
 every other suite compares two library functions, and that comparison cannot see which stream

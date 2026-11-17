@@ -18,7 +18,7 @@ transferred fine. The layer split makes that seam physical
 
 | layer | owns | lives in |
 |---|---|---|
-| **1 — Core** | deterministic mechanics, proven cross-model: agent loop, gate control flow, memory store, filegraph ledger/cache, token accounting, dependency-graph batching | `agent.py`, `memory/` (most of it compiled from TypeScript into `_generated/`: [Generated modules](#generated-modules-where-they-sit)), `filegraph.py`, gate mechanics in `critique.py` / `structured.py`, `textutil.py`, `workplan.ts` (the Kahn batcher: pure computation over the nodes it is handed — `workplan.ts` imports nothing, and the Python compiled from it, `_generated/workplan.py`, imports only `_ts2py_runtime`; the shim `workplan.py` adds `typing.Any`. Read off the files rather than asserted by a gate; see the note below) |
+| **1 — Core** | deterministic mechanics, proven cross-model: agent loop, gate control flow, memory store, filegraph ledger/cache, token accounting, dependency-graph batching | `agent.py`, `memory/` (most of it compiled from TypeScript into `_generated/`: [Generated modules](#generated-modules-where-they-sit)), `storage/` (the lock, the log segment, the hot and cold indexes, retention and the tiers: every module a shim over `_generated/`), `filegraph.py`, gate mechanics in `critique.py` / `structured.py`, `textutil.py`, `workplan.ts` (the Kahn batcher: pure computation over the nodes it is handed — `workplan.ts` imports nothing, and the Python compiled from it, `_generated/workplan.py`, imports only `_ts2py_runtime`; the shim `workplan.py` adds `typing.Any`. Read off the files rather than asserted by a gate; see the note below) |
 | **2 — Contract** | everything the model reads or writes: instruction/feedback/evidence wording (data) + outbound parsing (code) | `contract.py` + `assets/contracts/`; rubrics, skills, tool schemas in `assets/` |
 | **3 — Transport** | wire protocol, retries, timeouts, (future) server capability detection | `client.py` |
 | **4 — Policy/Profile** | tunables as named data: turn budgets, retry caps, evidence budgets | `profile.py` + `assets/profiles/` |
@@ -46,6 +46,8 @@ for these modules, and `tools/ts2py` (a Rust compiler built on oxc; its subset i
 | `store.py`, `native.py`, `retrieval.py`, `usage.py`, `queries.py`, `layers.py`, `dream.py`, `component.py` | `memory/*.ts`, same names | 1 — Core | `bantamkit/memory/<name>.py` |
 | `pricing.py`, `tokenledger.py`, `jobbudget.py` | `pricing.ts`, `tokenledger.ts`, `jobbudget.ts` | 1 — Core (token accounting) | `bantamkit/<name>.py` |
 | `logsegment.py` | `storage/logsegment.ts` | 1 — Core | `bantamkit/storage/logsegment.py` |
+| `lock.py`, `hotindex.py`, `coldindex.py`, `retention.py`, `tiers.py` | `storage/*.ts`, same names | 1 — Core (the storage layer, #204) | `bantamkit/storage/<name>.py` |
+| `index.py` | `storage/index.ts` (the re-export table) | 1 — Core | none: `bantamkit/storage/__init__.py` stays the hand-written package file over the shims |
 | `eventlog.py` | `eventlog.ts` | 5 — Composition | `bantamkit/eventlog.py` |
 | `_ts2py_runtime.py`, `_ts2py_adapters.py` | `tools/ts2py/python/ts2py/runtime.py`, `tools/ts2py-bantamkit/adapters.py` | support, no layer | — |
 
@@ -62,6 +64,12 @@ boundary. Two seams keep it there:
   and the measurement that pins it. An import with no compiled module and no row is a compile
   error. JS semantics the subset needs (`===`, UTF-16 strings, `sort`) are in
   `_ts2py_runtime.py`.
+
+**The compiled build.** The same 22 modules and `_ts2py_runtime.py` are also compiled with mypyc
+into the platform wheels on PyPI (`BANTAMKIT_MYPYC=1` in `runtime-py/hatch_build.py`,
+`tools/release/build-wheels.sh`); `_ts2py_adapters.py` stays interpreted. Compiling moves no
+layer and changes no answer: the conformance suites run against both builds
+([Install → Compiled wheels and the pure fallback](install.md#compiled-wheels-and-the-pure-fallback)).
 
 To change one of these modules, edit the TypeScript and regenerate
 ([Install → Working on a generated module](install.md#working-on-a-generated-module));

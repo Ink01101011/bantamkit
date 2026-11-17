@@ -68,6 +68,11 @@ TypeScript change is both halves — plus a conformance case that compares the t
 for any other feature. A shim or adapter change is still Python-side work and must keep the
 two answers identical.
 
+The compiled build is a gate too (#316 G4, J90-P7/P8): a change that reaches `_generated/` must keep
+pytest and `--all` green with the mypyc extensions beside the `.py` files as well as on the pure
+build (`docs/porting.md`, *The generated Python compiled with mypyc*; the wheels:
+`docs/install.md`, *Compiled wheels and the pure fallback*).
+
 ## Shift-work orchestration policy
 
 Any multi-unit orchestration — ≥2 planned units, or any

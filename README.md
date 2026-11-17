@@ -46,10 +46,12 @@ Then restart the host (in Claude Code, open a new session) and ask the agent to 
   files, and every surface is compared between both runtimes by a conformance suite
   (`node tools/conformance/run.mjs --all`). The core logic is written once, in TypeScript: the
   Python modules in `bantamkit/_generated/` (the memory store, recall, layers and dream, the
-  fact-file codec, the event log, the token ledger and the work planner among them) are compiled
-  from it by `tools/ts2py`, a Rust compiler, and committed, so installing from PyPI or npm needs
-  no Rust. The public Python API is unchanged, and where the two runtimes still deliberately
-  differ is listed in [docs/porting.md](docs/porting.md).
+  storage layer's lock, indexes, retention and tiers, the fact-file codec, the event log, the
+  token ledger and the work planner among them) are compiled from it by `tools/ts2py`, a Rust
+  compiler, and committed, so installing from PyPI or npm needs no Rust. The public Python API is
+  unchanged, and where the two runtimes still deliberately differ is listed in
+  [docs/porting.md](docs/porting.md). A few edge-case Python answers moved to Node's on the way:
+  [the 1.0.0 migration note](docs/python-1.0.0-migration.md).
 - **A Python library for small models, too.** `pip install bantamkit` lifts small-model agents
   (~1B–8B, any OpenAI-compatible endpoint): malformed output, unreviewed answers, forgotten
   context and runaway loops are absorbed by code, and a bundled eval suite measures the uplift.
@@ -133,6 +135,12 @@ bantamkit-mcp --install claude          # or claude-desktop, copilot, cursor
 needs the network. With no network at all, `pip download` a wheelhouse on a machine with the
 same OS, CPU architecture and Python version, then `pip install --no-index --find-links`:
 [steps](runtime-py/README.md#install-once-run-offline).
+
+pip picks a mypyc-compiled wheel on macOS (Apple silicon) and on glibc Linux (x86_64, aarch64)
+for CPython 3.11–3.14, and the pure-Python `py3-none-any` wheel everywhere else, Windows
+included. Both give the same answers; the compiled one is faster. Neither needs Rust or a C
+compiler to install. `build_identity` says which one is running (`compiled`):
+[compiled wheels and the pure fallback](docs/install.md#compiled-wheels-and-the-pure-fallback).
 
 ## 🔌 Connect to a host
 
@@ -402,6 +410,7 @@ Measured on the bundled 22-task suite across four models, 528 runs each. Numbers
 | [Skills from experience](docs/skills.md) | `skill_propose`: skills bantamkit mines from repeated, successful work, the `[skill]` layer, promotion and self-improvement |
 | [Shift-work](docs/shiftwork.md) | Checkpoint contract and clock-in/clock-out driver (experimental) |
 | [Porting](docs/porting.md) | The Node port, `PyScalar`, and where the two runtimes deliberately differ |
+| [Python 1.0.0 migration](docs/python-1.0.0-migration.md) | Edge-case Python answers that moved to Node's in 1.0.0, each with its conformance case ([CHANGELOG](CHANGELOG.md)) |
 | [Conformance](docs/conformance.md) | The two-runtime diff harness and what a `ruling:` pins |
 | [1.0.0 roadmap](docs/roadmap-1.0.0.md) | One TypeScript source, npm and PyPI targets, and release criteria |
 | [Releasing to npm](docs/release-npm.md) | What ships and the pre-publish checklist |

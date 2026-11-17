@@ -3111,6 +3111,32 @@ already pinned: the ruled gzip row of the status line (207 bytes, *J90-P4*) and 
 sentence of five native facts (`YAML_REASONS_PY` / `YAML_REASONS_NODE`, `storage-index`); the same
 files are skipped on both sides.
 
+### The platform wheels and the compiler package (#316 G4, J90-P8; #337, J90-PKG)
+
+**The compiled build ships (J90-P8).** `runtime-py/hatch_build.py` compiles J90-P7's set, the
+runtime and the 22 generated modules (`_ts2py_adapters.py` stays interpreted), with mypyc 2.4.1
+when `BANTAMKIT_MYPYC=1` is set, and tags the wheel for its interpreter and platform; unset, the
+build is the pure `py3-none-any` wheel, byte for byte what it was before the hook, and any other
+value is refused. `tools/release/build-wheels.sh` builds the set from the sdist: macOS arm64 on
+this Mac with python-build-standalone interpreters (`uv`), manylinux x86_64 and aarch64 in
+cibuildwheel's `manylinux_2_28` images under local Docker; `tools/release/smoke-wheel.sh`
+installs one wheel and drives it; `tools/release/publish.sh` builds, checks and uploads the
+whole set. `build_identity`'s `compiled` field tells the two Python builds apart (the
+divergence row above). Steps and the platform matrix: `docs/install.md`, *Compiled wheels and
+the pure fallback*. No answer moved: the suites run against both builds.
+
+**The compiler is its own package (J90-PKG).** `tools/ts2py` holds no bantamkit name. The
+runtime's source is `tools/ts2py/python/ts2py/runtime.py`; bantamkit's half is
+`tools/ts2py-bantamkit/`: `ts2py.toml` (the host file, every adapter row with its reason,
+passed with `--config`), `adapters.py` (the source of `_ts2py_adapters.py`), `census.mjs` and the
+cargo tests that compile bantamkit's modules. The rules stay in `tools/ts2py/RULES.md`. J90-D
+repointed the comments that still named `tools/ts2py/src/adapters.rs` and changed the
+`shipped_note` line to name the moved sources; regenerating rewrote that one comment line in
+`_ts2py_runtime.py` and the header of `_ts2py_adapters.py`, and no other byte.
+
+**What a Python user sees change** across #314, #315 and #316 G1-G4, entry by entry with
+before, after and Node's answer: [the 1.0.0 Python migration note](python-1.0.0-migration.md).
+
 ### CPython 3.13 and 3.14 answer 3.12's answers (#316 G4, J90-P8F)
 
 J90-P8 installed every wheel it built and ran the suites under each interpreter, which put 3.13

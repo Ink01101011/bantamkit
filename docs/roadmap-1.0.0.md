@@ -669,13 +669,18 @@ hand-written). The usage ledger's far-future folded line now weighs Infinity in 
 The user-facing note #333 asks the 1.0.0 release notes to carry, kept here until #318 writes them:
 
 > **Part of the Python package is now generated from TypeScript.** bantamkit's core logic (the
-> memory store, recall, layers, dream, the fact-file codec, the event log, the token ledger,
-> pricing and the work planner) is written once, in `runtime-ts/src`, and a Rust compiler in the
-> repository, `tools/ts2py`, compiles it into the Python modules under `bantamkit/_generated/`.
-> Those files ship in the wheel, so `pip install bantamkit` and `npx bantamkit-mcp` need no
-> Rust. The public Python API is unchanged: each generated module sits behind a hand-written
-> module under its old name. Where the two runtimes still deliberately differ is listed in
+> memory store, recall, layers, dream, the storage layer's lock, indexes, retention and tiers,
+> the fact-file codec, the event log, the token ledger, pricing and the work planner) is written
+> once, in `runtime-ts/src`, and a Rust compiler in the repository, `tools/ts2py`, compiles it
+> into the Python modules under `bantamkit/_generated/`. Those files ship in the wheel, so
+> `pip install bantamkit` and `npx bantamkit-mcp` need no Rust. On macOS (Apple silicon) and
+> glibc Linux (x86_64, aarch64), CPython 3.11–3.14, pip installs a wheel whose generated modules
+> are also compiled with mypyc; everywhere else, Windows included, the pure-Python wheel
+> (`build_identity`'s `compiled` field says which). The public Python API is unchanged: each
+> generated module sits behind a hand-written module under its old name. A few edge-case Python
+> answers moved to Node's: see `CHANGELOG.md`, *Changed (Python)*, and
+> `docs/python-1.0.0-migration.md`. Where the two runtimes still deliberately differ is listed in
 > `docs/porting.md`.
 
 #333 asks for this pass to be repeated once more after the last #316 group lands, before #318
-publishes.
+publishes. The G3 pass was J89-D; the G4 pass, with the migration note, is J90-D.

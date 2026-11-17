@@ -4,7 +4,9 @@ Issue #204, milestone 0.37.0-beta, built in job69 (commits `3fa3f06`..`f780012`,
 J69-8). Spec: `docs/superpowers/specs/2026-10-15-storage-layer-design.md`. Both runtimes carry
 the same layer, `runtime-py/src/bantamkit/storage/` and `runtime-ts/src/storage/`, and six
 conformance suites compare them (`storage-log`, `storage-lock`, `storage-index`, `storage-cold`,
-`storage-retention`, `storage-tiers`; see `docs/conformance.md`).
+`storage-retention`, `storage-tiers`; see `docs/conformance.md`). Since #316 G4 the Python
+modules are shims over `bantamkit/_generated/`, compiled from the TypeScript by `tools/ts2py`
+(`docs/porting.md`, *The lock and the hot index* and *The cold index, retention and the tiers*).
 
 **Files stay the source of truth.** Fact Markdown and checkpoint JSON are still what you edit,
 diff and commit. Every index below is derived: delete it and the next reader rebuilds it, with
