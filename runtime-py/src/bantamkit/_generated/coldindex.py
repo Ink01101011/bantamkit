@@ -5,6 +5,8 @@
 
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
+    _ClassVar,
+    _Final,
     _js_add,
     _js_array,
     _js_catch,
@@ -17,6 +19,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_every_string,
     _js_floor,
     _js_get,
+    _js_instanceof,
     _js_json_parse,
     _js_json_stringify,
     _js_list_at,
@@ -50,10 +53,12 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_strict_eq,
     _js_truthy,
     _js_typeof,
+    _JsAny,
     _JsError,
     _JsMap,
     _JsObject,
     _JsSet,
+    _mypyc_attr,
 )
 from ._ts2py_adapters import cmp_codepoint, cold_error_text, coldFs, mkdir_sync, path_basename, path_dirname, path_join, process_pid, readdir_sync, rename_sync, rm_sync, unlink_sync, write_file_sync
 from .lock import exclusive, remove_stale_temps
@@ -62,21 +67,22 @@ from .retrieval import FIELD_BOOST, tokenize_v2
 __all__ = ["COLD_NOT_JSON", "COLD_VERSION", "ColdIndex", "ColdIndexError"]
 
 
-_JS_RE_0 = _js_re.compile("^[0-9]{6}\\Z", _js_re.ASCII)
-_JS_RE_1 = _js_re.compile("[/\\\\]", _js_re.ASCII)
-_JS_RE_2 = _js_re.compile("^(seg-[^\\n\\r\\u2028\\u2029]*|shard-[0-9]{2})\\.json\\Z", _js_re.ASCII)
+_JS_RE_0: _Final = _js_re.compile("^[0-9]{6}\\Z", _js_re.ASCII)
+_JS_RE_1: _Final = _js_re.compile("[/\\\\]", _js_re.ASCII)
+_JS_RE_2: _Final = _js_re.compile("^(seg-[^\\n\\r\\u2028\\u2029]*|shard-[0-9]{2})\\.json\\Z", _js_re.ASCII)
 
 
-COLD_VERSION = 1
+COLD_VERSION: _JsAny = 1
 
 
-_ID = _JS_RE_0
+_ID: _JsAny = _JS_RE_0
 
 
+@_mypyc_attr(native_class=False)
 class ColdIndexError(_JsError):
-    _js_name = "ColdIndexError"
-    _js_own = frozenset({"name"})
-    _js_own_methods = frozenset()
+    _js_name: _ClassVar[str] = "ColdIndexError"
+    _js_own: _ClassVar[frozenset[str]] = frozenset({"name"})
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset()
 
     def __init__(self, *args):
         _JsError.__init__(self, *args)
@@ -87,7 +93,7 @@ def _is_obj(v):
     return v is not None and _js_typeof(v) == "object" and not isinstance(v, list)
 
 
-COLD_NOT_JSON = "the file is not JSON"
+COLD_NOT_JSON: _JsAny = "the file is not JSON"
 
 
 def _read_json(p):
@@ -122,10 +128,11 @@ def _err_message(e):
     return cold_error_text(e)
 
 
+@_mypyc_attr(native_class=False)
 class ColdIndex(_JsObject):
-    _js_name = "ColdIndex"
-    _js_own = frozenset({"addDocs", "allDocs", "compact", "dir", "doc", "docs", "lockPath", "manifest", "manifestPath", "name", "owners", "publish", "query", "reset", "segment", "segmentPath", "shard", "shardPath", "sweepTemps", "tables", "writeShards"})
-    _js_own_methods = frozenset({"addDocs", "allDocs", "compact", "doc", "docs", "lockPath", "manifest", "owners", "publish", "query", "reset", "segment", "segmentPath", "shard", "shardPath", "sweepTemps", "tables", "writeShards"})
+    _js_name: _ClassVar[str] = "ColdIndex"
+    _js_own: _ClassVar[frozenset[str]] = frozenset({"addDocs", "allDocs", "compact", "dir", "doc", "docs", "lockPath", "manifest", "manifestPath", "name", "owners", "publish", "query", "reset", "segment", "segmentPath", "shard", "shardPath", "sweepTemps", "tables", "writeShards"})
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset({"addDocs", "allDocs", "compact", "doc", "docs", "lockPath", "manifest", "owners", "publish", "query", "reset", "segment", "segmentPath", "shard", "shardPath", "sweepTemps", "tables", "writeShards"})
 
     def __init__(self, name, home, cold_dir=_JS_UNDEFINED, *_):
         if cold_dir is _JS_UNDEFINED:
@@ -224,67 +231,13 @@ class ColdIndex(_JsObject):
         return _js_map_entries(terms)
 
     def query(self, terms):
-        owners = self.owners()
-        if _js_strict_eq(_js_size(owners), 0):
-            return []
-        by_shard = _JsMap()
-        for t in _js_m_sort([*_JsSet(terms)], cmp_codepoint):
-            i = shard_of(t)
-            list_ = (by_shard._entries.get(i, _JS_UNDEFINED) if type(by_shard) is _JsMap and type(i) is str else _js_m_get(by_shard, i))
-            if list_ is _JS_UNDEFINED:
-                list_ = []
-                _js_m_set(by_shard, i, list_)
-            _js_m_push(list_, t)
-        sums = _JsMap()
-        for i in _js_sort_keyed([*_js_m_keys(by_shard)], lambda a, *_: a, False, lambda a, b, *_: _js_num(_js_num(a) - _js_num(b))):
-            table = self.shard(i)
-            for t in (by_shard._entries.get(i, _JS_UNDEFINED) if type(by_shard) is _JsMap and type(i) is str else _js_m_get(by_shard, i)):
-                for name, seg, _js_hole, tf in _js_rows(_js_coalesce_value((table._entries.get(t, _JS_UNDEFINED) if type(table) is _JsMap and type(t) is str else _js_m_get(table, t)), []), 4, (0, 1, 3)):
-                    if (_js_h1 == seg if type(_js_h1 := (owners._entries.get(name, _JS_UNDEFINED) if type(owners) is _JsMap and type(name) is str else _js_m_get(owners, name))) is type(seg) is str else _js_strict_eq(_js_h1, seg)):
-                        _js_m_set(sums, name, (_js_h2 + tf if type(_js_h2 := _js_coalesce_value((sums._entries.get(name, _JS_UNDEFINED) if type(sums) is _JsMap and type(name) is str else _js_m_get(sums, name)), 0)) is int and type(tf) is int and -4503599627370496 <= tf <= 4503599627370496 and -4503599627370496 <= _js_h2 <= 4503599627370496 else _js_add(_js_h2, tf)))
-        ranked = _js_m_sort([*_js_m_keys(sums)], cmp_codepoint)
-        _js_sort_keyed(ranked, lambda a, *_: _js_m_get(sums, a), True, lambda a, b, *_: _js_num(_js_num(_js_m_get(sums, b)) - _js_num(_js_m_get(sums, a))))
-        return [[n, _js_m_get(owners, n), _js_m_get(sums, n)] for n in ranked]
+        return _js_method_ColdIndex_query(self, terms)
 
     def addDocs(self, docs):
-        def _js_fn5(*_):
-            self.sweepTemps()
-            manifest = self.manifest()
-            id_ = _next_id(manifest)
-            self.publish(manifest, id_, docs, False)
-            return id_
-        return exclusive(self.lockPath(), _js_fn5)
+        return _js_method_ColdIndex_addDocs(self, docs)
 
     def compact(self, keep=_JS_UNDEFINED):
-        if keep is _JS_UNDEFINED:
-            keep = None
-        def _js_fn6(*_):
-            self.sweepTemps()
-            manifest = self.manifest()
-            old = [_js_get(s, "id") for s in _js_array("map", _js_get(manifest, "segments"))]
-            if len(old) == 0 or len(old) == 1 and keep is None:
-                return None
-            merged = _JsMap()
-            for seg in old:
-                for n, d in _js_rows(self.segment(seg), 2, (0, 1)):
-                    _js_m_set(merged, n, d)
-            if keep is not None:
-                kept = _JsMap(_js_m_filter([*merged], lambda _js_arg7, *_: (lambda _, d: keep(d))(*_js_destructure(_js_arg7, 2))))
-                if len(old) == 1 and _js_strict_eq(_js_size(kept), _js_size(merged)):
-                    return None
-                merged = kept
-            id_ = _next_id(manifest)
-            self.publish(manifest, id_, merged, True)
-            for seg in old:
-                _js_caught8 = None
-                try:
-                    unlink_sync(self.segmentPath(seg))
-                except Exception as _js_error8:
-                    _js_caught8 = _js_catch(_js_error8)
-                if _js_caught8 is not None:
-                    pass
-            return id_
-        return exclusive(self.lockPath(), _js_fn6)
+        return _js_method_ColdIndex_compact(self, keep)
 
     def reset(self):
         names = _JS_UNDEFINED
@@ -356,7 +309,7 @@ class ColdIndex(_JsObject):
             except Exception as _js_error11:
                 _js_caught11 = _js_catch(_js_error11)
             if _js_caught11 is not None:
-                if not isinstance(_js_caught11, ColdIndexError):
+                if not _js_instanceof(_js_caught11, ColdIndexError):
                     raise _js_caught11
                 out.append(_JsMap())
             i = _js_num(i + 1)
@@ -380,6 +333,72 @@ class ColdIndex(_JsObject):
             _write(self.shardPath(i), dump_index({"terms": terms}))
             i = _js_num(i + 1)
         return _JS_UNDEFINED
+
+
+def _js_method_ColdIndex_query(self, terms):
+    owners = self.owners()
+    if _js_strict_eq(_js_size(owners), 0):
+        return []
+    by_shard = _JsMap()
+    for t in _js_m_sort([*_JsSet(terms)], cmp_codepoint):
+        i = shard_of(t)
+        list_ = (by_shard._entries.get(i, _JS_UNDEFINED) if type(by_shard) is _JsMap and type(i) is str else _js_m_get(by_shard, i))
+        if list_ is _JS_UNDEFINED:
+            list_ = []
+            _js_m_set(by_shard, i, list_)
+        _js_m_push(list_, t)
+    sums = _JsMap()
+    for i in _js_sort_keyed([*_js_m_keys(by_shard)], lambda a, *_: a, False, lambda a, b, *_: _js_num(_js_num(a) - _js_num(b))):
+        table = self.shard(i)
+        for t in (by_shard._entries.get(i, _JS_UNDEFINED) if type(by_shard) is _JsMap and type(i) is str else _js_m_get(by_shard, i)):
+            for name, seg, _js_hole, tf in _js_rows(_js_coalesce_value((table._entries.get(t, _JS_UNDEFINED) if type(table) is _JsMap and type(t) is str else _js_m_get(table, t)), []), 4, (0, 1, 3)):
+                if (_js_h1 == seg if type(_js_h1 := (owners._entries.get(name, _JS_UNDEFINED) if type(owners) is _JsMap and type(name) is str else _js_m_get(owners, name))) is type(seg) is str else _js_strict_eq(_js_h1, seg)):
+                    _js_m_set(sums, name, (_js_h2 + tf if type(_js_h2 := _js_coalesce_value((sums._entries.get(name, _JS_UNDEFINED) if type(sums) is _JsMap and type(name) is str else _js_m_get(sums, name)), 0)) is int and type(tf) is int and -4503599627370496 <= tf <= 4503599627370496 and -4503599627370496 <= _js_h2 <= 4503599627370496 else _js_add(_js_h2, tf)))
+    ranked = _js_m_sort([*_js_m_keys(sums)], cmp_codepoint)
+    _js_sort_keyed(ranked, lambda a, *_: _js_m_get(sums, a), True, lambda a, b, *_: _js_num(_js_num(_js_m_get(sums, b)) - _js_num(_js_m_get(sums, a))))
+    return [[n, _js_m_get(owners, n), _js_m_get(sums, n)] for n in ranked]
+
+
+def _js_method_ColdIndex_addDocs(self, docs):
+    def _js_fn5(*_):
+        self.sweepTemps()
+        manifest = self.manifest()
+        id_ = _next_id(manifest)
+        self.publish(manifest, id_, docs, False)
+        return id_
+    return exclusive(self.lockPath(), _js_fn5)
+
+
+def _js_method_ColdIndex_compact(self, keep=_JS_UNDEFINED):
+    if keep is _JS_UNDEFINED:
+        keep = None
+    def _js_fn6(*_):
+        self.sweepTemps()
+        manifest = self.manifest()
+        old = [_js_get(s, "id") for s in _js_array("map", _js_get(manifest, "segments"))]
+        if len(old) == 0 or len(old) == 1 and keep is None:
+            return None
+        merged = _JsMap()
+        for seg in old:
+            for n, d in _js_rows(self.segment(seg), 2, (0, 1)):
+                _js_m_set(merged, n, d)
+        if keep is not None:
+            kept = _JsMap(_js_m_filter([*merged], lambda _js_arg7, *_: (lambda _, d: keep(d))(*_js_destructure(_js_arg7, 2))))
+            if len(old) == 1 and _js_strict_eq(_js_size(kept), _js_size(merged)):
+                return None
+            merged = kept
+        id_ = _next_id(manifest)
+        self.publish(manifest, id_, merged, True)
+        for seg in old:
+            _js_caught8 = None
+            try:
+                unlink_sync(self.segmentPath(seg))
+            except Exception as _js_error8:
+                _js_caught8 = _js_catch(_js_error8)
+            if _js_caught8 is not None:
+                pass
+        return id_
+    return exclusive(self.lockPath(), _js_fn6)
 
 
 def _owns_name__typed(n):

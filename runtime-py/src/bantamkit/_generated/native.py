@@ -5,6 +5,7 @@
 
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
+    _ClassVar,
     _js_and,
     _js_array,
     _js_catch,
@@ -13,6 +14,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_destructure,
     _js_get,
     _js_in,
+    _js_instanceof,
     _js_invoke,
     _js_is_nullish,
     _js_len,
@@ -36,9 +38,11 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_truthy,
     _js_typeof,
     _js_units_slice,
+    _JsAny,
     _JsMap,
     _JsObject,
     _JsSet,
+    _mypyc_attr,
 )
 from ._ts2py_adapters import as_py_os_error, BantamError, cmp_codepoint, homedir, parse_native, process_env, py_join, PyOSError, readdir_sync, stat_sync
 from .hotindex import DUPLICATE, INDEX_DIR_ENV, HotIndex
@@ -47,19 +51,20 @@ from .store import MemoryStore, one_line, pool_of, pool_without
 __all__ = ["NATIVE_INDEX", "NATIVE_LAYER", "NativeStore"]
 
 
-NATIVE_LAYER = "native"
+NATIVE_LAYER: _JsAny = "native"
 
 
-NATIVE_INDEX = "MEMORY.md"
+NATIVE_INDEX: _JsAny = "MEMORY.md"
 
 
-_EMPTY = _JsSet()
+_EMPTY: _JsAny = _JsSet()
 
 
+@_mypyc_attr(native_class=False)
 class NativeStore(_JsObject):
-    _js_name = "NativeStore"
-    _js_own = frozenset({"archivedRecall", "candidates", "count", "hot", "index", "indexed", "listing", "lookup", "named", "pool", "present", "read", "resolve", "root"})
-    _js_own_methods = frozenset({"archivedRecall", "candidates", "count", "index", "indexed", "listing", "lookup", "named", "pool", "present", "read", "resolve"})
+    _js_name: _ClassVar[str] = "NativeStore"
+    _js_own: _ClassVar[frozenset[str]] = frozenset({"archivedRecall", "candidates", "count", "hot", "index", "indexed", "listing", "lookup", "named", "pool", "present", "read", "resolve", "root"})
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset({"archivedRecall", "candidates", "count", "index", "indexed", "listing", "lookup", "named", "pool", "present", "read", "resolve"})
 
     def __init__(self, directory, *_):
         self.root = _JS_UNDEFINED
@@ -91,7 +96,7 @@ class NativeStore(_JsObject):
         except Exception as _js_error1:
             _js_caught1 = _js_catch(_js_error1)
         if _js_caught1 is not None:
-            if isinstance(_js_caught1, BantamError) or isinstance(_js_caught1, PyOSError):
+            if _js_instanceof(_js_caught1, BantamError) or _js_instanceof(_js_caught1, PyOSError):
                 raise _js_caught1
             if _js_caught1 is not None and _js_typeof(_js_caught1) == "object" and _js_in("code", _js_caught1):
                 raise _js_throw(as_py_os_error(_js_caught1, self.root))
@@ -99,18 +104,7 @@ class NativeStore(_JsObject):
         return idx
 
     def listing(self):
-        names = _JS_UNDEFINED
-        _js_caught2 = None
-        try:
-            names = readdir_sync(self.root)
-        except Exception as _js_error2:
-            _js_caught2 = _js_catch(_js_error2)
-        if _js_caught2 is not None:
-            code = _js_get(_js_caught2, "code")
-            if code == "ENOENT" or code == "ENOTDIR":
-                return []
-            raise _js_throw(as_py_os_error(_js_caught2, self.root))
-        return [py_join(self.root, n) for n in _js_m_sort([n for n in _js_array("filter", names) if _js_truthy(_js_and(_js_m_endsWith(n, ".md") and n != NATIVE_INDEX, lambda: _is_file(py_join(self.root, n))))], cmp_codepoint)]
+        return _js_method_NativeStore_listing(self)
 
     def read(self, p):
         stored = parse_native(p)
@@ -130,7 +124,7 @@ class NativeStore(_JsObject):
             except Exception as _js_error3:
                 _js_caught3 = _js_catch(_js_error3)
             if _js_caught3 is not None:
-                if not (isinstance(_js_caught3, BantamError) or isinstance(_js_caught3, PyOSError)):
+                if not (_js_instanceof(_js_caught3, BantamError) or _js_instanceof(_js_caught3, PyOSError)):
                     raise _js_caught3
                 if not _js_is_nullish(skipped):
                     _js_m_push(skipped, {"file": file, "reason": _js_get(_js_caught3, "message")})
@@ -166,10 +160,7 @@ class NativeStore(_JsObject):
         return pool_of(self.candidates(_JS_UNDEFINED, shadow), q, every_row)
 
     def resolve(self, pool, row):
-        if _js_get(pool, "facts") is not None:
-            return _js_get(_js_get(pool, "facts"), row)
-        name = _js_get(_js_get(pool, "names"), row)
-        return self.named(_js_or(_js_get(_js_get(pool, "files"), row), lambda: _js_str(name) + ".md"), name)
+        return _js_method_NativeStore_resolve(self, pool, row)
 
     def named(self, file, name):
         fact = _JS_UNDEFINED
@@ -179,32 +170,58 @@ class NativeStore(_JsObject):
         except Exception as _js_error4:
             _js_caught4 = _js_catch(_js_error4)
         if _js_caught4 is not None:
-            if isinstance(_js_caught4, BantamError) or isinstance(_js_caught4, PyOSError):
+            if _js_instanceof(_js_caught4, BantamError) or _js_instanceof(_js_caught4, PyOSError):
                 return None
             raise _js_caught4
         return fact if _js_strict_eq(_js_get(fact, "name"), name) else None
 
     def lookup(self, name, _stamp=_JS_UNDEFINED, skipped=_JS_UNDEFINED):
-        if _stamp is _JS_UNDEFINED:
-            _stamp = False
-        idx = self.indexed()
-        if idx is None:
-            return None
-        if skipped is not _JS_UNDEFINED:
-            for s in _skipped_of(idx):
-                _js_m_push(skipped, s)
-        if not _js_m_has(_js_invoke(idx, "names"), name):
-            return None
-        file = _js_invoke(idx, "fileOf", name)
-        hit = None if file is None else self.named(file, name)
-        if hit is not None:
-            return hit
-        return _js_coalesce_value(_js_m_find(self.candidates(), lambda f, *_: _js_strict_eq(_js_get(f, "name"), name)), None)
+        return _js_method_NativeStore_lookup(self, name, _stamp, skipped)
 
     def archivedRecall(self, _query, _k, _exclude=_JS_UNDEFINED):
         if _exclude is _JS_UNDEFINED:
             _exclude = []
         return []
+
+
+def _js_method_NativeStore_listing(self):
+    names = _JS_UNDEFINED
+    _js_caught2 = None
+    try:
+        names = readdir_sync(self.root)
+    except Exception as _js_error2:
+        _js_caught2 = _js_catch(_js_error2)
+    if _js_caught2 is not None:
+        code = _js_get(_js_caught2, "code")
+        if code == "ENOENT" or code == "ENOTDIR":
+            return []
+        raise _js_throw(as_py_os_error(_js_caught2, self.root))
+    return [py_join(self.root, n) for n in _js_m_sort([n for n in _js_array("filter", names) if _js_truthy(_js_and(_js_m_endsWith(n, ".md") and n != NATIVE_INDEX, lambda: _is_file(py_join(self.root, n))))], cmp_codepoint)]
+
+
+def _js_method_NativeStore_resolve(self, pool, row):
+    if _js_get(pool, "facts") is not None:
+        return _js_get(_js_get(pool, "facts"), row)
+    name = _js_get(_js_get(pool, "names"), row)
+    return self.named(_js_or(_js_get(_js_get(pool, "files"), row), lambda: _js_str(name) + ".md"), name)
+
+
+def _js_method_NativeStore_lookup(self, name, _stamp=_JS_UNDEFINED, skipped=_JS_UNDEFINED):
+    if _stamp is _JS_UNDEFINED:
+        _stamp = False
+    idx = self.indexed()
+    if idx is None:
+        return None
+    if skipped is not _JS_UNDEFINED:
+        for s in _skipped_of(idx):
+            _js_m_push(skipped, s)
+    if not _js_m_has(_js_invoke(idx, "names"), name):
+        return None
+    file = _js_invoke(idx, "fileOf", name)
+    hit = None if file is None else self.named(file, name)
+    if hit is not None:
+        return hit
+    return _js_coalesce_value(_js_m_find(self.candidates(), lambda f, *_: _js_strict_eq(_js_get(f, "name"), name)), None)
 
 
 def _skipped_of(idx):

@@ -5,6 +5,8 @@
 
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
+    _ClassVar,
+    _Final,
     _js_add,
     _js_and,
     _js_and_value,
@@ -18,8 +20,10 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_ge,
     _js_get,
     _js_gt,
+    _js_instanceof,
     _js_invoke,
     _js_json_stringify,
+    _js_late,
     _js_le,
     _js_len,
     _js_list_at,
@@ -57,11 +61,13 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_strict_eq,
     _js_truthy,
     _js_typeof,
+    _JsAny,
     _JsError,
     _JsGlobalRegExp,
     _JsMap,
     _JsObject,
     _JsSet,
+    _mypyc_attr,
 )
 from ._ts2py_adapters import QUERY_IGNORED, RECALL_NEEDS_QUERY_OR_FILE, SKILL_LAYER, BantamError, buffer_byte_length, cmp_codepoint, file_links, fire_on, format_fixed3, homedir, is_skill_store, load_skill, path_resolve, py_home, py_is_dir, py_join, py_lower, py_name, py_parent, py_realpath, py_resolve, py_strip, PyOSError, PyUnicodeDecodeError, skill_roots, SkillStore, triggers_enabled, via_enabled, via_label, via_pick
 from .dream import SUPERSEDED_HEADING, dream
@@ -69,18 +75,20 @@ from .layers import MEMORY_DIR_ENV, PROJECT_STORE, count_facts, load_grants, res
 from .native import NATIVE_LAYER, NativeStore
 from .queries import BODY_EXCERPT, LIST_LIMIT, WRITE_FAILED, check_queries, fact_sha, layer_terms, read_sidecar, sidecar_path, SidecarWriteError, write_entries
 from .retrieval import BM25F, query_terms, QueryScorer, stale, weight_of
-from .store import DEFAULT_INDEX_BUDGET, MIN_RATIO_RANGE, RECALL_MIN_SCORE_RATIO, all_names, empty_pool, MemoryBudgetExceeded, MemoryStore, MemoryValidationError, pick_hits, pool_of, py_text
-from .usage import UsageLedger
+from .store import DEFAULT_INDEX_BUDGET, MIN_RATIO_RANGE, RECALL_MIN_SCORE_RATIO, all_names, empty_pool, MemoryBudgetExceeded, MemoryStore as _js_bound_MemoryStore, MemoryValidationError, pick_hits, pool_of, py_text
+from .usage import UsageLedger as _js_bound_UsageLedger
+MemoryStore: _JsAny = _js_bound_MemoryStore
+UsageLedger: _JsAny = _js_bound_UsageLedger
 
 __all__ = ["Memory", "layer_label", "normalize_name", "profile_store"]
 
 
-_JS_RE_0 = _js_re.compile("^[a-z0-9][a-z0-9-]*\\Z", _js_re.ASCII)
-_JS_RE_1 = _JsGlobalRegExp(_js_re.compile("_", _js_re.ASCII))
-_JS_RE_2 = _JsGlobalRegExp(_js_re.compile(" ", _js_re.ASCII))
+_JS_RE_0: _Final = _js_re.compile("^[a-z0-9][a-z0-9-]*\\Z", _js_re.ASCII)
+_JS_RE_1: _Final = _JsGlobalRegExp(_js_re.compile("_", _js_re.ASCII))
+_JS_RE_2: _Final = _JsGlobalRegExp(_js_re.compile(" ", _js_re.ASCII))
 
 
-_NAME_SHAPE = _JS_RE_0
+_NAME_SHAPE: _JsAny = _JS_RE_0
 
 
 def _is_name_shaped__typed(query):
@@ -110,7 +118,7 @@ def _refused(reason):
 _refused__typed = _refused
 
 
-_STORE_PARTS = [part for part in _js_array("map", PROJECT_STORE)]
+_STORE_PARTS: _JsAny = [part for part in _js_array("map", PROJECT_STORE)]
 
 
 def _layer_kind(label):
@@ -126,7 +134,7 @@ def _context_weights(context):
 
 
 def _sidecar_failure(e):
-    return isinstance(e, BantamError) or isinstance(e, PyOSError) or isinstance(e, PyUnicodeDecodeError) or isinstance(e, SidecarWriteError)
+    return _js_instanceof(e, BantamError) or _js_instanceof(e, PyOSError) or _js_instanceof(e, PyUnicodeDecodeError) or _js_instanceof(e, SidecarWriteError)
 
 
 def _skipped_note__typed(skipped, rest=_JS_UNDEFINED):
@@ -157,6 +165,7 @@ def normalize_name(name):
     return _js_dispatch(_js_dispatch(py_lower(py_strip(name)), "replace", _js_m_replace, _JS_RE_1, "-"), "replace", _js_m_replace, _JS_RE_2, "-")
 
 
+@_js_late
 def profile_store():
     return py_join(py_home(), *_STORE_PARTS)
 
@@ -184,7 +193,7 @@ _layer_label__typed = layer_label
 
 
 def _is_read_only(store):
-    return _js_or(isinstance(store, NativeStore), lambda: is_skill_store(store))
+    return _js_or(_js_instanceof(store, NativeStore), lambda: is_skill_store(store))
 
 
 def _lends_shadow(store):
@@ -195,10 +204,11 @@ def _count_of(store):
     return _js_invoke(store, "count") if _js_truthy(_is_read_only(store)) else count_facts(_js_get(store, "root"))
 
 
+@_mypyc_attr(native_class=False)
 class Memory(_JsObject):
-    _js_name = "Memory"
-    _js_own = frozenset({"addNative", "addSkills", "archivedHits", "bindPendingSkills", "binding", "bindingDiagnosis", "compact", "compactOutcome", "dream", "dreamOutcome", "fire", "format", "header", "indexAccounting", "injectCandidates", "k", "layerAt", "layerLabels", "layerStores", "layers", "ledger", "lookupByName", "missingOf", "namedFacts", "nothingToReport", "offer", "pendingSkills", "pooled", "queriesCoverage", "queriesMissing", "queriesWrite", "rankAll", "recall", "recallFile", "recallOutcome", "repair", "repaired", "save", "saveOutcome", "searchableFacts", "showLayers", "store", "unreadableLayers", "usageCensus", "use", "viaOf", "walkAscended"})
-    _js_own_methods = frozenset({"addNative", "addSkills", "archivedHits", "bindPendingSkills", "bindingDiagnosis", "compact", "compactOutcome", "dream", "dreamOutcome", "fire", "format", "header", "indexAccounting", "injectCandidates", "layerAt", "layerLabels", "layerStores", "ledger", "lookupByName", "missingOf", "namedFacts", "nothingToReport", "pooled", "queriesCoverage", "queriesMissing", "queriesWrite", "rankAll", "recall", "recallFile", "recallOutcome", "repair", "save", "saveOutcome", "searchableFacts", "unreadableLayers", "usageCensus", "use", "viaOf", "walkAscended"})
+    _js_name: _ClassVar[str] = "Memory"
+    _js_own: _ClassVar[frozenset[str]] = frozenset({"addNative", "addSkills", "archivedHits", "bindPendingSkills", "binding", "bindingDiagnosis", "compact", "compactOutcome", "dream", "dreamOutcome", "fire", "format", "header", "indexAccounting", "injectCandidates", "k", "layerAt", "layerLabels", "layerStores", "layers", "ledger", "lookupByName", "missingOf", "namedFacts", "nothingToReport", "offer", "pendingSkills", "pooled", "queriesCoverage", "queriesMissing", "queriesWrite", "rankAll", "recall", "recallFile", "recallOutcome", "repair", "repaired", "save", "saveOutcome", "searchableFacts", "showLayers", "store", "unreadableLayers", "usageCensus", "use", "viaOf", "walkAscended"})
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset({"addNative", "addSkills", "archivedHits", "bindPendingSkills", "bindingDiagnosis", "compact", "compactOutcome", "dream", "dreamOutcome", "fire", "format", "header", "indexAccounting", "injectCandidates", "layerAt", "layerLabels", "layerStores", "ledger", "lookupByName", "missingOf", "namedFacts", "nothingToReport", "pooled", "queriesCoverage", "queriesMissing", "queriesWrite", "rankAll", "recall", "recallFile", "recallOutcome", "repair", "save", "saveOutcome", "searchableFacts", "unreadableLayers", "usageCensus", "use", "viaOf", "walkAscended"})
 
     def __init__(self, store, options=_JS_UNDEFINED, binding=_JS_UNDEFINED, *_):
         if options is _JS_UNDEFINED:
@@ -220,15 +230,7 @@ class Memory(_JsObject):
         self.binding = binding
 
     def addSkills(self, roots, only_present=_JS_UNDEFINED):
-        if only_present is _JS_UNDEFINED:
-            only_present = False
-        if _js_strict_eq(_js_len(roots), 0):
-            return _JS_UNDEFINED
-        if _js_truthy(_js_and(only_present, lambda: not any(_js_truthy(py_is_dir(r)) for r in _js_array("some", roots)))):
-            self.pendingSkills = roots
-            return _JS_UNDEFINED
-        _js_m_push(self.layers, [SKILL_LAYER, SkillStore(roots), False])
-        return _JS_UNDEFINED
+        return _js_method_Memory_addSkills(self, roots, only_present)
 
     def bindPendingSkills(self):
         if any(_js_truthy(py_is_dir(r)) for r in _js_array("some", self.pendingSkills)):
@@ -238,9 +240,7 @@ class Memory(_JsObject):
         return _JS_UNDEFINED
 
     def addNative(self, native):
-        if _js_truthy(_js_and(native is not None, lambda: py_strip(native))):
-            _js_m_push(self.layers, [NATIVE_LAYER, NativeStore(native), False])
-        return _JS_UNDEFINED
+        return _js_method_Memory_addNative(self, native)
 
     def layerLabels(self):
         return [_js_get(layer, 0) for layer in _js_array("map", self.layers)]
@@ -290,9 +290,9 @@ class Memory(_JsObject):
         except Exception as _js_error2:
             _js_caught2 = _js_catch(_js_error2)
         if _js_caught2 is not None:
-            if isinstance(_js_caught2, MemoryValidationError):
+            if _js_instanceof(_js_caught2, MemoryValidationError):
                 return {"reply": "error: " + _js_str(_js_get(_js_caught2, "message")), "status": "refused-validation"}
-            if isinstance(_js_caught2, MemoryBudgetExceeded):
+            if _js_instanceof(_js_caught2, MemoryBudgetExceeded):
                 return {"reply": "error: " + _js_str(_js_get(_js_caught2, "message")) + ". Nothing was saved and retrying will not help — shorten " + "the description, or save under the name of an existing memory to replace it. " + "Or call `memory_compact` to archive the stalest facts and free room — nothing is deleted.", "status": "refused-budget"}
             raise _js_caught2
         note = _skipped_note__typed([{"layer": "project", **_js_spread(s)} for s in _js_array("map", _js_coalesce_value(_js_get(result, "skipped"), []))], "the duplicate check read every other fact")
@@ -336,63 +336,7 @@ class Memory(_JsObject):
         return _js_get(self.recallOutcome(query, k, min_ratio, True, _js_strict_eq(include_archived, True), None, None, outcome), "reply")
 
     def recallOutcome(self, query, k=_JS_UNDEFINED, min_ratio=_JS_UNDEFINED, stamp=_JS_UNDEFINED, include_archived=_JS_UNDEFINED, context=_JS_UNDEFINED, head=_JS_UNDEFINED, outcome=_JS_UNDEFINED):
-        if k is _JS_UNDEFINED:
-            k = None
-        if min_ratio is _JS_UNDEFINED:
-            min_ratio = RECALL_MIN_SCORE_RATIO
-        if stamp is _JS_UNDEFINED:
-            stamp = True
-        if include_archived is _JS_UNDEFINED:
-            include_archived = False
-        if context is _JS_UNDEFINED:
-            context = None
-        if head is _JS_UNDEFINED:
-            head = None
-        if outcome is _JS_UNDEFINED:
-            outcome = None
-        if not (_js_ge(min_ratio, 0) and _js_le(min_ratio, 1)):
-            raise MemoryValidationError(MIN_RATIO_RANGE)
-        self.bindPendingSkills()
-        budget = self.k if k is None else _js_max(k, self.k)
-        name = py_strip(query)
-        lookup = None
-        if _is_name_shaped(name):
-            named = self.lookupByName(name, budget, stamp)
-            if named is not None:
-                return named
-            lookup = "miss"
-        _js_obj5 = self.pooled(query, budget, min_ratio, context, head, outcome)
-        picked = _js_get(_js_obj5, "picked")
-        reached = _js_get(_js_obj5, "reached")
-        unreadable = _js_get(_js_obj5, "unreadable")
-        candidates = _js_get(_js_obj5, "candidates")
-        skipped = _js_get(_js_obj5, "skipped")
-        via = self.viaOf(picked, context)
-        if _js_truthy(stamp):
-            self.use(_js_m_map(picked, lambda _js_arg6, *_: (lambda _, fact: fact)(*_js_destructure(_js_arg6, 2))), "recall_hit")
-            self.repair(picked)
-        counts = {"budget": budget, "layers": _js_len(self.layers), "reached": reached, "returned": _js_len(picked), "candidates": candidates, "unreadable": unreadable, "lookup": lookup, "skipped": skipped}
-        lead = _miss_line(name) + "\n\n" if lookup == "miss" else ""
-        note = _skipped_note(skipped)
-        archived = self.archivedHits(query, budget, picked) if _js_truthy(include_archived) else []
-        if outcome is not None:
-            archived = _js_m_filter(archived, lambda _js_arg7, *_: (lambda _, fact: _js_strict_eq(_js_get(fact, "outcome"), outcome))(*_js_destructure(_js_arg7, 2)))
-        if _js_gt(_js_len(archived), 0) or via is not None:
-            _js_put(counts, "returned", _js_add(_js_add(_js_len(picked), _js_len(archived)), 1 if via is not None else 0))
-        fired = self.fire(query, _JsSet([*_js_m_map(picked, lambda _js_arg8, *_: (lambda _, fact: _js_get(fact, "name"))(*_js_destructure(_js_arg8, 2))), *_js_m_map(archived, lambda _js_arg9, *_: (lambda _, fact: _js_get(fact, "name"))(*_js_destructure(_js_arg9, 2))), *([] if via is None else [_js_get(_js_get(via, 1), "name")])]))
-        if _js_truthy(_js_and_value(fired is not None, stamp)):
-            self.use([_js_get(fired, 1)], "recall_hit")
-        if fired is not None:
-            _js_put(counts, "returned", _js_add(_js_add(_js_add(_js_len(picked), _js_len(archived)), 1 if via is not None else 0), 1))
-        if _js_strict_eq(_js_len(picked), 0) and _js_strict_eq(_js_len(archived), 0) and via is None and fired is None:
-            status, reply = _js_destructure(self.nothingToReport(), 2)
-            return {"reply": _js_add(_js_add(lead, reply), note), "status": status, "source": None, "headers": [], "via": None, **_js_spread(counts)}
-        shown = [*_js_m_map(picked, lambda _js_arg10, *_: (lambda label, fact: [label, fact, False, ""])(*_js_destructure(_js_arg10, 2))), *_js_m_map(archived, lambda _js_arg11, *_: (lambda label, fact: [label, fact, True, ""])(*_js_destructure(_js_arg11, 2)))]
-        if via is not None:
-            shown.append([_js_get(via, 0), _js_get(via, 1), False, _js_get(via, 2)])
-        if fired is not None:
-            shown.append([_js_get(fired, 0), _js_get(fired, 1), False, ""])
-        return {"reply": _js_cat(_js_cat(lead, _js_list_join(_js_m_map(shown, lambda _js_arg12, *_: (lambda label, fact, old, tail: _js_cat(_js_str(self.header(label, fact, old)), _js_str(tail)) + "\n" + _js_str(_js_get(fact, "body")))(*_js_destructure(_js_arg12, 4))), "\n\n")), note), "status": "answered", "source": _layer_kind(_js_get(_js_list_at(shown, 0), 0)), "headers": _js_m_map(shown, lambda _js_arg13, *_: (lambda label, fact, old, tail: _js_add(self.header(label, fact, old), tail))(*_js_destructure(_js_arg13, 4))), "via": None if via is None else _js_get(via, 3), "fired": None if fired is None else _js_get(_js_get(fired, 1), "name"), **_js_spread(counts)}
+        return _js_method_Memory_recallOutcome(self, query, k, min_ratio, stamp, include_archived, context, head, outcome)
 
     def fire(self, query, shown):
         at = self.layerAt(SKILL_LAYER)
@@ -403,184 +347,16 @@ class Memory(_JsObject):
         return None if fact is None else [label, fact]
 
     def layerStores(self):
-        self.bindPendingSkills()
-        return _js_m_map(self.layers, lambda _js_arg14, *_: (lambda label, store, writable: [label, store, writable])(*_js_destructure(_js_arg14, 3)))
+        return _js_method_Memory_layerStores(self)
 
     def recallFile(self, file, k=_JS_UNDEFINED, query=_JS_UNDEFINED):
-        if k is _JS_UNDEFINED:
-            k = None
-        if query is _JS_UNDEFINED:
-            query = None
-        self.bindPendingSkills()
-        budget = self.k if k is None else _js_max(k, self.k)
-        ignored = "" if query is None else "\n" + _js_str(QUERY_IGNORED)
-        base = {"budget": budget, "layers": _js_len(self.layers), "reached": 0, "returned": 0, "candidates": 0}
-        def said(text):
-            at = _js_m_indexOf(text, "\n")
-            reply = _js_add(text, ignored) if at < 0 else _js_add(_js_add(_js_m_slice(text, 0, at), ignored), _js_m_slice(text, at))
-            return {"reply": reply, "status": "none", "source": None, "unreadable": 0, "lookup": None, "skipped": [], "headers": [], "via": None, **_js_spread(base)}
-        links = file_links(file, self.layerStores())
-        if _js_get(links, "said") is not None:
-            return said(_js_get(links, "said"))
-        history = _js_get(links, "history")
-        names = _js_get(links, "names")
-        shown = []
-        for n in names:
-            if _js_ge(len(shown), budget):
-                break
-            for label, store in _js_rows(self.layers, 2, (0, 1)):
-                fact = _JS_UNDEFINED
-                _js_caught15 = None
-                try:
-                    fact = _js_invoke(store, "lookup", n, False)
-                except Exception as _js_error15:
-                    _js_caught15 = _js_catch(_js_error15)
-                if _js_caught15 is not None:
-                    if not (isinstance(_js_caught15, BantamError) or isinstance(_js_caught15, PyOSError) or isinstance(_js_caught15, PyUnicodeDecodeError)):
-                        raise _js_caught15
-                    fact = None
-                if fact is not None:
-                    shown.append([label, fact])
-                    break
-        _js_put(base, "reached", _js_len(self.layers))
-        _js_put(base, "candidates", _js_len(names))
-        if len(shown) == 0:
-            return said(_js_get(links, "none"))
-        _js_put(base, "returned", len(shown))
-        return {"reply": _js_add(_js_add(_js_add(history, ignored), "\n\n"), _js_list_join(_js_m_map(shown, lambda _js_arg16, *_: (lambda label, fact: self.format(label, fact))(*_js_destructure(_js_arg16, 2))), "\n\n")), "status": "answered", "source": _layer_kind(_js_get(_js_list_at(shown, 0), 0)), "unreadable": 0, "lookup": None, "skipped": [], "headers": _js_m_map(shown, lambda _js_arg17, *_: (lambda label, fact: self.header(label, fact))(*_js_destructure(_js_arg17, 2))), "via": None, **_js_spread(base)}
+        return _js_method_Memory_recallFile(self, file, k, query)
 
     def viaOf(self, picked, context):
-        if context is None or _js_get(context, "graph") is None or not _js_truthy(via_enabled()):
-            return None
-        graph = _js_get(context, "graph")
-        found = _JsMap()
-        def weigh(n):
-            for label, store in _js_rows(self.layers, 2, (0, 1)):
-                f = _JS_UNDEFINED
-                _js_caught18 = None
-                try:
-                    f = _js_invoke(store, "lookup", n, False)
-                except Exception as _js_error18:
-                    _js_caught18 = _js_catch(_js_error18)
-                if _js_caught18 is not None:
-                    if not (isinstance(_js_caught18, BantamError) or isinstance(_js_caught18, PyOSError) or isinstance(_js_caught18, PyUnicodeDecodeError)):
-                        raise _js_caught18
-                    f = None
-                if f is not None:
-                    _js_m_set(found, n, [label, f])
-                    return weight_of(py_text(_js_get(f, "type")), stale(py_text(_js_get(f, "description"))), 0, 1)
-            return None
-        names = _JsSet(_js_m_map(picked, lambda _js_arg19, *_: (lambda _, fact: _js_get(fact, "name"))(*_js_destructure(_js_arg19, 2))))
-        pick = via_pick(graph, _js_get(context, "strongWindow"), names, weigh)
-        if pick is None:
-            return None
-        label, fact = _js_destructure(_js_m_get(found, _js_get(pick, 0)), 2)
-        return [label, fact, via_label(_js_get(pick, 1), graph), _js_get(pick, 0)]
+        return _js_method_Memory_viaOf(self, picked, context)
 
     def pooled(self, query, budget, min_ratio, context=_JS_UNDEFINED, head=_JS_UNDEFINED, outcome=_JS_UNDEFINED):
-        if context is _JS_UNDEFINED:
-            context = None
-        if head is _JS_UNDEFINED:
-            head = None
-        if outcome is _JS_UNDEFINED:
-            outcome = None
-        home = py_home()
-        sides = [layer_terms(home, _js_get(_js_get(layer, 1), "root")) for layer in _js_array("map", self.layers)]
-        every_row = any(_js_gt(_js_size(side), 0) for side in sides)
-        q = query_terms(query if head is None else head)
-        stores = []
-        pools = []
-        left = []
-        reached = 0
-        unreadable = 0
-        candidates = 0
-        def readable(e):
-            return isinstance(e, BantamError) or isinstance(e, PyOSError) or isinstance(e, PyUnicodeDecodeError)
-        shadow = _JsSet()
-        self.offer = None
-        for _js_hole, store, writable in _js_rows(self.layers, 3, (1, 2)):
-            reached = _js_num(reached + 1)
-            left_out = []
-            stores.append(store)
-            left.append(left_out)
-            _js_caught20 = None
-            try:
-                if outcome is not None:
-                    native = _is_read_only(store)
-                    got = _js_invoke(store, "candidates", left_out, shadow) if _js_truthy(native) else _js_invoke(store, "candidates", left_out)
-                    if _js_truthy(_lends_shadow(store)):
-                        for f in got:
-                            _js_m_add(shadow, py_text(_js_get(f, "name")))
-                    pools.append(pool_of([f for f in _js_array("filter", got) if _js_strict_eq(_js_get(f, "outcome"), outcome)], q, every_row))
-                elif _js_truthy(_is_read_only(store)):
-                    pool = _js_invoke(store, "pool", q, left_out, shadow, every_row)
-                    if _js_truthy(_lends_shadow(store)):
-                        for name in all_names(pool):
-                            _js_m_add(shadow, name)
-                    pools.append(pool)
-                else:
-                    pool = _js_invoke(store, "pool", q, left_out, every_row)
-                    for name in all_names(pool):
-                        _js_m_add(shadow, name)
-                    pools.append(pool)
-                if _js_truthy(is_skill_store(store)):
-                    self.offer = _js_invoke(store, "offer")
-            except Exception as _js_error20:
-                _js_caught20 = _js_catch(_js_error20)
-            if _js_caught20 is not None:
-                if not _js_truthy(readable(_js_caught20)):
-                    raise _js_caught20
-                if _js_truthy(writable):
-                    raise _js_caught20
-                unreadable = _js_num(unreadable + 1)
-                pools.append(None)
-                continue
-            _js_caught21 = None
-            try:
-                candidates = _js_add(candidates, _count_of(store))
-            except Exception as _js_error21:
-                _js_caught21 = _js_catch(_js_error21)
-            if _js_caught21 is not None:
-                if not isinstance(_js_caught21, PyOSError):
-                    raise _js_caught21
-        def repool(i):
-            _js_caught22 = None
-            try:
-                store = _js_list_at(stores, i)
-                got = _js_invoke(store, "candidates", _js_list_at(left, i), shadow) if _js_truthy(_is_read_only(store)) else _js_invoke(store, "candidates", _js_list_at(left, i))
-                if outcome is not None:
-                    got = [f for f in _js_array("filter", got) if _js_strict_eq(_js_get(f, "outcome"), outcome)]
-                return pool_of(got, q, every_row)
-            except Exception as _js_error22:
-                _js_caught22 = _js_catch(_js_error22)
-            if _js_caught22 is not None:
-                if _js_truthy(_js_or(not _js_truthy(readable(_js_caught22)), lambda: _js_get(_js_get(self.layers, i), 2))):
-                    raise _js_caught22
-                return empty_pool()
-        ledger = self.ledger()
-        _js_obj23 = self.store
-        clock = _js_get(_js_obj23, "now")
-        now = clock()
-        scorer = BM25F
-        rows = None
-        if every_row:
-            scorer = QueryScorer(query)
-            def _js_fn24(i=_JS_UNDEFINED, p=_JS_UNDEFINED, *_):
-                return [_js_coalesce_value(_js_m_get(_js_list_at(sides, i), n), None) for n in _js_array("map", _js_get(p, "names"))]
-            rows = _js_fn24
-        weights = None if context is None else _context_weights(context)
-        def _js_fn25(*_):
-            return _js_invoke(ledger, "weights", now)
-        hits = pick_hits(stores, pools, q, budget, min_ratio, _js_fn25, repool, True, weights, scorer, rows)
-        skipped = []
-        i = 0
-        while _js_lt(i, _js_len(self.layers)):
-            label = _js_get(_js_get(self.layers, i), 0)
-            for s in _js_list_at(left, i):
-                skipped.append({"layer": label, **_js_spread(s)})
-            i = _js_num(i + 1)
-        picked = _js_m_map(hits, lambda _js_arg26, *_: (lambda i, fact: [_js_get(_js_get(self.layers, i), 0), fact])(*_js_destructure(_js_arg26, 2)))
-        return {"picked": picked, "reached": reached, "unreadable": unreadable, "candidates": candidates, "skipped": skipped}
+        return _js_method_Memory_pooled(self, query, budget, min_ratio, context, head, outcome)
 
     def ledger(self):
         return UsageLedger(homedir(), _js_get(_js_get(_js_get(self.layers, 0), 1), "root"))
@@ -596,28 +372,7 @@ class Memory(_JsObject):
         return _JS_UNDEFINED
 
     def repair(self, picked):
-        writable = _JsMap()
-        for label, store, w in _js_rows(self.layers, 3, (0, 1, 2)):
-            if _js_truthy(_js_and(w, lambda: isinstance(store, MemoryStore))):
-                _js_m_set(writable, label, store)
-        if not any(_js_m_has(writable, _js_get(pick, 0)) for pick in _js_array("some", picked)):
-            return _JS_UNDEFINED
-        ledger = self.ledger()
-        _js_obj28 = self.store
-        clock = _js_get(_js_obj28, "now")
-        now = clock()
-        for label, fact in _js_rows(picked, 2, (0, 1)):
-            store = (writable._entries.get(label, _JS_UNDEFINED) if type(writable) is _JsMap and type(label) is str else _js_m_get(writable, label))
-            _js_caught29 = None
-            try:
-                if _js_truthy(_js_and(store is not _JS_UNDEFINED, lambda: _js_invoke(store, "repair", fact, ledger, now))):
-                    self.repaired = _js_add(self.repaired, 1)
-            except Exception as _js_error29:
-                _js_caught29 = _js_catch(_js_error29)
-            if _js_caught29 is not None:
-                if not (isinstance(_js_caught29, BantamError) or isinstance(_js_caught29, PyOSError)):
-                    raise _js_caught29
-        return _JS_UNDEFINED
+        return _js_method_Memory_repair(self, picked)
 
     def usageCensus(self):
         ledger = self.ledger()
@@ -625,18 +380,10 @@ class Memory(_JsObject):
         return [_js_get(ledger, "path"), lines, skipped]
 
     def injectCandidates(self, prompt, head=_JS_UNDEFINED):
-        if head is _JS_UNDEFINED:
-            head = None
-        self.bindPendingSkills()
-        return _js_m_map(_js_get(self.pooled(prompt, 3, RECALL_MIN_SCORE_RATIO, None, head), "picked"), lambda _js_arg30, *_: (lambda _, fact: fact)(*_js_destructure(_js_arg30, 2)))
+        return _js_method_Memory_injectCandidates(self, prompt, head)
 
     def rankAll(self, prompt, depth=_JS_UNDEFINED, head=_JS_UNDEFINED):
-        if depth is _JS_UNDEFINED:
-            depth = 50
-        if head is _JS_UNDEFINED:
-            head = None
-        self.bindPendingSkills()
-        return _js_m_map(_js_get(self.pooled(prompt, depth, RECALL_MIN_SCORE_RATIO, None, head), "picked"), lambda _js_arg31, *_: (lambda _, fact: fact)(*_js_destructure(_js_arg31, 2)))
+        return _js_method_Memory_rankAll(self, prompt, depth, head)
 
     def namedFacts(self):
         out = []
@@ -659,7 +406,7 @@ class Memory(_JsObject):
             except Exception as _js_error33:
                 _js_caught33 = _js_catch(_js_error33)
             if _js_caught33 is not None:
-                if not (isinstance(_js_caught33, BantamError) or isinstance(_js_caught33, PyOSError) or isinstance(_js_caught33, PyUnicodeDecodeError)):
+                if not (_js_instanceof(_js_caught33, BantamError) or _js_instanceof(_js_caught33, PyOSError) or _js_instanceof(_js_caught33, PyUnicodeDecodeError)):
                     raise _js_caught33
                 if _js_truthy(writable):
                     raise _js_caught33
@@ -705,68 +452,7 @@ class Memory(_JsObject):
         return {"result": "missing", "facts": facts, "remaining": remaining, "instructions": load_skill("memory-queries")}
 
     def queriesWrite(self, facts):
-        self.bindPendingSkills()
-        labels = _js_m_map(self.layers, lambda _js_arg34, *_: (lambda label: label)(*_js_destructure(_js_arg34, 1)))
-        plan = _JsMap()
-        i = 0
-        while _js_lt(i, _js_len(facts)):
-            item = _js_get(facts, i)
-            is_dict = item is not None and _js_typeof(item) == "object" and not isinstance(item, list)
-            obj = item if is_dict else None
-            name = _js_get(obj, "name") if obj is not None and _js_object_has_own(obj, "name") else None
-            layer = _js_get(obj, "layer") if obj is not None and _js_object_has_own(obj, "layer") and _js_get(obj, "layer") is not None else None
-            if obj is None or not isinstance(name, str) or name == "" or not _js_object_has_own(obj, "queries") or layer is not None and not isinstance(layer, str):
-                return _refused__typed("facts[" + _js_str(i) + "] must be an object with a name and queries")
-            if layer is not None and not _js_m_includes(labels, layer):
-                return _refused__typed("facts[" + _js_str(i) + "]: no layer named '" + _js_str(layer) + "'; layers are " + _js_list_join(labels, ", "))
-            at = None
-            fact = None
-            j = 0
-            _js_first35 = True
-            while True:
-                if _js_first35:
-                    _js_first35 = False
-                else:
-                    j = _js_num(j + 1)
-                if not (_js_lt(j, _js_len(self.layers))):
-                    break
-                label, store = _js_destructure(_js_get(self.layers, j), 2)
-                if layer is not None and (label != layer if type(label) is type(layer) is str else not _js_strict_eq(label, layer)):
-                    continue
-                fact = Memory.lookupQuiet(store, name)
-                if fact is not None:
-                    at = j
-                    break
-            if at is None or fact is None:
-                where = "any layer" if layer is None else "layer '" + _js_str(layer) + "'"
-                return _refused__typed("facts[" + _js_str(i) + "]: no fact named '" + name + "' in " + where)
-            queries = _JS_UNDEFINED
-            _js_caught36 = None
-            try:
-                queries = check_queries(_js_get(obj, "queries"))
-            except Exception as _js_error36:
-                _js_caught36 = _js_catch(_js_error36)
-            if _js_caught36 is not None:
-                if isinstance(_js_caught36, MemoryValidationError):
-                    return _refused__typed("facts[" + _js_str(i) + "]: " + _js_str(_js_get(_js_caught36, "message")))
-                raise _js_caught36
-            if not _js_m_has(plan, at):
-                _js_m_set(plan, at, _JsMap())
-            _js_m_set((plan._entries.get(at, _JS_UNDEFINED) if type(plan) is _JsMap and type(at) is str else _js_m_get(plan, at)), name, [[*queries], fact_sha(_js_get(fact, "source"))] if _js_gt(_js_len(queries), 0) else None)
-            i = _js_num(i + 1)
-        home = py_home()
-        for at, entries in _js_rows(plan, 2, (0, 1)):
-            _js_caught37 = None
-            try:
-                write_entries(sidecar_path(home, _js_get(_js_get(_js_get(self.layers, at), 1), "root")), entries)
-            except Exception as _js_error37:
-                _js_caught37 = _js_catch(_js_error37)
-            if _js_caught37 is not None:
-                if not (isinstance(_js_caught37, SidecarWriteError) or isinstance(_js_caught37, PyOSError)):
-                    raise _js_caught37
-                return _refused(WRITE_FAILED)
-        remaining = _js_len(self.missingOf(self.namedFacts()))
-        return {"result": "written", "written": _js_len(facts), "remaining": remaining}
+        return _js_method_Memory_queriesWrite(self, facts)
 
     def archivedHits(self, query, budget, picked):
         out = []
@@ -784,7 +470,7 @@ class Memory(_JsObject):
             except Exception as _js_error38:
                 _js_caught38 = _js_catch(_js_error38)
             if _js_caught38 is not None:
-                if not (isinstance(_js_caught38, BantamError) or isinstance(_js_caught38, PyOSError) or isinstance(_js_caught38, PyUnicodeDecodeError)):
+                if not (_js_instanceof(_js_caught38, BantamError) or _js_instanceof(_js_caught38, PyOSError) or _js_instanceof(_js_caught38, PyUnicodeDecodeError)):
                     raise _js_caught38
                 if _js_truthy(writable):
                     raise _js_caught38
@@ -809,7 +495,7 @@ class Memory(_JsObject):
             except Exception as _js_error39:
                 _js_caught39 = _js_catch(_js_error39)
             if _js_caught39 is not None:
-                if not (isinstance(_js_caught39, BantamError) or isinstance(_js_caught39, PyOSError) or isinstance(_js_caught39, PyUnicodeDecodeError)):
+                if not (_js_instanceof(_js_caught39, BantamError) or _js_instanceof(_js_caught39, PyOSError) or _js_instanceof(_js_caught39, PyUnicodeDecodeError)):
                     raise _js_caught39
                 if _js_truthy(writable):
                     raise _js_caught39
@@ -823,7 +509,7 @@ class Memory(_JsObject):
             except Exception as _js_error40:
                 _js_caught40 = _js_catch(_js_error40)
             if _js_caught40 is not None:
-                if not isinstance(_js_caught40, PyOSError):
+                if not _js_instanceof(_js_caught40, PyOSError):
                     raise _js_caught40
             if fact is not None:
                 if _js_truthy(stamp):
@@ -859,22 +545,7 @@ class Memory(_JsObject):
         return _js_get(self.dreamOutcome(dry_run), "reply")
 
     def dreamOutcome(self, dry_run=_JS_UNDEFINED):
-        if dry_run is _JS_UNDEFINED:
-            dry_run = True
-        profile = _js_coalesce_value(_js_opt_get(_js_m_find(self.layers, lambda _js_arg41, *_: (lambda label: label == "profile")(*_js_destructure(_js_arg41, 1))), 1), None)
-        if profile is None:
-            return {"reply": "nothing to consolidate: no profile layer is bound, so the project " + ("store " + _js_str(_js_get(self.store, "root")) + " is the only layer there is."), "status": "no-profile-layer", "dryRun": dry_run, "merged": 0, "consumed": 0, "absolutised": 0, "superseded": 0, "indexBefore": 0, "indexAfter": 0, "budget": _js_get(self.store, "indexBudget"), "result": None}
-        result = dream(self.store, profile, dry_run)
-        status = _JS_UNDEFINED
-        if _js_truthy(_js_get(result, "overBudget")):
-            status = "refused-budget"
-        elif _js_strict_eq(_js_get(result, "changes"), 0):
-            status = "nothing-to-consolidate"
-        elif _js_truthy(_js_get(result, "applied")):
-            status = "consolidated"
-        else:
-            status = "previewed"
-        return {"reply": Memory.dreamReply(status, result), "status": status, "dryRun": _js_get(result, "dryRun"), "merged": _js_len(_js_get(result, "merged")), "consumed": _js_len(_js_get(result, "consumed")), "absolutised": _js_len(_js_get(result, "absolutised")), "superseded": _js_len(_js_get(result, "superseded")), "indexBefore": _js_get(result, "indexBefore"), "indexAfter": _js_get(result, "indexAfter"), "budget": _js_get(result, "budget"), "result": result}
+        return _js_method_Memory_dreamOutcome(self, dry_run)
 
     def indexAccounting(self):
         _js_caught42 = None
@@ -883,7 +554,7 @@ class Memory(_JsObject):
         except Exception as _js_error42:
             _js_caught42 = _js_catch(_js_error42)
         if _js_caught42 is not None:
-            if isinstance(_js_caught42, BantamError) or isinstance(_js_caught42, PyOSError) or isinstance(_js_caught42, PyUnicodeDecodeError):
+            if _js_instanceof(_js_caught42, BantamError) or _js_instanceof(_js_caught42, PyOSError) or _js_instanceof(_js_caught42, PyUnicodeDecodeError):
                 return [None, _js_get(self.store, "indexBudget")]
             raise _js_caught42
 
@@ -904,7 +575,7 @@ class Memory(_JsObject):
         return [status, _js_str(verdict) + " " + _js_str(diagnosis) if _js_truthy(diagnosis) else verdict]
 
     def unreadableLayers(self):
-        return _js_m_map(_js_m_filter(self.layers, lambda _js_arg43, *_: (lambda _, store: Memory.layerCount(store) is None)(*_js_destructure(_js_arg43, 2))), lambda _js_arg44, *_: (lambda _, store: _js_get(store, "root"))(*_js_destructure(_js_arg44, 2)))
+        return _js_method_Memory_unreadableLayers(self)
 
     def searchableFacts(self):
         total = 0
@@ -995,7 +666,7 @@ class Memory(_JsObject):
         except Exception as _js_error45:
             _js_caught45 = _js_catch(_js_error45)
         if _js_caught45 is not None:
-            if isinstance(_js_caught45, BantamError) or isinstance(_js_caught45, PyOSError) or isinstance(_js_caught45, PyUnicodeDecodeError):
+            if _js_instanceof(_js_caught45, BantamError) or _js_instanceof(_js_caught45, PyOSError) or _js_instanceof(_js_caught45, PyUnicodeDecodeError):
                 return None
             raise _js_caught45
 
@@ -1037,7 +708,7 @@ class Memory(_JsObject):
         except Exception as _js_error46:
             _js_caught46 = _js_catch(_js_error46)
         if _js_caught46 is not None:
-            if isinstance(_js_caught46, PyOSError):
+            if _js_instanceof(_js_caught46, PyOSError):
                 return None
             raise _js_caught46
 
@@ -1051,7 +722,7 @@ class Memory(_JsObject):
         except Exception as _js_error47:
             _js_caught47 = _js_catch(_js_error47)
         if _js_caught47 is not None:
-            if isinstance(_js_caught47, PyOSError):
+            if _js_instanceof(_js_caught47, PyOSError):
                 return None
             raise _js_caught47
 
@@ -1064,3 +735,394 @@ class Memory(_JsObject):
             _js_caught48 = _js_catch(_js_error48)
         if _js_caught48 is not None:
             return False
+
+
+def _js_method_Memory_addSkills(self, roots, only_present=_JS_UNDEFINED):
+    if only_present is _JS_UNDEFINED:
+        only_present = False
+    if _js_strict_eq(_js_len(roots), 0):
+        return _JS_UNDEFINED
+    if _js_truthy(_js_and(only_present, lambda: not any(_js_truthy(py_is_dir(r)) for r in _js_array("some", roots)))):
+        self.pendingSkills = roots
+        return _JS_UNDEFINED
+    _js_m_push(self.layers, [SKILL_LAYER, SkillStore(roots), False])
+    return _JS_UNDEFINED
+
+
+def _js_method_Memory_addNative(self, native):
+    if _js_truthy(_js_and(native is not None, lambda: py_strip(native))):
+        _js_m_push(self.layers, [NATIVE_LAYER, NativeStore(native), False])
+    return _JS_UNDEFINED
+
+
+def _js_method_Memory_recallOutcome(self, query, k=_JS_UNDEFINED, min_ratio=_JS_UNDEFINED, stamp=_JS_UNDEFINED, include_archived=_JS_UNDEFINED, context=_JS_UNDEFINED, head=_JS_UNDEFINED, outcome=_JS_UNDEFINED):
+    if k is _JS_UNDEFINED:
+        k = None
+    if min_ratio is _JS_UNDEFINED:
+        min_ratio = RECALL_MIN_SCORE_RATIO
+    if stamp is _JS_UNDEFINED:
+        stamp = True
+    if include_archived is _JS_UNDEFINED:
+        include_archived = False
+    if context is _JS_UNDEFINED:
+        context = None
+    if head is _JS_UNDEFINED:
+        head = None
+    if outcome is _JS_UNDEFINED:
+        outcome = None
+    if not (_js_ge(min_ratio, 0) and _js_le(min_ratio, 1)):
+        raise MemoryValidationError(MIN_RATIO_RANGE)
+    self.bindPendingSkills()
+    budget = self.k if k is None else _js_max(k, self.k)
+    name = py_strip(query)
+    lookup = None
+    if _is_name_shaped(name):
+        named = self.lookupByName(name, budget, stamp)
+        if named is not None:
+            return named
+        lookup = "miss"
+    _js_obj5 = self.pooled(query, budget, min_ratio, context, head, outcome)
+    picked = _js_get(_js_obj5, "picked")
+    reached = _js_get(_js_obj5, "reached")
+    unreadable = _js_get(_js_obj5, "unreadable")
+    candidates = _js_get(_js_obj5, "candidates")
+    skipped = _js_get(_js_obj5, "skipped")
+    via = self.viaOf(picked, context)
+    if _js_truthy(stamp):
+        self.use(_js_m_map(picked, lambda _js_arg6, *_: (lambda _, fact: fact)(*_js_destructure(_js_arg6, 2))), "recall_hit")
+        self.repair(picked)
+    counts = {"budget": budget, "layers": _js_len(self.layers), "reached": reached, "returned": _js_len(picked), "candidates": candidates, "unreadable": unreadable, "lookup": lookup, "skipped": skipped}
+    lead = _miss_line(name) + "\n\n" if lookup == "miss" else ""
+    note = _skipped_note(skipped)
+    archived = self.archivedHits(query, budget, picked) if _js_truthy(include_archived) else []
+    if outcome is not None:
+        archived = _js_m_filter(archived, lambda _js_arg7, *_: (lambda _, fact: _js_strict_eq(_js_get(fact, "outcome"), outcome))(*_js_destructure(_js_arg7, 2)))
+    if _js_gt(_js_len(archived), 0) or via is not None:
+        _js_put(counts, "returned", _js_add(_js_add(_js_len(picked), _js_len(archived)), 1 if via is not None else 0))
+    fired = self.fire(query, _JsSet([*_js_m_map(picked, lambda _js_arg8, *_: (lambda _, fact: _js_get(fact, "name"))(*_js_destructure(_js_arg8, 2))), *_js_m_map(archived, lambda _js_arg9, *_: (lambda _, fact: _js_get(fact, "name"))(*_js_destructure(_js_arg9, 2))), *([] if via is None else [_js_get(_js_get(via, 1), "name")])]))
+    if _js_truthy(_js_and_value(fired is not None, stamp)):
+        self.use([_js_get(fired, 1)], "recall_hit")
+    if fired is not None:
+        _js_put(counts, "returned", _js_add(_js_add(_js_add(_js_len(picked), _js_len(archived)), 1 if via is not None else 0), 1))
+    if _js_strict_eq(_js_len(picked), 0) and _js_strict_eq(_js_len(archived), 0) and via is None and fired is None:
+        status, reply = _js_destructure(self.nothingToReport(), 2)
+        return {"reply": _js_add(_js_add(lead, reply), note), "status": status, "source": None, "headers": [], "via": None, **_js_spread(counts)}
+    shown = [*_js_m_map(picked, lambda _js_arg10, *_: (lambda label, fact: [label, fact, False, ""])(*_js_destructure(_js_arg10, 2))), *_js_m_map(archived, lambda _js_arg11, *_: (lambda label, fact: [label, fact, True, ""])(*_js_destructure(_js_arg11, 2)))]
+    if via is not None:
+        shown.append([_js_get(via, 0), _js_get(via, 1), False, _js_get(via, 2)])
+    if fired is not None:
+        shown.append([_js_get(fired, 0), _js_get(fired, 1), False, ""])
+    return {"reply": _js_cat(_js_cat(lead, _js_list_join(_js_m_map(shown, lambda _js_arg12, *_: (lambda label, fact, old, tail: _js_cat(_js_str(self.header(label, fact, old)), _js_str(tail)) + "\n" + _js_str(_js_get(fact, "body")))(*_js_destructure(_js_arg12, 4))), "\n\n")), note), "status": "answered", "source": _layer_kind(_js_get(_js_list_at(shown, 0), 0)), "headers": _js_m_map(shown, lambda _js_arg13, *_: (lambda label, fact, old, tail: _js_add(self.header(label, fact, old), tail))(*_js_destructure(_js_arg13, 4))), "via": None if via is None else _js_get(via, 3), "fired": None if fired is None else _js_get(_js_get(fired, 1), "name"), **_js_spread(counts)}
+
+
+def _js_method_Memory_layerStores(self):
+    self.bindPendingSkills()
+    return _js_m_map(self.layers, lambda _js_arg14, *_: (lambda label, store, writable: [label, store, writable])(*_js_destructure(_js_arg14, 3)))
+
+
+def _js_method_Memory_recallFile(self, file, k=_JS_UNDEFINED, query=_JS_UNDEFINED):
+    if k is _JS_UNDEFINED:
+        k = None
+    if query is _JS_UNDEFINED:
+        query = None
+    self.bindPendingSkills()
+    budget = self.k if k is None else _js_max(k, self.k)
+    ignored = "" if query is None else "\n" + _js_str(QUERY_IGNORED)
+    base = {"budget": budget, "layers": _js_len(self.layers), "reached": 0, "returned": 0, "candidates": 0}
+    def said(text):
+        at = _js_m_indexOf(text, "\n")
+        reply = _js_add(text, ignored) if at < 0 else _js_add(_js_add(_js_m_slice(text, 0, at), ignored), _js_m_slice(text, at))
+        return {"reply": reply, "status": "none", "source": None, "unreadable": 0, "lookup": None, "skipped": [], "headers": [], "via": None, **_js_spread(base)}
+    links = file_links(file, self.layerStores())
+    if _js_get(links, "said") is not None:
+        return said(_js_get(links, "said"))
+    history = _js_get(links, "history")
+    names = _js_get(links, "names")
+    shown = []
+    for n in names:
+        if _js_ge(len(shown), budget):
+            break
+        for label, store in _js_rows(self.layers, 2, (0, 1)):
+            fact = _JS_UNDEFINED
+            _js_caught15 = None
+            try:
+                fact = _js_invoke(store, "lookup", n, False)
+            except Exception as _js_error15:
+                _js_caught15 = _js_catch(_js_error15)
+            if _js_caught15 is not None:
+                if not (_js_instanceof(_js_caught15, BantamError) or _js_instanceof(_js_caught15, PyOSError) or _js_instanceof(_js_caught15, PyUnicodeDecodeError)):
+                    raise _js_caught15
+                fact = None
+            if fact is not None:
+                shown.append([label, fact])
+                break
+    _js_put(base, "reached", _js_len(self.layers))
+    _js_put(base, "candidates", _js_len(names))
+    if len(shown) == 0:
+        return said(_js_get(links, "none"))
+    _js_put(base, "returned", len(shown))
+    return {"reply": _js_add(_js_add(_js_add(history, ignored), "\n\n"), _js_list_join(_js_m_map(shown, lambda _js_arg16, *_: (lambda label, fact: self.format(label, fact))(*_js_destructure(_js_arg16, 2))), "\n\n")), "status": "answered", "source": _layer_kind(_js_get(_js_list_at(shown, 0), 0)), "unreadable": 0, "lookup": None, "skipped": [], "headers": _js_m_map(shown, lambda _js_arg17, *_: (lambda label, fact: self.header(label, fact))(*_js_destructure(_js_arg17, 2))), "via": None, **_js_spread(base)}
+
+
+def _js_method_Memory_viaOf(self, picked, context):
+    if context is None or _js_get(context, "graph") is None or not _js_truthy(via_enabled()):
+        return None
+    graph = _js_get(context, "graph")
+    found = _JsMap()
+    def weigh(n):
+        for label, store in _js_rows(self.layers, 2, (0, 1)):
+            f = _JS_UNDEFINED
+            _js_caught18 = None
+            try:
+                f = _js_invoke(store, "lookup", n, False)
+            except Exception as _js_error18:
+                _js_caught18 = _js_catch(_js_error18)
+            if _js_caught18 is not None:
+                if not (_js_instanceof(_js_caught18, BantamError) or _js_instanceof(_js_caught18, PyOSError) or _js_instanceof(_js_caught18, PyUnicodeDecodeError)):
+                    raise _js_caught18
+                f = None
+            if f is not None:
+                _js_m_set(found, n, [label, f])
+                return weight_of(py_text(_js_get(f, "type")), stale(py_text(_js_get(f, "description"))), 0, 1)
+        return None
+    names = _JsSet(_js_m_map(picked, lambda _js_arg19, *_: (lambda _, fact: _js_get(fact, "name"))(*_js_destructure(_js_arg19, 2))))
+    pick = via_pick(graph, _js_get(context, "strongWindow"), names, weigh)
+    if pick is None:
+        return None
+    label, fact = _js_destructure(_js_m_get(found, _js_get(pick, 0)), 2)
+    return [label, fact, via_label(_js_get(pick, 1), graph), _js_get(pick, 0)]
+
+
+def _js_method_Memory_pooled(self, query, budget, min_ratio, context=_JS_UNDEFINED, head=_JS_UNDEFINED, outcome=_JS_UNDEFINED):
+    if context is _JS_UNDEFINED:
+        context = None
+    if head is _JS_UNDEFINED:
+        head = None
+    if outcome is _JS_UNDEFINED:
+        outcome = None
+    home = py_home()
+    sides = [layer_terms(home, _js_get(_js_get(layer, 1), "root")) for layer in _js_array("map", self.layers)]
+    every_row = any(_js_gt(_js_size(side), 0) for side in sides)
+    q = query_terms(query if head is None else head)
+    stores = []
+    pools = []
+    left = []
+    reached = 0
+    unreadable = 0
+    candidates = 0
+    def readable(e):
+        return _js_instanceof(e, BantamError) or _js_instanceof(e, PyOSError) or _js_instanceof(e, PyUnicodeDecodeError)
+    shadow = _JsSet()
+    self.offer = None
+    for _js_hole, store, writable in _js_rows(self.layers, 3, (1, 2)):
+        reached = _js_num(reached + 1)
+        left_out = []
+        stores.append(store)
+        left.append(left_out)
+        _js_caught20 = None
+        try:
+            if outcome is not None:
+                native = _is_read_only(store)
+                got = _js_invoke(store, "candidates", left_out, shadow) if _js_truthy(native) else _js_invoke(store, "candidates", left_out)
+                if _js_truthy(_lends_shadow(store)):
+                    for f in got:
+                        _js_m_add(shadow, py_text(_js_get(f, "name")))
+                pools.append(pool_of([f for f in _js_array("filter", got) if _js_strict_eq(_js_get(f, "outcome"), outcome)], q, every_row))
+            elif _js_truthy(_is_read_only(store)):
+                pool = _js_invoke(store, "pool", q, left_out, shadow, every_row)
+                if _js_truthy(_lends_shadow(store)):
+                    for name in all_names(pool):
+                        _js_m_add(shadow, name)
+                pools.append(pool)
+            else:
+                pool = _js_invoke(store, "pool", q, left_out, every_row)
+                for name in all_names(pool):
+                    _js_m_add(shadow, name)
+                pools.append(pool)
+            if _js_truthy(is_skill_store(store)):
+                self.offer = _js_invoke(store, "offer")
+        except Exception as _js_error20:
+            _js_caught20 = _js_catch(_js_error20)
+        if _js_caught20 is not None:
+            if not _js_truthy(readable(_js_caught20)):
+                raise _js_caught20
+            if _js_truthy(writable):
+                raise _js_caught20
+            unreadable = _js_num(unreadable + 1)
+            pools.append(None)
+            continue
+        _js_caught21 = None
+        try:
+            candidates = _js_add(candidates, _count_of(store))
+        except Exception as _js_error21:
+            _js_caught21 = _js_catch(_js_error21)
+        if _js_caught21 is not None:
+            if not _js_instanceof(_js_caught21, PyOSError):
+                raise _js_caught21
+    def repool(i):
+        _js_caught22 = None
+        try:
+            store = _js_list_at(stores, i)
+            got = _js_invoke(store, "candidates", _js_list_at(left, i), shadow) if _js_truthy(_is_read_only(store)) else _js_invoke(store, "candidates", _js_list_at(left, i))
+            if outcome is not None:
+                got = [f for f in _js_array("filter", got) if _js_strict_eq(_js_get(f, "outcome"), outcome)]
+            return pool_of(got, q, every_row)
+        except Exception as _js_error22:
+            _js_caught22 = _js_catch(_js_error22)
+        if _js_caught22 is not None:
+            if _js_truthy(_js_or(not _js_truthy(readable(_js_caught22)), lambda: _js_get(_js_get(self.layers, i), 2))):
+                raise _js_caught22
+            return empty_pool()
+    ledger = self.ledger()
+    _js_obj23 = self.store
+    clock = _js_get(_js_obj23, "now")
+    now = clock()
+    scorer = BM25F
+    rows = None
+    if every_row:
+        scorer = QueryScorer(query)
+        def _js_fn24(i=_JS_UNDEFINED, p=_JS_UNDEFINED, *_):
+            return [_js_coalesce_value(_js_m_get(_js_list_at(sides, i), n), None) for n in _js_array("map", _js_get(p, "names"))]
+        rows = _js_fn24
+    weights = None if context is None else _context_weights(context)
+    def _js_fn25(*_):
+        return _js_invoke(ledger, "weights", now)
+    hits = pick_hits(stores, pools, q, budget, min_ratio, _js_fn25, repool, True, weights, scorer, rows)
+    skipped = []
+    i = 0
+    while _js_lt(i, _js_len(self.layers)):
+        label = _js_get(_js_get(self.layers, i), 0)
+        for s in _js_list_at(left, i):
+            skipped.append({"layer": label, **_js_spread(s)})
+        i = _js_num(i + 1)
+    picked = _js_m_map(hits, lambda _js_arg26, *_: (lambda i, fact: [_js_get(_js_get(self.layers, i), 0), fact])(*_js_destructure(_js_arg26, 2)))
+    return {"picked": picked, "reached": reached, "unreadable": unreadable, "candidates": candidates, "skipped": skipped}
+
+
+def _js_method_Memory_repair(self, picked):
+    writable = _JsMap()
+    for label, store, w in _js_rows(self.layers, 3, (0, 1, 2)):
+        if _js_truthy(_js_and(w, lambda: _js_instanceof(store, MemoryStore))):
+            _js_m_set(writable, label, store)
+    if not any(_js_m_has(writable, _js_get(pick, 0)) for pick in _js_array("some", picked)):
+        return _JS_UNDEFINED
+    ledger = self.ledger()
+    _js_obj28 = self.store
+    clock = _js_get(_js_obj28, "now")
+    now = clock()
+    for label, fact in _js_rows(picked, 2, (0, 1)):
+        store = (writable._entries.get(label, _JS_UNDEFINED) if type(writable) is _JsMap and type(label) is str else _js_m_get(writable, label))
+        _js_caught29 = None
+        try:
+            if _js_truthy(_js_and(store is not _JS_UNDEFINED, lambda: _js_invoke(store, "repair", fact, ledger, now))):
+                self.repaired = _js_add(self.repaired, 1)
+        except Exception as _js_error29:
+            _js_caught29 = _js_catch(_js_error29)
+        if _js_caught29 is not None:
+            if not (_js_instanceof(_js_caught29, BantamError) or _js_instanceof(_js_caught29, PyOSError)):
+                raise _js_caught29
+    return _JS_UNDEFINED
+
+
+def _js_method_Memory_injectCandidates(self, prompt, head=_JS_UNDEFINED):
+    if head is _JS_UNDEFINED:
+        head = None
+    self.bindPendingSkills()
+    return _js_m_map(_js_get(self.pooled(prompt, 3, RECALL_MIN_SCORE_RATIO, None, head), "picked"), lambda _js_arg30, *_: (lambda _, fact: fact)(*_js_destructure(_js_arg30, 2)))
+
+
+def _js_method_Memory_rankAll(self, prompt, depth=_JS_UNDEFINED, head=_JS_UNDEFINED):
+    if depth is _JS_UNDEFINED:
+        depth = 50
+    if head is _JS_UNDEFINED:
+        head = None
+    self.bindPendingSkills()
+    return _js_m_map(_js_get(self.pooled(prompt, depth, RECALL_MIN_SCORE_RATIO, None, head), "picked"), lambda _js_arg31, *_: (lambda _, fact: fact)(*_js_destructure(_js_arg31, 2)))
+
+
+def _js_method_Memory_queriesWrite(self, facts):
+    self.bindPendingSkills()
+    labels = _js_m_map(self.layers, lambda _js_arg34, *_: (lambda label: label)(*_js_destructure(_js_arg34, 1)))
+    plan = _JsMap()
+    i = 0
+    while _js_lt(i, _js_len(facts)):
+        item = _js_get(facts, i)
+        is_dict = item is not None and _js_typeof(item) == "object" and not isinstance(item, list)
+        obj = item if is_dict else None
+        name = _js_get(obj, "name") if obj is not None and _js_object_has_own(obj, "name") else None
+        layer = _js_get(obj, "layer") if obj is not None and _js_object_has_own(obj, "layer") and _js_get(obj, "layer") is not None else None
+        if obj is None or not isinstance(name, str) or name == "" or not _js_object_has_own(obj, "queries") or layer is not None and not isinstance(layer, str):
+            return _refused__typed("facts[" + _js_str(i) + "] must be an object with a name and queries")
+        if layer is not None and not _js_m_includes(labels, layer):
+            return _refused__typed("facts[" + _js_str(i) + "]: no layer named '" + _js_str(layer) + "'; layers are " + _js_list_join(labels, ", "))
+        at = None
+        fact = None
+        j = 0
+        _js_first35 = True
+        while True:
+            if _js_first35:
+                _js_first35 = False
+            else:
+                j = _js_num(j + 1)
+            if not (_js_lt(j, _js_len(self.layers))):
+                break
+            label, store = _js_destructure(_js_get(self.layers, j), 2)
+            if layer is not None and (label != layer if type(label) is type(layer) is str else not _js_strict_eq(label, layer)):
+                continue
+            fact = Memory.lookupQuiet(store, name)
+            if fact is not None:
+                at = j
+                break
+        if at is None or fact is None:
+            where = "any layer" if layer is None else "layer '" + _js_str(layer) + "'"
+            return _refused__typed("facts[" + _js_str(i) + "]: no fact named '" + name + "' in " + where)
+        queries = _JS_UNDEFINED
+        _js_caught36 = None
+        try:
+            queries = check_queries(_js_get(obj, "queries"))
+        except Exception as _js_error36:
+            _js_caught36 = _js_catch(_js_error36)
+        if _js_caught36 is not None:
+            if _js_instanceof(_js_caught36, MemoryValidationError):
+                return _refused__typed("facts[" + _js_str(i) + "]: " + _js_str(_js_get(_js_caught36, "message")))
+            raise _js_caught36
+        if not _js_m_has(plan, at):
+            _js_m_set(plan, at, _JsMap())
+        _js_m_set((plan._entries.get(at, _JS_UNDEFINED) if type(plan) is _JsMap and type(at) is str else _js_m_get(plan, at)), name, [[*queries], fact_sha(_js_get(fact, "source"))] if _js_gt(_js_len(queries), 0) else None)
+        i = _js_num(i + 1)
+    home = py_home()
+    for at, entries in _js_rows(plan, 2, (0, 1)):
+        _js_caught37 = None
+        try:
+            write_entries(sidecar_path(home, _js_get(_js_get(_js_get(self.layers, at), 1), "root")), entries)
+        except Exception as _js_error37:
+            _js_caught37 = _js_catch(_js_error37)
+        if _js_caught37 is not None:
+            if not (_js_instanceof(_js_caught37, SidecarWriteError) or _js_instanceof(_js_caught37, PyOSError)):
+                raise _js_caught37
+            return _refused(WRITE_FAILED)
+    remaining = _js_len(self.missingOf(self.namedFacts()))
+    return {"result": "written", "written": _js_len(facts), "remaining": remaining}
+
+
+def _js_method_Memory_dreamOutcome(self, dry_run=_JS_UNDEFINED):
+    if dry_run is _JS_UNDEFINED:
+        dry_run = True
+    profile = _js_coalesce_value(_js_opt_get(_js_m_find(self.layers, lambda _js_arg41, *_: (lambda label: label == "profile")(*_js_destructure(_js_arg41, 1))), 1), None)
+    if profile is None:
+        return {"reply": "nothing to consolidate: no profile layer is bound, so the project " + ("store " + _js_str(_js_get(self.store, "root")) + " is the only layer there is."), "status": "no-profile-layer", "dryRun": dry_run, "merged": 0, "consumed": 0, "absolutised": 0, "superseded": 0, "indexBefore": 0, "indexAfter": 0, "budget": _js_get(self.store, "indexBudget"), "result": None}
+    result = dream(self.store, profile, dry_run)
+    status = _JS_UNDEFINED
+    if _js_truthy(_js_get(result, "overBudget")):
+        status = "refused-budget"
+    elif _js_strict_eq(_js_get(result, "changes"), 0):
+        status = "nothing-to-consolidate"
+    elif _js_truthy(_js_get(result, "applied")):
+        status = "consolidated"
+    else:
+        status = "previewed"
+    return {"reply": Memory.dreamReply(status, result), "status": status, "dryRun": _js_get(result, "dryRun"), "merged": _js_len(_js_get(result, "merged")), "consumed": _js_len(_js_get(result, "consumed")), "absolutised": _js_len(_js_get(result, "absolutised")), "superseded": _js_len(_js_get(result, "superseded")), "indexBefore": _js_get(result, "indexBefore"), "indexAfter": _js_get(result, "indexAfter"), "budget": _js_get(result, "budget"), "result": result}
+
+
+def _js_method_Memory_unreadableLayers(self):
+    return _js_m_map(_js_m_filter(self.layers, lambda _js_arg43, *_: (lambda _, store: Memory.layerCount(store) is None)(*_js_destructure(_js_arg43, 2))), lambda _js_arg44, *_: (lambda _, store: _js_get(store, "root"))(*_js_destructure(_js_arg44, 2)))

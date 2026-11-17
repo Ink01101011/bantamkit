@@ -37,8 +37,12 @@ fn lacks(body: &str, needle: &str) {
 /// Run `probe(<arg>)` of the module under Python and print it as Node's `JSON.stringify` would,
 /// every code unit at or above U+007F escaped.
 fn run(module: &str, arg: &str) -> String {
+    // J90-P7: one directory per call. Keyed by the module's length alone, two tests running at
+    // once could write one `probe.py` and read each other's answer.
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!(
-        "ts2py-types-{}-{:x}",
+        "ts2py-types-{}-{call}-{:x}",
         std::process::id(),
         module.len() ^ arg.len() << 20
     ));

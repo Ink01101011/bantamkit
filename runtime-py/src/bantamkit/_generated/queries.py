@@ -5,6 +5,8 @@
 
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
+    _ClassVar,
+    _Final,
     _js_add,
     _js_array,
     _js_bigint,
@@ -19,6 +21,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_ge,
     _js_get,
     _js_gt,
+    _js_instanceof,
     _js_invoke,
     _js_is_number,
     _js_json_parse,
@@ -51,10 +54,12 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_throw,
     _js_truthy,
     _js_typeof,
+    _JsAny,
     _JsError,
     _JsMap,
     _JsObject,
     _JsSet,
+    _mypyc_attr,
 )
 from ._ts2py_adapters import as_py_os_error, cmp_codepoint, create_hash, dump_json, encode_basestring_ascii, mkdir_sync, parse_json, path_basename, path_dirname, path_join, process_env, process_pid, py_decode_utf8, py_os_error_text, PyOSError, read_file_sync, rename_sync, rm_sync, write_file_sync
 from .hotindex import INDEX_DIR_ENV, sha16
@@ -65,35 +70,36 @@ from .store import lone_surrogate, MemoryValidationError
 __all__ = ["BODY_EXCERPT", "LIST_LIMIT", "MAX_QUERIES", "MAX_QUERY_CHARS", "QUERIES_DIR", "SIDECAR_VERSION", "SidecarWriteError", "TERMS_SUFFIX", "TERMS_VERSION", "WRITE_FAILED", "_sidecar_entries", "check_queries", "dump_terms", "dump_terms_slow", "fact_sha", "layer_terms", "qdoc", "read_sidecar", "sidecar_entries_slow", "sidecar_path", "status_line", "terms_path", "write_entries"]
 
 
-_JS_RE_0 = _js_re.compile("[\\ud800-\\udfff]", _js_re.ASCII)
-_JS_RE_1 = _js_re.compile("^[\\u0020\\u0021\\u0023-\\u005b\\u005d-\\u007e]*\\Z", _js_re.ASCII)
+_JS_RE_0: _Final = _js_re.compile("[\\ud800-\\udfff]", _js_re.ASCII)
+_JS_RE_1: _Final = _js_re.compile("^[\\u0020\\u0021\\u0023-\\u005b\\u005d-\\u007e]*\\Z", _js_re.ASCII)
 
 
-SIDECAR_VERSION = 1
+SIDECAR_VERSION: _JsAny = 1
 
 
-MAX_QUERIES = 8
+MAX_QUERIES: _JsAny = 8
 
 
-MAX_QUERY_CHARS = 200
+MAX_QUERY_CHARS: _JsAny = 200
 
 
-LIST_LIMIT = 10
+LIST_LIMIT: _JsAny = 10
 
 
-BODY_EXCERPT = 600
+BODY_EXCERPT: _JsAny = 600
 
 
-QUERIES_DIR = "queries"
+QUERIES_DIR: _JsAny = "queries"
 
 
-WRITE_FAILED = "the sidecar could not be saved"
+WRITE_FAILED: _JsAny = "the sidecar could not be saved"
 
 
+@_mypyc_attr(native_class=False)
 class SidecarWriteError(_JsError):
-    _js_name = "SidecarWriteError"
-    _js_own = frozenset({"name"})
-    _js_own_methods = frozenset()
+    _js_name: _ClassVar[str] = "SidecarWriteError"
+    _js_own: _ClassVar[frozenset[str]] = frozenset({"name"})
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset()
 
     def __init__(self, *args):
         _JsError.__init__(self, *args)
@@ -101,7 +107,7 @@ class SidecarWriteError(_JsError):
 
 
 def _write_failed(e, p):
-    return SidecarWriteError(py_os_error_text(e if isinstance(e, PyOSError) else as_py_os_error(e, p)))
+    return SidecarWriteError(py_os_error_text(e if _js_instanceof(e, PyOSError) else as_py_os_error(e, p)))
 
 
 _write_failed__typed = _write_failed
@@ -185,19 +191,20 @@ def qdoc(queries):
     return strip_nospace(_js_m_join(queries, "\n"))
 
 
-TERMS_VERSION = 1
+TERMS_VERSION: _JsAny = 1
 
 
-TERMS_SUFFIX = ".qterms.json"
+TERMS_SUFFIX: _JsAny = ".qterms.json"
 
 
-_EXACT = 9007199254740992
+_EXACT: _JsAny = 9007199254740992
 
 
+@_mypyc_attr(native_class=False)
 class _CountsView(_JsObject):
-    _js_name = "CountsView"
-    _js_own = frozenset({"at", "flat", "get", "has", "keys", "scan"})
-    _js_own_methods = frozenset({"at", "get", "has", "keys", "scan"})
+    _js_name: _ClassVar[str] = "CountsView"
+    _js_own: _ClassVar[frozenset[str]] = frozenset({"at", "flat", "get", "has", "keys", "scan"})
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset({"at", "get", "has", "keys", "scan"})
 
     def __init__(self, flat, *_):
         self.flat = _JS_UNDEFINED
@@ -401,14 +408,14 @@ def _by_codepoint(a, b):
 _by_codepoint__typed = _by_codepoint
 
 
-_SURROGATE = _JS_RE_0
+_SURROGATE: _JsAny = _JS_RE_0
 
 
 def _sorted_cp(xs):
     return _js_m_sort(xs, lambda _js_a0=_JS_UNDEFINED, _js_a1=_JS_UNDEFINED, *_: _by_codepoint(_js_a0, _js_a1)) if any(_js_m_test(_SURROGATE, x) for x in xs) else _js_m_sort(xs)
 
 
-_PLAIN = _JS_RE_1
+_PLAIN: _JsAny = _JS_RE_1
 
 
 def _json_ascii__typed(x):
@@ -613,7 +620,7 @@ def _write_entries__typed(p, entries):
                 _js_caught21 = _js_catch(_js_error21)
             if _js_caught21 is not None:
                 pass
-            if isinstance(_js_caught20, SidecarWriteError):
+            if _js_instanceof(_js_caught20, SidecarWriteError):
                 raise _js_caught20
             raise _js_throw(_write_failed(_js_caught20, tmp))
         return _JS_UNDEFINED
@@ -660,7 +667,7 @@ def write_entries(p, entries):
                 _js_caught25 = _js_catch(_js_error25)
             if _js_caught25 is not None:
                 pass
-            if isinstance(_js_caught24, SidecarWriteError):
+            if _js_instanceof(_js_caught24, SidecarWriteError):
                 raise _js_caught24
             raise _js_throw(_write_failed(_js_caught24, tmp))
         return _JS_UNDEFINED

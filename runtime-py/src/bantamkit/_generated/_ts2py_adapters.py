@@ -8,7 +8,6 @@ import fnmatch as _fnmatch
 import functools as _functools
 import gzip as _gzip
 import hashlib as _hashlib
-import itertools as _itertools
 import json as _json
 import math as _math
 import os as _os
@@ -17,15 +16,15 @@ import re as _re
 import secrets as _secrets
 import stat as _stat
 import time as _time
+import typing as _typing
 import unicodedata as _unicodedata
 import zlib as _zlib
 
 from ._ts2py_runtime import (
     _JS_UNDEFINED,
+    _js_lifted,
     _js_m_toLowerCase,
     _js_num,
-    _js_own_keys,
-    _js_str,
     _js_truthy,
     _JsBigInt,
     _JsError,
@@ -34,6 +33,12 @@ from ._ts2py_runtime import (
     _JsRangeError,
     _JsTypeError,
 )
+
+if _typing.TYPE_CHECKING:
+
+    class BantamError(_JsError):
+        pass
+
 
 __all__ = [
     "BigIntStats",
@@ -2129,79 +2134,7 @@ def _node_realpath_abs(absolute):
         return path_join(_node_realpath_abs(parent), path_basename(absolute))
 
 
-_SAFE_INT = 2**53 - 1
-_LIFT_SAME = frozenset({str, bool, type(None)})
-
-
-_LIFT_INT = frozenset({int})
-
-
-def _lift_ints_safe(ints):
-    return -_SAFE_INT <= min(ints) and max(ints) <= _SAFE_INT
-
-
-_LIFT_LIST = frozenset({list})
-_LIFT_DICT = frozenset({dict})
-_LIFT_STR = frozenset({str})
-_LIFT_FLAT = _LIFT_SAME | {int, list, dict}
-
-
-def _lift_values_same(values):
-    kinds = set(map(type, values))
-    if kinds <= _LIFT_SAME:
-        return True
-    if not kinds <= _LIFT_FLAT:
-        return False
-    if int in kinds and not _lift_ints_safe(
-        values if kinds == _LIFT_INT else [v for v in values if type(v) is int]
-    ):
-        return False
-    if list in kinds:
-        lists = values if kinds == _LIFT_LIST else [v for v in values if type(v) is list]
-        if not _lift_values_same(list(_itertools.chain.from_iterable(lists))):
-            return False
-    if dict in kinds:
-        dicts = values if kinds == _LIFT_DICT else [v for v in values if type(v) is dict]
-        keys = list(_itertools.chain.from_iterable(dicts))
-        if not set(map(type, keys)) <= _LIFT_STR or any(map(str.isdigit, keys)):
-            return False
-        if not _lift_values_same(list(_itertools.chain.from_iterable(map(dict.values, dicts)))):
-            return False
-    return True
-
-
-def _lifted(value):
-    kind = type(value)
-    if kind in _LIFT_SAME:
-        return value
-    if kind is int:
-        return value if -_SAFE_INT <= value <= _SAFE_INT else float(value)
-    if kind is float:
-        if value.is_integer() and -_SAFE_INT <= value <= _SAFE_INT and not (
-            value == 0 and _math.copysign(1.0, value) < 0
-        ):
-            return int(value)
-        return value
-    if kind is list:
-        if _lift_values_same(value):
-            return value
-        return [_lifted(item) for item in value]
-    if kind is dict:
-        keys = _js_own_keys(value)
-        if keys == list(value) and _lift_values_same(list(value.values())):
-            return value
-        return {key: _lifted(value[key]) for key in keys}
-    if value is _JS_UNDEFINED:
-        return None
-    if kind is _JsMap and value._keys is None:
-        entries = value._entries
-        if set(map(type, entries)) <= _LIFT_STR and _lift_values_same(list(entries.values())):
-            return dict(entries)
-    if isinstance(value, _JsMap):
-        return {_js_str(key): _lifted(item) for key, item in value}
-    if kind is _JsBigInt:
-        return value.value
-    raise TypeError(f"ts2py: dumpJsValue of a {kind.__name__} is outside the subset")
+_lifted = _js_lifted
 
 
 def dump_js_value(value, options=_JS_UNDEFINED, float_key=_JS_UNDEFINED, *_):

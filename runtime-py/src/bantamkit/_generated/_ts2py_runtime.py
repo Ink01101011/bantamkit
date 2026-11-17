@@ -15,6 +15,27 @@ import operator as _js_operator
 import re as _js_re
 import sys as _js_sys
 import time as _js_time
+from typing import Any as _JsAny  # noqa: F401 -- re-exported to the generated modules
+from typing import ClassVar as _ClassVar
+from typing import Final as _Final
+
+
+def _js_late(fn):
+    return fn
+
+
+def _js_identity(cls):
+    return cls
+
+
+def _js_no_mypyc_attr(*_args, **_kwargs):
+    return _js_identity
+
+
+try:
+    from mypy_extensions import mypyc_attr as _mypyc_attr
+except ImportError:
+    _mypyc_attr = _js_no_mypyc_attr  # type: ignore
 
 
 class _JsUndefined:
@@ -24,11 +45,11 @@ class _JsUndefined:
     def __repr__(self):
         return "undefined"
 
-    def __bool__(self):
+    def __bool__(self) -> bool:
         return False
 
 
-_JS_UNDEFINED = _JsUndefined()
+_JS_UNDEFINED: _Final = _JsUndefined()
 
 
 def _js_is_nullish(value):
@@ -105,8 +126,8 @@ def _js_coalesce_value(left, right):
     return right if _js_is_nullish(left) else left
 
 
-_JS_SAFE_MIN = -(2**53)
-_JS_SAFE_MAX = 2**53
+_JS_SAFE_MIN: _Final = -(2**53)
+_JS_SAFE_MAX: _Final = 2**53
 
 
 def _js_num(value):
@@ -210,7 +231,7 @@ def _js_str(value):
         )
     if isinstance(value, _JsBigInt):
         return str(value.value)
-    if isinstance(value, _JsObject):
+    if isinstance(value, _JS_OBJECT_CLASS):
         return _js_object_to_string(value)
     if isinstance(value, _JsMap):
         return "[object Map]"
@@ -241,14 +262,14 @@ def _js_add(left, right):
     raise TypeError("ts2py: + on non-number, non-string operands is outside the subset")
 
 
-_JS_WHITESPACE = (
+_JS_WHITESPACE: _Final = (
     "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
     "\u2028\u2029\u202f\u205f\u3000\ufeff"
 )
-_JS_DECIMAL = _js_re.compile(
+_JS_DECIMAL: _Final = _js_re.compile(
     r"[+-]?(?:Infinity|(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)\Z", _js_re.ASCII
 )
-_JS_RADIX = _js_re.compile(r"0(?:[xX][0-9a-fA-F]+|[oO][0-7]+|[bB][01]+)\Z", _js_re.ASCII)
+_JS_RADIX: _Final = _js_re.compile(r"0(?:[xX][0-9a-fA-F]+|[oO][0-7]+|[bB][01]+)\Z", _js_re.ASCII)
 
 
 def _js_to_number(value):
@@ -394,7 +415,7 @@ def _js_get(obj, key):
         index = _js_index_key(key)
         if index is not None and 0 <= index < len(obj):
             return obj[index]
-        if key in ("index", "input") and isinstance(obj, _JsMatchArray):
+        if key in ("index", "input") and isinstance(obj, _JS_MATCH_ARRAY_CLASS):
             return getattr(obj, key)
         if key in _JS_ARRAY_METHODS:
             raise _js_method_value(key)
@@ -408,7 +429,7 @@ def _js_get(obj, key):
         if index is not None:
             return obj[index] if 0 <= index < len(obj) else _JS_UNDEFINED
         raise TypeError(f"ts2py: reading {key!r} of a Buffer is outside the subset")
-    if isinstance(obj, BaseException) and not isinstance(obj, _JsObject):
+    if isinstance(obj, BaseException) and not isinstance(obj, _JS_OBJECT_CLASS):
         if key == "code":
             errno = getattr(obj, "errno", None) if isinstance(obj, OSError) else None
             name = _js_errno.errorcode.get(errno) if isinstance(errno, int) else None
@@ -418,7 +439,7 @@ def _js_get(obj, key):
         )
     if isinstance(obj, (_JsMap, _JsSet)) and key == "size":
         return len(obj)
-    if isinstance(obj, _JsObject):
+    if isinstance(obj, _JS_OBJECT_CLASS):
         return _js_object_get(obj, key if isinstance(key, str) else _js_str(key))
     if isinstance(key, str) and key in _js_methods_of(obj):
         raise _js_method_value(key)
@@ -442,7 +463,7 @@ def _js_put(obj, key, value):
             raise TypeError("ts2py: an array write past its end (a hole) is outside the subset")
         raise TypeError("ts2py: a property write on an array is outside the subset")
     key = key if isinstance(key, str) else _js_str(key)
-    if isinstance(obj, _JsObject):
+    if isinstance(obj, _JS_OBJECT_CLASS):
         if key.startswith("_") or key in _JS_OBJECT_PROTO_NAMES:
             raise TypeError(f"ts2py: assigning {key!r} on an instance is outside the subset")
         setattr(obj, key, value)
@@ -596,6 +617,7 @@ def _js_key(key):
     return key
 
 
+@_mypyc_attr(allow_interpreted_subclasses=True)
 class _JsMap:
 
     __slots__ = ("_entries", "_keys")
@@ -667,8 +689,8 @@ class _JsMap:
                 yield [tag if keys is None else keys.get(tag, tag), value]
 
 
-_JS_ABSENT = object()
-_JS_REORDER = object()
+_JS_ABSENT: _Final = object()
+_JS_REORDER: _Final = object()
 
 
 class _JsSet:
@@ -827,9 +849,9 @@ def _js_split_regex(text, separator):
     return out
 
 
-_JS_UNITS = {}
-_JS_UNITS_ENTRIES = 512
-_JS_UNITS_LONGEST = 1 << 16
+_JS_UNITS: dict = {}
+_JS_UNITS_ENTRIES: _Final = 512
+_JS_UNITS_LONGEST: _Final = 1 << 16
 
 
 def _js_code_units(text):
@@ -850,7 +872,7 @@ def _js_code_units(text):
     return units
 
 
-_JS_UNITS_LAST = [(None, "")]
+_JS_UNITS_LAST: _Final = [(None, "")]
 
 
 def _js_code_units_of(text):
@@ -867,7 +889,7 @@ def _js_surrogates(match):
     return chr(0xD800 + (code >> 10)) + chr(0xDC00 + (code & 0x3FF))
 
 
-_JS_ASTRAL = _js_re.compile("[\U00010000-\U0010FFFF]")
+_JS_ASTRAL: _Final = _js_re.compile("[\U00010000-\U0010FFFF]")
 
 
 def _js_str_width():
@@ -889,7 +911,7 @@ def _js_str_width():
         return None
 
 
-_JS_STR_WIDTH = _js_str_width()
+_JS_STR_WIDTH: _Final = _js_str_width()
 
 
 def _js_m_test(receiver, text):
@@ -923,11 +945,11 @@ def _js_every_string(receiver):
     return all(_js_typeof(item) == "string" for item in items)
 
 
-_JS_INT_ONLY = frozenset({int})
-_JS_LIST_ONLY = frozenset({list})
+_JS_INT_ONLY: _Final = frozenset({int})
+_JS_LIST_ONLY: _Final = frozenset({list})
 _js_item0 = _js_operator.itemgetter(0)
 _js_item1 = _js_operator.itemgetter(1)
-_JS_STR_ONLY = frozenset({str})
+_JS_STR_ONLY: _Final = frozenset({str})
 
 
 def _js_m_some(receiver, callback):
@@ -1113,7 +1135,11 @@ def _js_json_stringify(value):
 
 
 
-_JS_SURROGATE = _js_re.compile("[\ud800-\udfff]")
+_JS_SURROGATE: _Final = _js_re.compile("[\\ud800-\\udfff]")
+_JS_LEAD_MIN: _Final = chr(0xD800)
+_JS_LEAD_MAX: _Final = chr(0xDBFF)
+_JS_TRAIL_MIN: _Final = chr(0xDC00)
+_JS_TRAIL_MAX: _Final = chr(0xDFFF)
 
 
 def _js_from_units(text):
@@ -1123,7 +1149,12 @@ def _js_from_units(text):
 
 
 def _js_cat(left, right):
-    if left and right and "\ud800" <= left[-1] <= "\udbff" and "\udc00" <= right[0] <= "\udfff":
+    if (
+        left
+        and right
+        and _JS_LEAD_MIN <= left[-1] <= _JS_LEAD_MAX
+        and _JS_TRAIL_MIN <= right[0] <= _JS_TRAIL_MAX
+    ):
         return _js_from_units(left + right)
     return left + right
 
@@ -1229,16 +1260,16 @@ def _js_m_repeat(receiver, count=_JS_UNDEFINED):
     return _js_from_units(text * int(times))
 
 
-_JS_LOWER_NODE = {
+_JS_LOWER_NODE: _Final = {
     0x1C89: 0x1C8A, 0xA7CB: 0x0264, 0xA7CC: 0xA7CD, 0xA7CE: 0xA7CF, 0xA7D2: 0xA7D3,
     0xA7D4: 0xA7D5, 0xA7DA: 0xA7DB, 0xA7DC: 0x019B,
     **{cp: cp + 0x20 for cp in range(0x10D50, 0x10D66)},
     **{cp: cp + 0x1B for cp in range(0x16EA0, 0x16EB9)},
 }
-_JS_LOWER_NODE_FIND = _js_re.compile(
+_JS_LOWER_NODE_FIND: _Final = _js_re.compile(
     "[\u1c89\ua7cb\ua7cc\ua7ce\ua7d2\ua7d4\ua7da\ua7dc\U00010d50-\U00010d65\U00016ea0-\U00016eb8]"
 ).search
-_JS_SIGMA_NODE = {}
+_JS_SIGMA_NODE: dict = {}
 for _js_first, _js_last, _js_class in (
     (0x0897, 0x0897, 1), (0x0ECE, 0x0ECE, 1), (0x1ACF, 0x1ADD, 1), (0x1AE0, 0x1AEB, 1),
     (0xA7F1, 0xA7F1, 1), (0x10D4E, 0x10D4E, 1), (0x10D69, 0x10D6D, 1), (0x10D6F, 0x10D6F, 1),
@@ -1342,9 +1373,13 @@ def _js_m_replace(receiver, pattern, replacement):
     return _js_from_units(units[:at] + replacement + units[at + len(needle) :])
 
 
+@_mypyc_attr(native_class=False)
 class _JsMatchArray(list):
 
     __slots__ = ("index", "input")
+
+
+_JS_MATCH_ARRAY_CLASS: type = _JsMatchArray
 
 
 def _js_m_exec(receiver, text):
@@ -1363,7 +1398,7 @@ def _js_m_exec(receiver, text):
     return out
 
 
-_JS_DYNAMIC_RE = {}
+_JS_DYNAMIC_RE: dict = {}
 
 
 def _js_regexp_dynamic(*parts):
@@ -1408,8 +1443,8 @@ def _js_m_filter(receiver, callback):
 
 
 
-_JS_INFINITY = _js_math.inf
-_JS_NAN = _js_math.nan
+_JS_INFINITY: _Final = _js_math.inf
+_JS_NAN: _Final = _js_math.nan
 
 
 def _js_double_out(value):
@@ -1613,7 +1648,7 @@ def _js_number_is_nan(value):
     return isinstance(value, float) and value != value
 
 
-_JS_DIGITS = "0123456789abcdefghijklmnopqrstuvwxyz"
+_JS_DIGITS: _Final = "0123456789abcdefghijklmnopqrstuvwxyz"
 
 
 def _js_parse_int(text, radix=_JS_UNDEFINED):
@@ -1656,10 +1691,10 @@ def _js_parse_int(text, radix=_JS_UNDEFINED):
     return _js_num(sign * value)
 
 
-_JS_HEX_DIGITS = "0123456789abcdefABCDEF"
+_JS_HEX_DIGITS: _Final = "0123456789abcdefABCDEF"
 
 
-_JS_STR_INT_CAP = 10**4000
+_JS_STR_INT_CAP: _Final = 10**4000
 
 
 def _js_int_to_radix(value, radix):
@@ -1677,7 +1712,7 @@ def _js_int_to_radix(value, radix):
 
 
 def _js_m_toString(receiver, radix=_JS_UNDEFINED):
-    if isinstance(receiver, _JsObject):
+    if isinstance(receiver, _JS_OBJECT_CLASS):
         return _js_object_to_string(receiver)
     if isinstance(receiver, _JS_BYTES):
         return _js_buffer_to_string(receiver, radix)
@@ -1752,7 +1787,7 @@ class _JsBigInt:
         return _js_bigint_less(self, other) is False
 
 
-_JS_BIGINT_TEXT = _js_re.compile(
+_JS_BIGINT_TEXT: _Final = _js_re.compile(
     r"[+-]?[0-9]+\Z|0[xX][0-9a-fA-F]+\Z|0[oO][0-7]+\Z|0[bB][01]+\Z", _js_re.ASCII
 )
 
@@ -1799,7 +1834,7 @@ def _js_bigint_less(left, right):
 
 
 
-_JS_OBJECT_PROTO_NAMES = frozenset(
+_JS_OBJECT_PROTO_NAMES: _Final = frozenset(
     {
         "__proto__",
         "__defineGetter__",
@@ -1817,29 +1852,29 @@ _JS_OBJECT_PROTO_NAMES = frozenset(
 )
 
 
-_JS_STRING_METHODS = _JS_OBJECT_PROTO_NAMES | frozenset(
+_JS_STRING_METHODS: _Final = _JS_OBJECT_PROTO_NAMES | frozenset(
     "anchor at big blink bold charAt charCodeAt codePointAt concat endsWith fixed fontcolor "
     "fontsize includes indexOf isWellFormed italics lastIndexOf link localeCompare match matchAll "
     "normalize padEnd padStart repeat replace replaceAll search slice small split startsWith "
     "strike sub substr substring sup toLocaleLowerCase toLocaleUpperCase toLowerCase toUpperCase "
     "toWellFormed trim trimEnd trimLeft trimRight trimStart".split()
 )
-_JS_ARRAY_METHODS = _JS_OBJECT_PROTO_NAMES | frozenset(
+_JS_ARRAY_METHODS: _Final = _JS_OBJECT_PROTO_NAMES | frozenset(
     "at concat copyWithin entries every fill filter find findIndex findLast findLastIndex flat "
     "flatMap forEach includes indexOf join keys lastIndexOf map pop push reduce reduceRight "
     "reverse shift slice some sort splice toReversed toSorted toSpliced unshift values with".split()
 )
-_JS_MAP_METHODS = _JS_OBJECT_PROTO_NAMES | frozenset(
+_JS_MAP_METHODS: _Final = _JS_OBJECT_PROTO_NAMES | frozenset(
     "clear delete entries forEach get has keys set values".split()
 )
-_JS_SET_METHODS = _JS_OBJECT_PROTO_NAMES | frozenset(
+_JS_SET_METHODS: _Final = _JS_OBJECT_PROTO_NAMES | frozenset(
     "add clear delete difference entries forEach has intersection isDisjointFrom isSubsetOf "
     "isSupersetOf keys symmetricDifference union values".split()
 )
-_JS_NUMBER_METHODS = _JS_OBJECT_PROTO_NAMES | frozenset(
+_JS_NUMBER_METHODS: _Final = _JS_OBJECT_PROTO_NAMES | frozenset(
     "toExponential toFixed toPrecision".split()
 )
-_JS_REGEXP_METHODS = _JS_OBJECT_PROTO_NAMES | frozenset("compile exec test".split())
+_JS_REGEXP_METHODS: _Final = _JS_OBJECT_PROTO_NAMES | frozenset("compile exec test".split())
 
 
 def _js_methods_of(obj):
@@ -1872,14 +1907,15 @@ def _js_class_names(cls, attribute):
     return names
 
 
-_JS_CLASS_NAMES = {}
+_JS_CLASS_NAMES: dict = {}
 
 
+@_mypyc_attr(native_class=False)
 class _JsObject:
 
-    _js_name = "Object"
-    _js_own = frozenset()
-    _js_own_methods = frozenset()
+    _js_name: _ClassVar[str] = "Object"
+    _js_own: _ClassVar[frozenset[str]] = frozenset()
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset()
     _js_frozen = False
 
     def __setattr__(self, name, value):
@@ -1892,6 +1928,9 @@ class _JsObject:
         object.__setattr__(self, name, value)
 
 
+_JS_OBJECT_CLASS: type = _JsObject
+
+
 def _js_object_get(obj, key):
     own = obj.__dict__
     if key in own and not key.startswith("_"):
@@ -1902,7 +1941,7 @@ def _js_object_get(obj, key):
         return getattr(obj, key)
     if key in _JS_OBJECT_PROTO_NAMES:
         raise _js_inherited(key)
-    if key in ("stack", "cause") and isinstance(obj, _JsError):
+    if key in ("stack", "cause") and isinstance(obj, _JS_ERROR_CLASS):
         raise TypeError(f"ts2py: reading an Error's {key!r} is outside the subset")
     return _JS_UNDEFINED
 
@@ -1910,14 +1949,14 @@ def _js_object_get(obj, key):
 def _js_object_to_string(obj):
     if "toString" in _js_class_names(type(obj), "_js_own_methods"):
         result = obj.toString()
-        if isinstance(result, (dict, list, _JsObject)):
+        if isinstance(result, (dict, list, _JS_OBJECT_CLASS)):
             raise _JsTypeError("Cannot convert object to primitive value")
         return _js_str(result)
     return "[object Object]"
 
 
 def _js_invoke(receiver, name, *args):
-    if isinstance(receiver, _JsObject) and name in _js_class_names(
+    if isinstance(receiver, _JS_OBJECT_CLASS) and name in _js_class_names(
         type(receiver), "_js_own_methods"
     ):
         return getattr(receiver, name)(*args)
@@ -1929,7 +1968,7 @@ def _js_invoke(receiver, name, *args):
 def _js_dispatch(receiver, name, builtin, *args):
     if type(receiver) is list:
         return builtin(receiver, *args)
-    if isinstance(receiver, _JsObject) and name in _js_class_names(
+    if isinstance(receiver, _JS_OBJECT_CLASS) and name in _js_class_names(
         type(receiver), "_js_own_methods"
     ):
         return getattr(receiver, name)(*args)
@@ -1937,7 +1976,7 @@ def _js_dispatch(receiver, name, builtin, *args):
 
 
 def _js_freeze(value):
-    if not isinstance(value, _JsObject):
+    if not isinstance(value, _JS_OBJECT_CLASS):
         raise TypeError(
             "ts2py: Object.freeze of anything but a class instance is outside the subset"
         )
@@ -1945,6 +1984,7 @@ def _js_freeze(value):
     return value
 
 
+@_mypyc_attr(native_class=False)
 class _JsError(_JsObject, Exception):
 
     _js_name = "Error"
@@ -1973,19 +2013,34 @@ class _JsError(_JsObject, Exception):
         return _js_str(_js_get(self, "message"))
 
 
+_JS_ERROR_CLASS: type = _JsError
+
+
+@_mypyc_attr(native_class=False)
 class _JsTypeError(_JsError, TypeError):
     _js_name = "TypeError"
     name = "TypeError"
 
 
+_JS_TYPE_ERROR_CLASS: type = _JsTypeError
+
+
+@_mypyc_attr(native_class=False)
 class _JsRangeError(_JsError, ValueError):
     _js_name = "RangeError"
     name = "RangeError"
 
 
+_JS_RANGE_ERROR_CLASS: type = _JsRangeError
+
+
+@_mypyc_attr(native_class=False)
 class _JsSyntaxError(_JsError, ValueError):
     _js_name = "SyntaxError"
     name = "SyntaxError"
+
+
+_JS_SYNTAX_ERROR_CLASS: type = _JsSyntaxError
 
 
 def _js_throw(value):
@@ -1994,7 +2049,7 @@ def _js_throw(value):
     return TypeError("ts2py: throwing a value that is not an Error is outside the subset")
 
 
-_JS_PROTOTYPES = {}
+_JS_PROTOTYPES: dict = {}
 
 
 class _JsPrototype:
@@ -2005,7 +2060,7 @@ class _JsPrototype:
         self.name = name
 
 
-_JS_OBJECT_PROTOTYPE = _JsPrototype("Object.prototype")
+_JS_OBJECT_PROTOTYPE: _Final = _JsPrototype("Object.prototype")
 
 
 def _js_get_prototype_of(value):
@@ -2013,7 +2068,7 @@ def _js_get_prototype_of(value):
         raise _JsTypeError("Cannot convert undefined or null to object")
     if isinstance(value, dict):
         return _JS_OBJECT_PROTOTYPE
-    if isinstance(value, _JsObject):
+    if isinstance(value, _JS_OBJECT_CLASS):
         return type(value)
     kind = (
         "Boolean"
@@ -2038,7 +2093,7 @@ def _js_own_property_names(value):
         return [str(index) for index in range(len(value))]
     if isinstance(value, str):
         return [str(index) for index in range(_js_len(value))]
-    if isinstance(value, _JsObject):
+    if isinstance(value, _JS_OBJECT_CLASS):
         return [key for key in value.__dict__ if not key.startswith("_")]
     if value is None or value is _JS_UNDEFINED:
         raise _JsTypeError("Cannot convert undefined or null to object")
@@ -2070,7 +2125,7 @@ def _js_map_entries(value):
     return _JsMap(_js_object_entries(value))
 
 
-def _js_is_primitive_key(key):
+def _js_is_primitive_key(key) -> bool:
     return isinstance(key, (bool, int, float, _JsBigInt)) or key is None or key is _JS_UNDEFINED
 
 
@@ -2083,7 +2138,7 @@ def _js_object_has_own(obj, key):
         key = _js_str(key)
     if isinstance(obj, dict):
         return key in obj
-    if isinstance(obj, (list, str)) and not isinstance(obj, _JsMatchArray):
+    if isinstance(obj, (list, str)) and not isinstance(obj, _JS_MATCH_ARRAY_CLASS):
         if key == "length":
             return True
         index = _js_index_key(key)
@@ -2120,7 +2175,7 @@ def _js_in(key, obj):
         key = _js_str(key)
     if isinstance(obj, dict):
         return key in obj or key in _JS_OBJECT_PROTO_NAMES
-    if isinstance(obj, _JsObject):
+    if isinstance(obj, _JS_OBJECT_CLASS):
         return (
             (key in obj.__dict__ and not key.startswith("_"))
             or key in _js_class_names(type(obj), "_js_own")
@@ -2139,11 +2194,11 @@ def _js_in(key, obj):
     raise _JsTypeError(f"Cannot use 'in' operator to search for '{key}' in {_js_str(obj)}")
 
 
-_JS_MAP_PROTO_NAMES = frozenset(
+_JS_MAP_PROTO_NAMES: _Final = frozenset(
     ("clear", "constructor", "delete", "entries", "forEach", "get", "getOrInsert",
      "getOrInsertComputed", "has", "keys", "set", "size", "values")
 )
-_JS_SET_PROTO_NAMES = frozenset(
+_JS_SET_PROTO_NAMES: _Final = frozenset(
     ("add", "clear", "constructor", "delete", "difference", "entries", "forEach", "has",
      "intersection", "isDisjointFrom", "isSubsetOf", "isSupersetOf", "keys", "size",
      "symmetricDifference", "union", "values")
@@ -2234,6 +2289,7 @@ def _js_json_number(text):
     return _js_double_out(float(text))
 
 
+@_mypyc_attr(native_class=False)
 class _JsJsonParseError(_JsSyntaxError):
 
     def __init__(self, python_message):
@@ -2241,11 +2297,14 @@ class _JsJsonParseError(_JsSyntaxError):
         object.__setattr__(self, "_js_python_message", python_message)
 
     @property
-    def message(self):
+    def message(self) -> str:  # type: ignore[override]
         raise TypeError("ts2py: the message of a JSON.parse SyntaxError is outside the subset")
 
     def __str__(self):
         return self._js_python_message
+
+
+_JS_JSON_PARSE_ERROR_CLASS: type = _JsJsonParseError
 
 
 def _js_json_int(text):
@@ -2307,7 +2366,7 @@ def _js_json_parse(text):
 
 
 def _js_catch(error):
-    if isinstance(error, _JsError) or isinstance(error, OSError):
+    if isinstance(error, _JS_ERROR_CLASS) or isinstance(error, OSError):
         return error
     if type(error) is TypeError and str(error).startswith("Cannot read properties of "):
         return error
@@ -2343,7 +2402,7 @@ def _js_py_value(value):
 
 
 
-_JS_BYTES = (bytes, bytearray, memoryview)
+_JS_BYTES: _Final = (bytes, bytearray, memoryview)
 
 
 def _js_buffer_to_string(buffer, encoding=_JS_UNDEFINED):
@@ -2513,7 +2572,7 @@ def _js_date_to_iso(value):
 
 
 def _js_object_assign(target, *sources):
-    if not isinstance(target, (_JsObject, dict)):
+    if not isinstance(target, (_JS_OBJECT_CLASS, dict)):
         raise TypeError("ts2py: Object.assign onto anything but an object is outside the subset")
     for source in sources:
         if source is None or source is _JS_UNDEFINED:
@@ -2530,7 +2589,7 @@ def _js_object_assign(target, *sources):
 def _js_constructor_of(value):
     if value is None or value is _JS_UNDEFINED:
         raise TypeError(f"Cannot read properties of {_js_str(value)} (reading 'constructor')")
-    if isinstance(value, _JsObject):
+    if isinstance(value, _JS_OBJECT_CLASS):
         name = type(value)._js_name
     elif isinstance(value, bool):
         name = "Boolean"
@@ -2573,7 +2632,7 @@ def _js_json_full(value, replacer, gap):
             value = replacer(key, value)
         if value is None:
             return "null"
-        if value is _JS_UNDEFINED or (callable(value) and not isinstance(value, _JsObject)):
+        if value is _JS_UNDEFINED or (callable(value) and not isinstance(value, _JS_OBJECT_CLASS)):
             return None
         if isinstance(value, bool):
             return "true" if value else "false"
@@ -2631,7 +2690,7 @@ def _js_json_full(value, replacer, gap):
 def _js_json_stringify_with(value, replacer=_JS_UNDEFINED, space=_JS_UNDEFINED):
     if replacer is None or replacer is _JS_UNDEFINED:
         replacer = None
-    elif not callable(replacer) or isinstance(replacer, (list, dict, _JsObject)):
+    elif not callable(replacer) or isinstance(replacer, (list, dict, _JS_OBJECT_CLASS)):
         raise TypeError(
             "ts2py: a JSON.stringify replacer that is not a function is outside the subset"
         )
@@ -2642,22 +2701,22 @@ def _js_json_stringify_with(value, replacer=_JS_UNDEFINED, space=_JS_UNDEFINED):
     return _JS_UNDEFINED if text is None else text
 
 
-_JS_JSON_WS = _js_re.compile(r"[ \t\n\r]*")
-_JS_JSON_DECODER = _js_jsonlib.JSONDecoder(
+_JS_JSON_WS: _Final = _js_re.compile(r"[ \t\n\r]*")
+_JS_JSON_DECODER: _Final = _js_jsonlib.JSONDecoder(
     parse_int=_js_json_int,
     parse_float=_js_json_number,
     parse_constant=_js_json_reject_constant,
 )
-_JS_JSON_DECODER_INTS = _js_jsonlib.JSONDecoder(
+_JS_JSON_DECODER_INTS: _Final = _js_jsonlib.JSONDecoder(
     parse_int=int,
     parse_float=_js_json_number,
     parse_constant=_js_json_reject_constant,
 )
-_JS_DIGITS_TO_ZERO = bytes.maketrans(b"123456789", b"000000000")
-_JS_SIXTEEN_ZEROS = b"0" * 16
-_JS_JSON_NEG_ZERO = _js_re.compile(r"-0(?![.eE0-9])")
-_JS_ZERO_RUN = _js_re.compile(b"0+")
-_JS_JSON_NUMBER = _js_re.compile(r"-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?")
+_JS_DIGITS_TO_ZERO: _Final = bytes.maketrans(b"123456789", b"000000000")
+_JS_SIXTEEN_ZEROS: _Final = b"0" * 16
+_JS_JSON_NEG_ZERO: _Final = _js_re.compile(r"-0(?![.eE0-9])")
+_JS_ZERO_RUN: _Final = _js_re.compile(b"0+")
+_JS_JSON_NUMBER: _Final = _js_re.compile(r"-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?")
 
 
 def _js_json_parse_deep(text):
@@ -2787,7 +2846,7 @@ def _js_m_match(receiver, pattern):
     raise TypeError("ts2py: .match() of anything but a regex literal is outside the subset")
 
 
-_JS_EXACT = _js_decimal.Context(prec=1200, Emax=2000, Emin=-2000)
+_JS_EXACT: _Final = _js_decimal.Context(prec=1200, Emax=2000, Emin=-2000)
 
 
 def _js_m_toFixed(receiver, digits=_JS_UNDEFINED):
@@ -2836,10 +2895,10 @@ def _js_buffer_index_of(buffer, search, offset):
 
 
 
-_JS_F64_MAX = 2**26
-_JS_FLOAT_KINDS = frozenset({float})
-_JS_NUMBER_KINDS = frozenset({float, int})
-_JS_INT_KINDS = frozenset({int})
+_JS_F64_MAX: _Final = 2**26
+_JS_FLOAT_KINDS: _Final = frozenset({float})
+_JS_NUMBER_KINDS: _Final = frozenset({float, int})
+_JS_INT_KINDS: _Final = frozenset({int})
 
 
 def _js_f64_new(length):
@@ -2928,7 +2987,7 @@ def _js_doubles(items, start, stop):
     return all(_JS_SAFE_MIN <= v <= _JS_SAFE_MAX for v in part if type(v) is int)
 
 
-_JS_V8_MIN_GALLOP = 7
+_JS_V8_MIN_GALLOP: _Final = 7
 
 
 def _js_v8_timsort(items, cmp):
@@ -3397,3 +3456,84 @@ def _js_sort_by_f64(items, keys, descending, compare):
                 return items
         return _js_v8_sort(items, compare)
     return _js_m_sort(items, compare)
+
+
+def _js_instanceof(value, cls) -> bool:
+    return isinstance(value, cls)
+
+
+
+_JS_LIFT_SAFE_INT: _Final = 2**53 - 1
+_JS_LIFT_SAME: _Final = frozenset({str, bool, type(None)})
+
+
+_JS_LIFT_INT: _Final = frozenset({int})
+
+
+def _js_lift_ints_safe(ints):
+    return -_JS_LIFT_SAFE_INT <= min(ints) and max(ints) <= _JS_LIFT_SAFE_INT
+
+
+_JS_LIFT_LIST: _Final = frozenset({list})
+_JS_LIFT_DICT: _Final = frozenset({dict})
+_JS_LIFT_STR: _Final = frozenset({str})
+_JS_LIFT_FLAT: _Final = _JS_LIFT_SAME | {int, list, dict}
+
+
+def _js_lift_values_same(values):
+    kinds = set(map(type, values))
+    if kinds <= _JS_LIFT_SAME:
+        return True
+    if not kinds <= _JS_LIFT_FLAT:
+        return False
+    if int in kinds and not _js_lift_ints_safe(
+        values if kinds == _JS_LIFT_INT else [v for v in values if type(v) is int]
+    ):
+        return False
+    if list in kinds:
+        lists = values if kinds == _JS_LIFT_LIST else [v for v in values if type(v) is list]
+        if not _js_lift_values_same(list(_js_itertools.chain.from_iterable(lists))):
+            return False
+    if dict in kinds:
+        dicts = values if kinds == _JS_LIFT_DICT else [v for v in values if type(v) is dict]
+        keys = list(_js_itertools.chain.from_iterable(dicts))
+        if not set(map(type, keys)) <= _JS_LIFT_STR or any(map(str.isdigit, keys)):
+            return False
+        values = list(_js_itertools.chain.from_iterable(map(dict.values, dicts)))
+        if not _js_lift_values_same(values):
+            return False
+    return True
+
+
+def _js_lifted(value):
+    kind = type(value)
+    if kind in _JS_LIFT_SAME:
+        return value
+    if kind is int:
+        return value if -_JS_LIFT_SAFE_INT <= value <= _JS_LIFT_SAFE_INT else float(value)
+    if kind is float:
+        if value.is_integer() and -_JS_LIFT_SAFE_INT <= value <= _JS_LIFT_SAFE_INT and not (
+            value == 0 and _js_math.copysign(1.0, value) < 0
+        ):
+            return int(value)
+        return value
+    if kind is list:
+        if _js_lift_values_same(value):
+            return value
+        return [_js_lifted(item) for item in value]
+    if kind is dict:
+        keys = _js_own_keys(value)
+        if keys == list(value) and _js_lift_values_same(list(value.values())):
+            return value
+        return {key: _js_lifted(value[key]) for key in keys}
+    if value is _JS_UNDEFINED:
+        return None
+    if kind is _JsMap and value._keys is None:
+        entries = value._entries
+        if set(map(type, entries)) <= _JS_LIFT_STR and _js_lift_values_same(list(entries.values())):
+            return dict(entries)
+    if isinstance(value, _JsMap):
+        return {_js_str(key): _js_lifted(item) for key, item in value}
+    if kind is _JsBigInt:
+        return value.value
+    raise TypeError(f"ts2py: dumpJsValue of a {kind.__name__} is outside the subset")

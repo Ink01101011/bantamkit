@@ -5,6 +5,7 @@
 
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
+    _Final,
     _js_add,
     _js_and,
     _js_array,
@@ -23,6 +24,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_get,
     _js_gt,
     _js_in,
+    _js_instanceof,
     _js_invoke,
     _js_is_double,
     _js_json_parse,
@@ -72,6 +74,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_truthy,
     _js_typeof,
     _js_units_slice,
+    _JsAny,
     _JsBigInt,
     _JsError,
     _JsMap,
@@ -88,43 +91,43 @@ from .usage import reduce_usage, store_id
 __all__ = ["JOB_DAYS", "LEDGER_DAYS", "LOG_DAYS", "RETENTION_ENV", "SEARCH_MAX", "SKILL_AUDIT_ENV", "STATE_NAME", "TTL_S", "audit_enabled", "bundle_bytes", "child_sweep", "due", "enabled", "hook_log_reducer", "job_doc", "maybe_spawn", "now_stamp", "parse_now", "run_retention", "search_archived", "shiftwork_cold", "state_path", "sync_jobs"]
 
 
-_JS_RE_0 = _js_re.compile("^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\\.([0-9]{3}))?Z\\Z", _js_re.ASCII)
+_JS_RE_0: _Final = _js_re.compile("^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\\.([0-9]{3}))?Z\\Z", _js_re.ASCII)
 
 
-RETENTION_ENV = "BANTAMKIT_RETENTION"
+RETENTION_ENV: _JsAny = "BANTAMKIT_RETENTION"
 
 
-SKILL_AUDIT_ENV = "BANTAMKIT_SKILL_AUDIT"
+SKILL_AUDIT_ENV: _JsAny = "BANTAMKIT_SKILL_AUDIT"
 
 
-TTL_S = 86400
+TTL_S: _JsAny = 86400
 
 
-LEDGER_DAYS = 7
+LEDGER_DAYS: _JsAny = 7
 
 
-LOG_DAYS = 30
+LOG_DAYS: _JsAny = 30
 
 
-JOB_DAYS = 7
+JOB_DAYS: _JsAny = 7
 
 
-STATE_NAME = "retention.json"
+STATE_NAME: _JsAny = "retention.json"
 
 
-SEARCH_MAX = 50
+SEARCH_MAX: _JsAny = 50
 
 
-_OFF = _JsSet(["off", "0", "false", "no"])
+_OFF: _JsAny = _JsSet(["off", "0", "false", "no"])
 
 
-_NOW = _JS_RE_0
+_NOW: _JsAny = _JS_RE_0
 
 
-_CLOSED = _JsSet(["done", "dropped"])
+_CLOSED: _JsAny = _JsSet(["done", "dropped"])
 
 
-_DAY_NS = _js_mul(_JsBigInt(86400), _JsBigInt(1000000000))
+_DAY_NS: _JsAny = _js_mul(_JsBigInt(86400), _JsBigInt(1000000000))
 
 
 def _is_ledger__typed(name):
@@ -168,10 +171,10 @@ def _is_top_checkpoint(r):
     return r == ".shiftwork/checkpoint.json" or _js_ge(_js_len(r), 28) and _js_m_startsWith(r, ".shiftwork/checkpoint-") and _js_m_endsWith(r, ".json")
 
 
-_DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+_DAYS_IN_MONTH: _JsAny = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
 
-_STRICT = TextDecoder("utf-8", {"fatal": True, "ignoreBOM": True})
+_STRICT: _JsAny = TextDecoder("utf-8", {"fatal": True, "ignoreBOM": True})
 
 
 def enabled():
@@ -848,7 +851,7 @@ def _sync_jobs__typed(home, root):
     except Exception as _js_error47:
         _js_caught47 = _js_catch(_js_error47)
     if _js_caught47 is not None:
-        if not isinstance(_js_caught47, ColdIndexError):
+        if not _js_instanceof(_js_caught47, ColdIndexError):
             raise _js_caught47
         _js_invoke(cold, "reset")
         held = _JsSet()
@@ -891,7 +894,7 @@ def sync_jobs(home, root):
     except Exception as _js_error49:
         _js_caught49 = _js_catch(_js_error49)
     if _js_caught49 is not None:
-        if not isinstance(_js_caught49, ColdIndexError):
+        if not _js_instanceof(_js_caught49, ColdIndexError):
             raise _js_caught49
         _js_invoke(cold, "reset")
         held = _JsSet()
@@ -983,7 +986,7 @@ def _compact_cold__typed(home, roots, report):
         except Exception as _js_error59:
             _js_caught59 = _js_catch(_js_error59)
         if _js_caught59 is not None:
-            if isinstance(_js_caught59, ColdIndexError):
+            if _js_instanceof(_js_caught59, ColdIndexError):
                 _js_invoke(cold, "reset")
     return _JS_UNDEFINED
 
@@ -1011,7 +1014,7 @@ def _compact_cold(home, roots, report):
         except Exception as _js_error60:
             _js_caught60 = _js_catch(_js_error60)
         if _js_caught60 is not None:
-            if isinstance(_js_caught60, ColdIndexError):
+            if _js_instanceof(_js_caught60, ColdIndexError):
                 _js_invoke(cold, "reset")
     return _JS_UNDEFINED
 
@@ -1250,7 +1253,7 @@ def _child_sweep__typed(argv, now=_JS_UNDEFINED):
             except Exception as _js_error77:
                 _js_caught77 = _js_catch(_js_error77)
             if _js_caught77 is not None:
-                _write_state(home, {"ran_at": stamp, "error": _js_get(_js_constructor_of(_js_caught77), "name") if isinstance(_js_caught77, _JsError) else "Error"})
+                _write_state(home, {"ran_at": stamp, "error": _js_get(_js_constructor_of(_js_caught77), "name") if _js_instanceof(_js_caught77, _JsError) else "Error"})
     except Exception as _js_error75:
         _js_caught75 = _js_catch(_js_error75)
     if _js_caught75 is not None:
@@ -1289,7 +1292,7 @@ def child_sweep(argv, now=_JS_UNDEFINED):
             except Exception as _js_error80:
                 _js_caught80 = _js_catch(_js_error80)
             if _js_caught80 is not None:
-                _write_state(home, {"ran_at": stamp, "error": _js_get(_js_constructor_of(_js_caught80), "name") if isinstance(_js_caught80, _JsError) else "Error"})
+                _write_state(home, {"ran_at": stamp, "error": _js_get(_js_constructor_of(_js_caught80), "name") if _js_instanceof(_js_caught80, _JsError) else "Error"})
     except Exception as _js_error78:
         _js_caught78 = _js_catch(_js_error78)
     if _js_caught78 is not None:
@@ -1314,7 +1317,7 @@ def search_archived(checkpoint, search, home):
         except Exception as _js_error85:
             _js_caught85 = _js_catch(_js_error85)
         if _js_caught85 is not None:
-            if not isinstance(_js_caught85, ColdIndexError):
+            if not _js_instanceof(_js_caught85, ColdIndexError):
                 raise _js_caught85
             _js_invoke(shiftwork_cold(home, root), "reset")
             cold = sync_jobs(home, root)

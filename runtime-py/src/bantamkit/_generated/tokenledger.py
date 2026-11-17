@@ -5,6 +5,7 @@
 
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
+    _ClassVar,
     _js_add,
     _js_array,
     _js_cat,
@@ -42,8 +43,10 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_strict_eq,
     _js_truthy,
     _js_typeof,
+    _JsAny,
     _JsMap,
     _JsSet,
+    _mypyc_attr,
 )
 from ._ts2py_adapters import BantamError, cmp_codepoint, exists_sync, lstat_sync, path_join, read_file_sync, readdir_sync, stat_sync, TextDecoder
 from .pricing import MAX_SAFE_INT, TOKEN_CLASSES, load_price_table, price_tokens
@@ -51,43 +54,44 @@ from .pricing import MAX_SAFE_INT, TOKEN_CLASSES, load_price_table, price_tokens
 __all__ = ["OMISSION_ORDER", "OMIT_DUPLICATE_REQUEST", "OMIT_MALFORMED_USAGE", "OMIT_NOT_ASSISTANT", "OMIT_NOT_OBJECT", "OMIT_NO_REQUEST_ID", "OMIT_NO_SESSION", "OMIT_NO_USAGE", "OMIT_UNDECODABLE", "OMIT_UNPARSED", "TRANSCRIPT_SUFFIX", "TokenLedgerError", "as_dict", "as_json", "read", "walk"]
 
 
-OMIT_UNDECODABLE = "undecodable-file"
+OMIT_UNDECODABLE: _JsAny = "undecodable-file"
 
 
-OMIT_UNPARSED = "unparsed-line"
+OMIT_UNPARSED: _JsAny = "unparsed-line"
 
 
-OMIT_NOT_OBJECT = "not-an-object"
+OMIT_NOT_OBJECT: _JsAny = "not-an-object"
 
 
-OMIT_NO_SESSION = "no-session-id"
+OMIT_NO_SESSION: _JsAny = "no-session-id"
 
 
-OMIT_NOT_ASSISTANT = "not-an-assistant-record"
+OMIT_NOT_ASSISTANT: _JsAny = "not-an-assistant-record"
 
 
-OMIT_NO_USAGE = "no-usage"
+OMIT_NO_USAGE: _JsAny = "no-usage"
 
 
-OMIT_MALFORMED_USAGE = "malformed-usage"
+OMIT_MALFORMED_USAGE: _JsAny = "malformed-usage"
 
 
-OMIT_NO_REQUEST_ID = "no-request-id"
+OMIT_NO_REQUEST_ID: _JsAny = "no-request-id"
 
 
-OMIT_DUPLICATE_REQUEST = "duplicate-request"
+OMIT_DUPLICATE_REQUEST: _JsAny = "duplicate-request"
 
 
-OMISSION_ORDER = [OMIT_UNDECODABLE, OMIT_UNPARSED, OMIT_NOT_OBJECT, OMIT_NO_SESSION, OMIT_NOT_ASSISTANT, OMIT_NO_USAGE, OMIT_MALFORMED_USAGE, OMIT_NO_REQUEST_ID, OMIT_DUPLICATE_REQUEST]
+OMISSION_ORDER: _JsAny = [OMIT_UNDECODABLE, OMIT_UNPARSED, OMIT_NOT_OBJECT, OMIT_NO_SESSION, OMIT_NOT_ASSISTANT, OMIT_NO_USAGE, OMIT_MALFORMED_USAGE, OMIT_NO_REQUEST_ID, OMIT_DUPLICATE_REQUEST]
 
 
-TRANSCRIPT_SUFFIX = ".jsonl"
+TRANSCRIPT_SUFFIX: _JsAny = ".jsonl"
 
 
+@_mypyc_attr(native_class=False)
 class TokenLedgerError(BantamError):
-    _js_name = "TokenLedgerError"
-    _js_own = frozenset()
-    _js_own_methods = frozenset()
+    _js_name: _ClassVar[str] = "TokenLedgerError"
+    _js_own: _ClassVar[frozenset[str]] = frozenset()
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset()
 
 
 def _is_count(value):

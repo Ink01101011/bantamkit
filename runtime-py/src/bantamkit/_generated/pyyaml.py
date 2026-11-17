@@ -8,6 +8,8 @@ from ._ts2py_runtime import (  # noqa: F401
     _JS_NAN,
     _JS_OBJECT_PROTOTYPE,
     _JS_UNDEFINED,
+    _ClassVar,
+    _Final,
     _js_abs,
     _js_add,
     _js_and,
@@ -27,6 +29,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_get,
     _js_get_prototype_of,
     _js_gt,
+    _js_instanceof,
     _js_invoke,
     _js_json_stringify,
     _js_le,
@@ -71,64 +74,67 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_strict_eq,
     _js_truthy,
     _js_typeof,
+    _JsAny,
     _JsBigInt,
     _JsError,
     _JsGlobalRegExp,
     _JsMap,
     _JsObject,
+    _mypyc_attr,
 )
 from ._ts2py_adapters import py_float_repr
 
 __all__ = ["NULL_TAG", "PyScalar", "STR_TAG", "TIMESTAMP_TAG", "YamlConstructError", "YamlEmitError", "construct_plain", "resolve_implicit_tag", "safe_dump_mapping"]
 
 
-_JS_RE_0 = _js_re.compile("^(?:yes|Yes|YES|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF)\\Z", _js_re.ASCII)
-_JS_RE_1 = _js_re.compile("^(?:[-+]?(?:[0-9][0-9_]*)\\.[0-9_]*(?:[eE][-+][0-9]+)?|\\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\\.[0-9_]*|[-+]?\\.(?:inf|Inf|INF)|\\.(?:nan|NaN|NAN))\\Z", _js_re.ASCII)
-_JS_RE_2 = _js_re.compile("^(?:[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0x[0-9a-fA-F_]+|[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+)\\Z", _js_re.ASCII)
-_JS_RE_3 = _js_re.compile("^(?:<<)\\Z", _js_re.ASCII)
-_JS_RE_4 = _js_re.compile("^(?:~|null|Null|NULL|)\\Z", _js_re.ASCII)
-_JS_RE_5 = _js_re.compile("^(?:[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]|[0-9][0-9][0-9][0-9]-[0-9][0-9]?-[0-9][0-9]?(?:[Tt]|[ \\t]+)[0-9][0-9]?:[0-9][0-9]:[0-9][0-9](?:\\.[0-9]*)?(?:[ \\t]*(?:Z|[-+][0-9][0-9]?(?::[0-9][0-9])?))?)\\Z", _js_re.ASCII)
-_JS_RE_6 = _js_re.compile("^(?:=)\\Z", _js_re.ASCII)
-_JS_RE_7 = _js_re.compile("^(?:!|&|\\*)\\Z", _js_re.ASCII)
-_JS_RE_8 = _js_re.compile("^(?:0|[1-9][0-9]{0,9})\\Z", _js_re.ASCII)
-_JS_RE_9 = _JsGlobalRegExp(_js_re.compile("_", _js_re.ASCII))
-_JS_RE_10 = _js_re.compile("^([0-9][0-9][0-9][0-9])-([0-9][0-9]?)-([0-9][0-9]?)(?:(?:[Tt]|[ \\t]+)([0-9][0-9]?):([0-9][0-9]):([0-9][0-9])(?:\\.([0-9]*))?(?:[ \\t]*(Z|([-+])([0-9][0-9]?)(?::([0-9][0-9]))?))?)?\\Z", _js_re.ASCII)
+_JS_RE_0: _Final = _js_re.compile("^(?:yes|Yes|YES|no|No|NO|true|True|TRUE|false|False|FALSE|on|On|ON|off|Off|OFF)\\Z", _js_re.ASCII)
+_JS_RE_1: _Final = _js_re.compile("^(?:[-+]?(?:[0-9][0-9_]*)\\.[0-9_]*(?:[eE][-+][0-9]+)?|\\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\\.[0-9_]*|[-+]?\\.(?:inf|Inf|INF)|\\.(?:nan|NaN|NAN))\\Z", _js_re.ASCII)
+_JS_RE_2: _Final = _js_re.compile("^(?:[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0x[0-9a-fA-F_]+|[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+)\\Z", _js_re.ASCII)
+_JS_RE_3: _Final = _js_re.compile("^(?:<<)\\Z", _js_re.ASCII)
+_JS_RE_4: _Final = _js_re.compile("^(?:~|null|Null|NULL|)\\Z", _js_re.ASCII)
+_JS_RE_5: _Final = _js_re.compile("^(?:[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]|[0-9][0-9][0-9][0-9]-[0-9][0-9]?-[0-9][0-9]?(?:[Tt]|[ \\t]+)[0-9][0-9]?:[0-9][0-9]:[0-9][0-9](?:\\.[0-9]*)?(?:[ \\t]*(?:Z|[-+][0-9][0-9]?(?::[0-9][0-9])?))?)\\Z", _js_re.ASCII)
+_JS_RE_6: _Final = _js_re.compile("^(?:=)\\Z", _js_re.ASCII)
+_JS_RE_7: _Final = _js_re.compile("^(?:!|&|\\*)\\Z", _js_re.ASCII)
+_JS_RE_8: _Final = _js_re.compile("^(?:0|[1-9][0-9]{0,9})\\Z", _js_re.ASCII)
+_JS_RE_9: _Final = _JsGlobalRegExp(_js_re.compile("_", _js_re.ASCII))
+_JS_RE_10: _Final = _js_re.compile("^([0-9][0-9][0-9][0-9])-([0-9][0-9]?)-([0-9][0-9]?)(?:(?:[Tt]|[ \\t]+)([0-9][0-9]?):([0-9][0-9]):([0-9][0-9])(?:\\.([0-9]*))?(?:[ \\t]*(Z|([-+])([0-9][0-9]?)(?::([0-9][0-9]))?))?)?\\Z", _js_re.ASCII)
 
 
-STR_TAG = "tag:yaml.org,2002:str"
+STR_TAG: _JsAny = "tag:yaml.org,2002:str"
 
 
-NULL_TAG = "tag:yaml.org,2002:null"
+NULL_TAG: _JsAny = "tag:yaml.org,2002:null"
 
 
-_BOOL_TAG = "tag:yaml.org,2002:bool"
+_BOOL_TAG: _JsAny = "tag:yaml.org,2002:bool"
 
 
-_INT_TAG = "tag:yaml.org,2002:int"
+_INT_TAG: _JsAny = "tag:yaml.org,2002:int"
 
 
-_FLOAT_TAG = "tag:yaml.org,2002:float"
+_FLOAT_TAG: _JsAny = "tag:yaml.org,2002:float"
 
 
-_MERGE_TAG = "tag:yaml.org,2002:merge"
+_MERGE_TAG: _JsAny = "tag:yaml.org,2002:merge"
 
 
-TIMESTAMP_TAG = "tag:yaml.org,2002:timestamp"
+TIMESTAMP_TAG: _JsAny = "tag:yaml.org,2002:timestamp"
 
 
-_VALUE_TAG = "tag:yaml.org,2002:value"
+_VALUE_TAG: _JsAny = "tag:yaml.org,2002:value"
 
 
-_YAML_TAG = "tag:yaml.org,2002:yaml"
+_YAML_TAG: _JsAny = "tag:yaml.org,2002:yaml"
 
 
+@_mypyc_attr(native_class=False)
 class YamlEmitError(_JsError):
-    _js_name = "YamlEmitError"
-    _js_own = frozenset()
-    _js_own_methods = frozenset()
+    _js_name: _ClassVar[str] = "YamlEmitError"
+    _js_own: _ClassVar[frozenset[str]] = frozenset()
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset()
 
 
-_RESOLVERS = [[_BOOL_TAG, _JS_RE_0, ["y", "Y", "n", "N", "t", "T", "f", "F", "o", "O"]], [_FLOAT_TAG, _JS_RE_1, ["-", "+", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "."]], [_INT_TAG, _JS_RE_2, ["-", "+", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]], [_MERGE_TAG, _JS_RE_3, ["<"]], [NULL_TAG, _JS_RE_4, ["~", "n", "N", ""]], [TIMESTAMP_TAG, _JS_RE_5, ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]], [_VALUE_TAG, _JS_RE_6, ["="]], [_YAML_TAG, _JS_RE_7, ["!", "&", "*"]]]
+_RESOLVERS: _JsAny = [[_BOOL_TAG, _JS_RE_0, ["y", "Y", "n", "N", "t", "T", "f", "F", "o", "O"]], [_FLOAT_TAG, _JS_RE_1, ["-", "+", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "."]], [_INT_TAG, _JS_RE_2, ["-", "+", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]], [_MERGE_TAG, _JS_RE_3, ["<"]], [NULL_TAG, _JS_RE_4, ["~", "n", "N", ""]], [TIMESTAMP_TAG, _JS_RE_5, ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]], [_VALUE_TAG, _JS_RE_6, ["="]], [_YAML_TAG, _JS_RE_7, ["!", "&", "*"]]]
 
 
 def _resolve_implicit_tag__typed(value):
@@ -149,10 +155,10 @@ def resolve_implicit_tag(value):
     return STR_TAG
 
 
-_BREAKS = "\n\u0085\u2028\u2029"
+_BREAKS: _JsAny = "\n\u0085\u2028\u2029"
 
 
-_WS_OR_BREAK = "\x00 \t\r\n\u0085\u2028\u2029"
+_WS_OR_BREAK: _JsAny = "\x00 \t\r\n\u0085\u2028\u2029"
 
 
 def _is_break__typed(ch):
@@ -263,7 +269,7 @@ def _analyze_scalar(chars):
     return {"empty": False, "multiline": line_breaks, "allowFlowPlain": allow_flow_plain, "allowBlockPlain": allow_block_plain, "allowSingleQuoted": allow_single_quoted, "allowDoubleQuoted": allow_double_quoted, "allowBlock": allow_block}
 
 
-_ESCAPE_REPLACEMENTS = _JsMap([[0, "0"], [7, "a"], [8, "b"], [9, "t"], [10, "n"], [11, "v"], [12, "f"], [13, "r"], [27, "e"], [34, "\""], [92, "\\"], [133, "N"], [160, "_"], [8232, "L"], [8233, "P"]])
+_ESCAPE_REPLACEMENTS: _JsAny = _JsMap([[0, "0"], [7, "a"], [8, "b"], [9, "t"], [10, "n"], [11, "v"], [12, "f"], [13, "r"], [27, "e"], [34, "\""], [92, "\\"], [133, "N"], [160, "_"], [8232, "L"], [8233, "P"]])
 
 
 def _hex(cp, width):
@@ -273,10 +279,11 @@ def _hex(cp, width):
 _hex__typed = _hex
 
 
+@_mypyc_attr(native_class=False)
 class _Emitter(_JsObject):
-    _js_name = "Emitter"
-    _js_own = frozenset({"atIndention", "bestIndent", "bestWidth", "column", "increaseIndent", "indent", "indention", "indents", "parts", "popIndent", "push", "toString", "whitespace", "writeDoubleQuoted", "writeIndent", "writeIndicator", "writeLineBreak", "writePlain", "writeScalar", "writeSingleQuoted"})
-    _js_own_methods = frozenset({"increaseIndent", "popIndent", "push", "toString", "writeDoubleQuoted", "writeIndent", "writeIndicator", "writeLineBreak", "writePlain", "writeScalar", "writeSingleQuoted"})
+    _js_name: _ClassVar[str] = "Emitter"
+    _js_own: _ClassVar[frozenset[str]] = frozenset({"atIndention", "bestIndent", "bestWidth", "column", "increaseIndent", "indent", "indention", "indents", "parts", "popIndent", "push", "toString", "whitespace", "writeDoubleQuoted", "writeIndent", "writeIndicator", "writeLineBreak", "writePlain", "writeScalar", "writeSingleQuoted"})
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset({"increaseIndent", "popIndent", "push", "toString", "writeDoubleQuoted", "writeIndent", "writeIndicator", "writeLineBreak", "writePlain", "writeScalar", "writeSingleQuoted"})
 
     def __init__(self, *_):
         self.parts = []
@@ -309,19 +316,11 @@ class _Emitter(_JsObject):
         return _JS_UNDEFINED
 
     @property
-    def atIndention(self):
+    def atIndention(self) -> object:
         return self.indention
 
     def writeIndicator(self, indicator, need_whitespace, whitespace=_JS_UNDEFINED, indention=_JS_UNDEFINED):
-        if whitespace is _JS_UNDEFINED:
-            whitespace = False
-        if indention is _JS_UNDEFINED:
-            indention = False
-        data = indicator if _js_truthy(_js_or(self.whitespace, lambda: not _js_truthy(need_whitespace))) else _js_add(" ", indicator)
-        self.whitespace = whitespace
-        self.indention = _js_and_value(self.indention, indention)
-        self.push(data)
-        return _JS_UNDEFINED
+        return _js_method__Emitter_writeIndicator(self, indicator, need_whitespace, whitespace, indention)
 
     def writeLineBreak(self, data=_JS_UNDEFINED):
         if data is _JS_UNDEFINED:
@@ -343,22 +342,7 @@ class _Emitter(_JsObject):
         return _JS_UNDEFINED
 
     def writeScalar(self, value, tag, simple_key_context):
-        chars = [*value]
-        analysis = _analyze_scalar(chars)
-        implicit = resolve_implicit_tag(value) == tag
-        split = not _js_truthy(simple_key_context)
-        style = "\""
-        if _js_truthy(_js_and(implicit and not _js_truthy(_js_and(simple_key_context, lambda: _js_or(_js_get(analysis, "empty"), lambda: _js_get(analysis, "multiline")))), lambda: _js_get(analysis, "allowBlockPlain"))):
-            style = ""
-        elif _js_truthy(_js_and(_js_get(analysis, "allowSingleQuoted"), lambda: not _js_truthy(_js_and(simple_key_context, lambda: _js_get(analysis, "multiline"))))):
-            style = "'"
-        if style == "":
-            self.writePlain(chars, split)
-        elif style == "'":
-            self.writeSingleQuoted(chars, split)
-        else:
-            self.writeDoubleQuoted(chars, split)
-        return _JS_UNDEFINED
+        return _js_method__Emitter_writeScalar(self, value, tag, simple_key_context)
 
     def writePlain(self, chars, split):
         if _js_strict_eq(_js_len(chars), 0):
@@ -403,42 +387,7 @@ class _Emitter(_JsObject):
         return _JS_UNDEFINED
 
     def writeSingleQuoted(self, chars, split):
-        self.writeIndicator("'", True)
-        spaces = False
-        breaks = False
-        start = 0
-        end = 0
-        while _js_le(end, _js_len(chars)):
-            ch = _js_get(chars, end) if _js_lt(end, _js_len(chars)) else None
-            if spaces:
-                if ch is None or ch != " ":
-                    if _js_truthy(_js_and(_js_and(_js_and_value(_js_num(start + 1) == end and _js_gt(self.column, self.bestWidth), split), lambda: start != 0), lambda: not _js_strict_eq(end, _js_len(chars)))):
-                        self.writeIndent()
-                    else:
-                        self.push(_js_m_join(_js_m_slice(chars, start, end), ""))
-                    start = end
-            elif breaks:
-                if ch is None or not _is_break(ch):
-                    if _js_get(chars, start) == "\n":
-                        self.writeLineBreak()
-                    for br in _js_m_slice(chars, start, end):
-                        self.writeLineBreak(br)
-                    self.writeIndent()
-                    start = end
-            else:
-                if ch is None or ch == " " or _is_break(ch) or ch == "'":
-                    if start < end:
-                        self.push(_js_m_join(_js_m_slice(chars, start, end), ""))
-                        start = end
-            if ch == "'":
-                self.push("''")
-                start = _js_num(end + 1)
-            if ch is not None:
-                spaces = ch == " "
-                breaks = _is_break(ch)
-            end = _js_num(end + 1)
-        self.writeIndicator("'", False)
-        return _JS_UNDEFINED
+        return _js_method__Emitter_writeSingleQuoted(self, chars, split)
 
     def writeDoubleQuoted(self, chars, split):
         self.writeIndicator("\"", True)
@@ -478,6 +427,76 @@ class _Emitter(_JsObject):
             end = _js_num(end + 1)
         self.writeIndicator("\"", False)
         return _JS_UNDEFINED
+
+
+def _js_method__Emitter_writeIndicator(self, indicator, need_whitespace, whitespace=_JS_UNDEFINED, indention=_JS_UNDEFINED):
+    if whitespace is _JS_UNDEFINED:
+        whitespace = False
+    if indention is _JS_UNDEFINED:
+        indention = False
+    data = indicator if _js_truthy(_js_or(self.whitespace, lambda: not _js_truthy(need_whitespace))) else _js_add(" ", indicator)
+    self.whitespace = whitespace
+    self.indention = _js_and_value(self.indention, indention)
+    self.push(data)
+    return _JS_UNDEFINED
+
+
+def _js_method__Emitter_writeScalar(self, value, tag, simple_key_context):
+    chars = [*value]
+    analysis = _analyze_scalar(chars)
+    implicit = resolve_implicit_tag(value) == tag
+    split = not _js_truthy(simple_key_context)
+    style = "\""
+    if _js_truthy(_js_and(implicit and not _js_truthy(_js_and(simple_key_context, lambda: _js_or(_js_get(analysis, "empty"), lambda: _js_get(analysis, "multiline")))), lambda: _js_get(analysis, "allowBlockPlain"))):
+        style = ""
+    elif _js_truthy(_js_and(_js_get(analysis, "allowSingleQuoted"), lambda: not _js_truthy(_js_and(simple_key_context, lambda: _js_get(analysis, "multiline"))))):
+        style = "'"
+    if style == "":
+        self.writePlain(chars, split)
+    elif style == "'":
+        self.writeSingleQuoted(chars, split)
+    else:
+        self.writeDoubleQuoted(chars, split)
+    return _JS_UNDEFINED
+
+
+def _js_method__Emitter_writeSingleQuoted(self, chars, split):
+    self.writeIndicator("'", True)
+    spaces = False
+    breaks = False
+    start = 0
+    end = 0
+    while _js_le(end, _js_len(chars)):
+        ch = _js_get(chars, end) if _js_lt(end, _js_len(chars)) else None
+        if spaces:
+            if ch is None or ch != " ":
+                if _js_truthy(_js_and(_js_and(_js_and_value(_js_num(start + 1) == end and _js_gt(self.column, self.bestWidth), split), lambda: start != 0), lambda: not _js_strict_eq(end, _js_len(chars)))):
+                    self.writeIndent()
+                else:
+                    self.push(_js_m_join(_js_m_slice(chars, start, end), ""))
+                start = end
+        elif breaks:
+            if ch is None or not _is_break(ch):
+                if _js_get(chars, start) == "\n":
+                    self.writeLineBreak()
+                for br in _js_m_slice(chars, start, end):
+                    self.writeLineBreak(br)
+                self.writeIndent()
+                start = end
+        else:
+            if ch is None or ch == " " or _is_break(ch) or ch == "'":
+                if start < end:
+                    self.push(_js_m_join(_js_m_slice(chars, start, end), ""))
+                    start = end
+        if ch == "'":
+            self.push("''")
+            start = _js_num(end + 1)
+        if ch is not None:
+            spaces = ch == " "
+            breaks = _is_break(ch)
+        end = _js_num(end + 1)
+    self.writeIndicator("'", False)
+    return _JS_UNDEFINED
 
 
 def safe_dump_mapping(entries):
@@ -572,7 +591,7 @@ def _emit_node__typed(e, value, mapping_context, path, seen):
         _js_invoke(e, "increaseIndent", False, False)
         _js_invoke(e, "writeScalar", value, STR_TAG, False)
         _js_invoke(e, "popIndent")
-    elif isinstance(value, PyScalar):
+    elif _js_instanceof(value, PyScalar):
         _js_invoke(e, "increaseIndent", False, False)
         _js_invoke(e, "writeScalar", _js_get(value, "yaml"), _js_get(value, "tag"), False)
         _js_invoke(e, "popIndent")
@@ -622,7 +641,7 @@ def _emit_node(e, value, mapping_context, path, seen):
         _js_invoke(e, "increaseIndent", False, False)
         _js_invoke(e, "writeScalar", value, STR_TAG, False)
         _js_invoke(e, "popIndent")
-    elif isinstance(value, PyScalar):
+    elif _js_instanceof(value, PyScalar):
         _js_invoke(e, "increaseIndent", False, False)
         _js_invoke(e, "writeScalar", _js_get(value, "yaml"), _js_get(value, "tag"), False)
         _js_invoke(e, "popIndent")
@@ -661,10 +680,11 @@ def _emit_node(e, value, mapping_context, path, seen):
     return _JS_UNDEFINED
 
 
+@_mypyc_attr(native_class=False)
 class PyScalar(_JsObject):
-    _js_name = "PyScalar"
-    _js_own = frozenset({"ord", "pyType", "tag", "text", "toString", "truthy", "yaml"})
-    _js_own_methods = frozenset({"toString"})
+    _js_name: _ClassVar[str] = "PyScalar"
+    _js_own: _ClassVar[frozenset[str]] = frozenset({"ord", "pyType", "tag", "text", "toString", "truthy", "yaml"})
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset({"toString"})
 
     def __init__(self, tag, py_type, text, yaml, truthy, ord_, *_):
         self.tag = _JS_UNDEFINED
@@ -685,10 +705,11 @@ class PyScalar(_JsObject):
         return self.text
 
 
+@_mypyc_attr(native_class=False)
 class YamlConstructError(_JsError):
-    _js_name = "YamlConstructError"
-    _js_own = frozenset()
-    _js_own_methods = frozenset()
+    _js_name: _ClassVar[str] = "YamlConstructError"
+    _js_own: _ClassVar[frozenset[str]] = frozenset()
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset()
 
 
 def _days_from_civil(y, m, d):
@@ -700,7 +721,7 @@ def _days_from_civil(y, m, d):
     return _js_num(_js_num(_js_mul(era, 146097) + doe) - 719468)
 
 
-_BOOL_VALUES = {"yes": True, "no": False, "true": True, "false": False, "on": True, "off": False}
+_BOOL_VALUES: _JsAny = {"yes": True, "no": False, "true": True, "false": False, "on": True, "off": False}
 
 
 def _construct_int(raw):
@@ -766,7 +787,7 @@ def _represent_float(x):
     return _js_m_replace(value, "e", ".0e") if not _js_str_includes(value, ".") and _js_str_includes(value, "e") else value
 
 
-_TIMESTAMP_RE = _JS_RE_10
+_TIMESTAMP_RE: _JsAny = _JS_RE_10
 
 
 def _pad(n, w):
@@ -777,7 +798,7 @@ def _LEAP(y):
     return _js_mod(y, 4) == 0 and _js_mod(y, 100) != 0 or _js_mod(y, 400) == 0
 
 
-_MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+_MONTH_DAYS: _JsAny = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
 
 def _repr_timedelta(total_seconds):

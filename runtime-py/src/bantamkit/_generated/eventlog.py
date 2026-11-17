@@ -5,6 +5,8 @@
 
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
+    _ClassVar,
+    _Final,
     _js_add,
     _js_and,
     _js_catch,
@@ -13,6 +15,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_date_to_iso,
     _js_get,
     _js_gt,
+    _js_instanceof,
     _js_invoke,
     _js_is_double,
     _js_json_stringify,
@@ -31,9 +34,11 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_throw,
     _js_truthy,
     _js_typeof,
+    _JsAny,
     _JsError,
     _JsObject,
     _JsSet,
+    _mypyc_attr,
 )
 from ._ts2py_adapters import buffer_from, cmp_codepoint, mkdir_sync, os_error_class_name, process_env_all, py_exists, py_is_dir, py_join, py_name, py_parent, PyOSError, rename_sync, stat_sync
 from .logsegment import LogSegment
@@ -42,28 +47,28 @@ from .store import bantamkit_dir_for, ensure_bantamkit_gitignore
 __all__ = ["CAP_BYTES", "DEFAULT_RELATIVE_PATH", "EVENT_LOG_ENV", "EventLog", "SCHEMA_VERSION", "default_path", "encode_record", "format_timestamp", "resolve_path"]
 
 
-_JS_RE_0 = _js_re.compile("[^\\u0000-\\u007f]", _js_re.ASCII)
+_JS_RE_0: _Final = _js_re.compile("[^\\u0000-\\u007f]", _js_re.ASCII)
 
 
-EVENT_LOG_ENV = "BANTAMKIT_EVENT_LOG"
+EVENT_LOG_ENV: _JsAny = "BANTAMKIT_EVENT_LOG"
 
 
-DEFAULT_RELATIVE_PATH = ["events", "mcp.jsonl"]
+DEFAULT_RELATIVE_PATH: _JsAny = ["events", "mcp.jsonl"]
 
 
-CAP_BYTES = 1048576
+CAP_BYTES: _JsAny = 1048576
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION: _JsAny = 1
 
 
-_OFF = _JsSet(["", "0", "off", "false", "no"])
+_OFF: _JsAny = _JsSet(["", "0", "off", "false", "no"])
 
 
-_ON = _JsSet(["1", "on", "true", "yes"])
+_ON: _JsAny = _JsSet(["1", "on", "true", "yes"])
 
 
-_NON_ASCII = _JS_RE_0
+_NON_ASCII: _JsAny = _JS_RE_0
 
 
 def _switch_key(token):
@@ -134,10 +139,11 @@ def resolve_path(store_root, raw):
     return token
 
 
+@_mypyc_attr(native_class=False)
 class EventLog(_JsObject):
-    _js_name = "EventLog"
-    _js_own = frozenset({"append", "capBytes", "clock", "enabled", "path", "raised", "record", "requiresDir", "writeFailed"})
-    _js_own_methods = frozenset({"append", "raised", "record"})
+    _js_name: _ClassVar[str] = "EventLog"
+    _js_own: _ClassVar[frozenset[str]] = frozenset({"append", "capBytes", "clock", "enabled", "path", "raised", "record", "requiresDir", "writeFailed"})
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset({"append", "raised", "record"})
 
     def __init__(self, path, cap_bytes=_JS_UNDEFINED, clock=_JS_UNDEFINED, requires_dir=_JS_UNDEFINED, *_):
         if cap_bytes is _JS_UNDEFINED:
@@ -157,7 +163,7 @@ class EventLog(_JsObject):
         self.requiresDir = requires_dir
 
     @property
-    def enabled(self):
+    def enabled(self) -> object:
         return self.path is not None
 
     def record(self, tool, outcome, detail=_JS_UNDEFINED):
@@ -183,27 +189,7 @@ class EventLog(_JsObject):
         return _JS_UNDEFINED
 
     def append(self, path, obj, payload):
-        if self.requiresDir is not None and not _js_truthy(py_is_dir(self.requiresDir)):
-            return _JS_UNDEFINED
-        bantamkit_dir = bantamkit_dir_for(path)
-        bantamkit_dir_existed_before = _js_and(bantamkit_dir is not None, lambda: py_exists(bantamkit_dir))
-        mkdir_sync(py_parent(path), {"recursive": True})
-        if bantamkit_dir is not None:
-            ensure_bantamkit_gitignore(bantamkit_dir, not _js_truthy(bantamkit_dir_existed_before))
-        size = 0
-        _js_caught1 = None
-        try:
-            size = _js_size(stat_sync(path))
-        except Exception as _js_error1:
-            _js_caught1 = _js_catch(_js_error1)
-        if _js_caught1 is not None:
-            if not _is_system_error(_js_caught1) or _js_get(_js_caught1, "code") != "ENOENT":
-                raise _js_caught1
-        if _js_truthy(_js_and(size, lambda: _js_gt(_js_add(size, _js_len(payload)), self.capBytes))):
-            rename_sync(path, _js_str(path) + ".1")
-        if not _js_truthy(_js_invoke(LogSegment(path), "append", obj)):
-            raise _js_throw(_js_object_assign(_JsError("the record could not be appended"), {"code": "EIO"}))
-        return _JS_UNDEFINED
+        return _js_method_EventLog_append(self, path, obj, payload)
 
     @staticmethod
     def fromEnv(store_root, env=_JS_UNDEFINED, clock=_JS_UNDEFINED):
@@ -216,8 +202,32 @@ class EventLog(_JsObject):
         return EventLog(resolve_path(store_root, raw), CAP_BYTES, clock, store_root if in_store else None)
 
 
+def _js_method_EventLog_append(self, path, obj, payload):
+    if self.requiresDir is not None and not _js_truthy(py_is_dir(self.requiresDir)):
+        return _JS_UNDEFINED
+    bantamkit_dir = bantamkit_dir_for(path)
+    bantamkit_dir_existed_before = _js_and(bantamkit_dir is not None, lambda: py_exists(bantamkit_dir))
+    mkdir_sync(py_parent(path), {"recursive": True})
+    if bantamkit_dir is not None:
+        ensure_bantamkit_gitignore(bantamkit_dir, not _js_truthy(bantamkit_dir_existed_before))
+    size = 0
+    _js_caught1 = None
+    try:
+        size = _js_size(stat_sync(path))
+    except Exception as _js_error1:
+        _js_caught1 = _js_catch(_js_error1)
+    if _js_caught1 is not None:
+        if not _is_system_error(_js_caught1) or _js_get(_js_caught1, "code") != "ENOENT":
+            raise _js_caught1
+    if _js_truthy(_js_and(size, lambda: _js_gt(_js_add(size, _js_len(payload)), self.capBytes))):
+        rename_sync(path, _js_str(path) + ".1")
+    if not _js_truthy(_js_invoke(LogSegment(path), "append", obj)):
+        raise _js_throw(_js_object_assign(_JsError("the record could not be appended"), {"code": "EIO"}))
+    return _JS_UNDEFINED
+
+
 def _type_name_of(error):
-    if isinstance(error, PyOSError):
+    if _js_instanceof(error, PyOSError):
         return os_error_class_name(_js_get(error, "code"))
     if _js_typeof(error) == "object" and error is not None:
         ctor = _js_constructor_of(error)

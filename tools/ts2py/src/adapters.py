@@ -7,7 +7,6 @@ import fnmatch as _fnmatch
 import functools as _functools
 import gzip as _gzip
 import hashlib as _hashlib
-import itertools as _itertools
 import json as _json
 import math as _math
 import os as _os
@@ -16,15 +15,15 @@ import re as _re
 import secrets as _secrets
 import stat as _stat
 import time as _time
+import typing as _typing
 import unicodedata as _unicodedata
 import zlib as _zlib
 
 from __RUNTIME__ import (
     _JS_UNDEFINED,
+    _js_lifted,
     _js_m_toLowerCase,
     _js_num,
-    _js_own_keys,
-    _js_str,
     _js_truthy,
     _JsBigInt,
     _JsError,
@@ -33,6 +32,16 @@ from __RUNTIME__ import (
     _JsRangeError,
     _JsTypeError,
 )
+
+# J90-P7 (#316 G4): mypyc reads this module (it is never compiled) to know the base of a compiled
+# `class E extends BantamError`. A base it cannot see is `Any`, and mypyc then builds the class on
+# `object` alone, silently; this declaration, which only a type checker reads, names the class
+# `__getattr__` builds.
+if _typing.TYPE_CHECKING:
+
+    class BantamError(_JsError):
+        pass
+
 
 # `BantamError` (and J89-4a's `PyScalar`, `VALID_OUTCOMES`; J90-2 retired the lock's and the hot
 # index's constants, now compiled)
@@ -2549,102 +2558,9 @@ def _node_realpath_abs(absolute):
         return path_join(_node_realpath_abs(parent), path_basename(absolute))
 
 
-_SAFE_INT = 2**53 - 1
-# Values `fromJs` keeps as they are, and a list or a dict of nothing else is handed over as it is.
-_LIFT_SAME = frozenset({str, bool, type(None)})
-
-
-_LIFT_INT = frozenset({int})
-
-
-def _lift_ints_safe(ints):
-    """J90-P: Python ints only, each a safe integer: each is its own `_lifted` (an int kept as it
-    is), so the container is too."""
-    return -_SAFE_INT <= min(ints) and max(ints) <= _SAFE_INT
-
-
-_LIFT_LIST = frozenset({list})
-_LIFT_DICT = frozenset({dict})
-_LIFT_STR = frozenset({str})
-# J90-P5: the kinds a value may have and still be its own `_lifted` (see `_lift_values_same`).
-_LIFT_FLAT = _LIFT_SAME | {int, list, dict}
-
-
-def _lift_values_same(values):
-    """J90-P5: the per-call shape guard of `_lifted`. True only when EVERY value of `values` (a
-    list) is equal to its own `_lifted`, so the container holding them may be handed to
-    `json.dumps` unconverted: a string, boolean or null; a safe int; a list whose items all are; a
-    plain dict whose keys are all strings, none of them all digits (so `_js_own_keys` is its own
-    order), and whose values all are. Checked a level at a time over all the values at once
-    (`map(type, ...)`, one `min` and `max` of the ints, the lists' items and the dicts' keys and
-    values chained), at C speed. Anything else (a float, a Map, undefined, a BigInt, an unsafe int,
-    a key `_js_own_keys` would move) answers False, and `_lifted` takes its general path, value
-    by value, which is what Node's `fromJs` reads. False is always safe."""
-    kinds = set(map(type, values))
-    if kinds <= _LIFT_SAME:
-        return True
-    if not kinds <= _LIFT_FLAT:
-        return False
-    if int in kinds and not _lift_ints_safe(
-        values if kinds == _LIFT_INT else [v for v in values if type(v) is int]
-    ):
-        return False
-    if list in kinds:
-        lists = values if kinds == _LIFT_LIST else [v for v in values if type(v) is list]
-        if not _lift_values_same(list(_itertools.chain.from_iterable(lists))):
-            return False
-    if dict in kinds:
-        dicts = values if kinds == _LIFT_DICT else [v for v in values if type(v) is dict]
-        keys = list(_itertools.chain.from_iterable(dicts))
-        if not set(map(type, keys)) <= _LIFT_STR or any(map(str.isdigit, keys)):
-            return False
-        if not _lift_values_same(list(_itertools.chain.from_iterable(map(dict.values, dicts)))):
-            return False
-    return True
-
-
-def _lifted(value):
-    """`value` as `fromJs` reads it (runtime-ts/src/pyjson.ts), as the Python value `json.dumps`
-    is handed: a number that is a safe integer (`Number.isSafeInteger`) and not -0 is an int, any
-    other a float; a Map or a plain object a dict keyed by
-    `String(key)` in `Object.entries` order; an array a list; null and undefined None; a BigInt an
-    int. A list or a dict holding only strings, booleans and nulls is the same object."""
-    kind = type(value)
-    if kind in _LIFT_SAME:
-        return value
-    if kind is int:
-        return value if -_SAFE_INT <= value <= _SAFE_INT else float(value)
-    if kind is float:
-        # `Number.isSafeInteger(v) && !Object.is(v, -0)`: 2**53 itself is not safe (a float).
-        if value.is_integer() and -_SAFE_INT <= value <= _SAFE_INT and not (
-            value == 0 and _math.copysign(1.0, value) < 0
-        ):
-            return int(value)
-        return value
-    if kind is list:
-        if _lift_values_same(value):
-            return value
-        return [_lifted(item) for item in value]
-    if kind is dict:
-        keys = _js_own_keys(value)
-        if keys == list(value) and _lift_values_same(list(value.values())):
-            return value
-        return {key: _lifted(value[key]) for key in keys}
-    if value is _JS_UNDEFINED:
-        return None
-    # J90-P5: a plain Map (not a subclass) whose every key is its own tag (`_keys is None`: a str
-    # or a safe int), all of them strings, in insertion order (not waiting to be settled), whose
-    # values pass the shape guard: the dict of its entries, which is what the general path below
-    # builds (`String(key)` of a string is the string; each value its own `_lifted`).
-    if kind is _JsMap and value._keys is None:
-        entries = value._entries
-        if set(map(type, entries)) <= _LIFT_STR and _lift_values_same(list(entries.values())):
-            return dict(entries)
-    if isinstance(value, _JsMap):
-        return {_js_str(key): _lifted(item) for key, item in value}
-    if kind is _JsBigInt:
-        return value.value
-    raise TypeError(f"ts2py: dumpJsValue of a {kind.__name__} is outside the subset")
+# J90-P7 (#316 G4): `fromJs` (`_lifted`) moved to the runtime as `_js_lifted`, unchanged, so a
+# mypyc build compiles it (this module is never compiled).
+_lifted = _js_lifted
 
 
 def dump_js_value(value, options=_JS_UNDEFINED, float_key=_JS_UNDEFINED, *_):

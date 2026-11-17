@@ -9,10 +9,12 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_catch,
     _js_coalesce,
     _js_get,
+    _js_instanceof,
     _js_m_get,
     _js_str,
     _js_throw,
     _js_truthy,
+    _JsAny,
     _JsError,
 )
 from ._ts2py_adapters import as_py_os_error, first_token_tab, matches_md, parse_config_document, process_env, py_cwd, py_exists, py_expanduser, py_is_absolute, py_is_dir, py_is_file, py_join, py_os_error_strerror, py_os_error_text, py_parent, py_parents, py_read_text, py_repr, py_resolve, py_scandir_names, py_stat_is_dir, py_strip, PyOSError
@@ -21,13 +23,13 @@ from .store import MemoryValidationError
 __all__ = ["CONFIG_NAME", "MEMORY_DIR_ENV", "PROJECT_STORE", "count_facts", "discover_project_store", "load_grants", "resolve_project_store", "tab_sentence"]
 
 
-PROJECT_STORE = [".bantamkit", "memory"]
+PROJECT_STORE: _JsAny = [".bantamkit", "memory"]
 
 
-CONFIG_NAME = "config.yaml"
+CONFIG_NAME: _JsAny = "config.yaml"
 
 
-MEMORY_DIR_ENV = "BANTAMKIT_MEMORY_DIR"
+MEMORY_DIR_ENV: _JsAny = "BANTAMKIT_MEMORY_DIR"
 
 
 def discover_project_store(start=_JS_UNDEFINED):
@@ -56,7 +58,7 @@ def count_facts(root):
     except Exception as _js_error1:
         _js_caught1 = _js_catch(_js_error1)
     if _js_caught1 is not None:
-        error = _js_caught1 if isinstance(_js_caught1, PyOSError) else as_py_os_error(_js_caught1, facts)
+        error = _js_caught1 if _js_instanceof(_js_caught1, PyOSError) else as_py_os_error(_js_caught1, facts)
         if _js_get(error, "code") == "ENOENT":
             return 0
         raise _js_throw(error)
@@ -73,7 +75,7 @@ def _count_into_binding__typed(path, searched_from, origin):
     except Exception as _js_error2:
         _js_caught2 = _js_catch(_js_error2)
     if _js_caught2 is not None:
-        if not isinstance(_js_caught2, PyOSError):
+        if not _js_instanceof(_js_caught2, PyOSError):
             raise _js_caught2
         raise MemoryValidationError("memory store is unreadable: " + _js_str(py_join(path, "facts")) + ": " + _js_str(py_os_error_strerror(_js_caught2)) + "; a store that " + "could not be listed is not a store with nothing in it, and answering " + "'empty' here is the conflation this binding exists to end")
     return {"path": path, "state": "populated" if _js_truthy(count) else "empty", "factCount": count, "searchedFrom": searched_from, "origin": origin}
@@ -89,7 +91,7 @@ def _count_into_binding(path, searched_from, origin):
     except Exception as _js_error3:
         _js_caught3 = _js_catch(_js_error3)
     if _js_caught3 is not None:
-        if not isinstance(_js_caught3, PyOSError):
+        if not _js_instanceof(_js_caught3, PyOSError):
             raise _js_caught3
         raise MemoryValidationError("memory store is unreadable: " + _js_str(py_join(path, "facts")) + ": " + _js_str(py_os_error_strerror(_js_caught3)) + "; a store that " + "could not be listed is not a store with nothing in it, and answering " + "'empty' here is the conflation this binding exists to end")
     return {"path": path, "state": "populated" if _js_truthy(count) else "empty", "factCount": count, "searchedFrom": searched_from, "origin": origin}
@@ -109,7 +111,7 @@ def _pinned_store():
     except Exception as _js_error4:
         _js_caught4 = _js_catch(_js_error4)
     if _js_caught4 is not None:
-        if not isinstance(_js_caught4, PyOSError):
+        if not _js_instanceof(_js_caught4, PyOSError):
             raise _js_caught4
         raise MemoryValidationError("pinned memory store is unreachable: " + _js_str(pin) + ": " + _js_str(py_os_error_strerror(_js_caught4)) + " " + ("(" + MEMORY_DIR_ENV + "=" + _js_str(raw) + "); nothing was created"))
     if not _js_truthy(is_dir):
@@ -146,7 +148,7 @@ def load_grants(project_store):
     except Exception as _js_error7:
         _js_caught7 = _js_catch(_js_error7)
     if _js_caught7 is not None:
-        why = py_os_error_text(_js_caught7) if isinstance(_js_caught7, PyOSError) else _js_get(_js_caught7, "message") if isinstance(_js_caught7, _JsError) else _js_str(_js_caught7)
+        why = py_os_error_text(_js_caught7) if _js_instanceof(_js_caught7, PyOSError) else _js_get(_js_caught7, "message") if _js_instanceof(_js_caught7, _JsError) else _js_str(_js_caught7)
         raise MemoryValidationError("invalid memory config " + _js_str(config_path) + ": " + _js_str(why))
     tab = first_token_tab(text)
     if tab is not None:
@@ -157,7 +159,7 @@ def load_grants(project_store):
     except Exception as _js_error8:
         _js_caught8 = _js_catch(_js_error8)
     if _js_caught8 is not None:
-        raise MemoryValidationError("invalid memory config " + _js_str(config_path) + ": " + _js_str(_js_get(_js_caught8, "message") if isinstance(_js_caught8, _JsError) else _js_str(_js_caught8)))
+        raise MemoryValidationError("invalid memory config " + _js_str(config_path) + ": " + _js_str(_js_get(_js_caught8, "message") if _js_instanceof(_js_caught8, _JsError) else _js_str(_js_caught8)))
     if _js_get(data, "kind") == "null":
         return []
     if _js_get(data, "kind") != "mapping":

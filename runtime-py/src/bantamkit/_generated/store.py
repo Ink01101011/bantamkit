@@ -5,6 +5,8 @@
 
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
+    _ClassVar,
+    _Final,
     _js_add,
     _js_and,
     _js_array,
@@ -24,6 +26,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_get,
     _js_gt,
     _js_in,
+    _js_instanceof,
     _js_invoke,
     _js_is_double,
     _js_json_stringify,
@@ -88,12 +91,14 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_throw,
     _js_truthy,
     _js_typeof,
+    _JsAny,
     _JsError,
     _JsGlobalRegExp,
     _JsMap,
     _JsObject,
     _JsSet,
     _JsTypeError,
+    _mypyc_attr,
 )
 from ._ts2py_adapters import VALID_OUTCOMES, as_py_os_error, BantamError, buffer_byte_length, cmp_codepoint, extra_of, format_fact, homedir, lifecycle_of, matches_md, parse_frontmatter, path_basename, process_env, py_exists, py_is_dir, py_join, py_lexists, py_list, py_mkdir_parents, py_mtime_date, py_name, py_os_error_strerror, py_os_error_text, py_parent, py_parents, py_read_text, py_replace, py_scandir_names, py_scandir_probe, py_search_word, py_split, py_strip, py_suffix, py_truthy, py_unlink, py_write_text, py_write_text_atomic, PyOSError, PyScalar, PyUnicodeDecodeError, sorted_path_names, stat_sync, today_local
 from .retrieval import BM25F, FIELD_BOOST, GATE_RATIO, doc_terms, length_of, query_terms, rank_columns, stale, tokenize_v2, weight_of
@@ -102,19 +107,19 @@ from .usage import parse_ts, seed_ts, store_id, UsageLedger
 __all__ = ["BANTAMKIT_GITIGNORE_TEXT", "DEFAULT_INDEX_BUDGET", "DONE_WORDS", "DUPLICATE_JACCARD", "DURABLE_TYPES", "INDEX_PRESSURE_PERCENT", "MIN_RATIO_RANGE", "MemoryBudgetExceeded", "MemoryStore", "MemoryValidationError", "NAME_MAX_CHARS", "OUTCOME_TYPES", "RECALL_MIN_SCORE_RATIO", "VALID_OUTCOMES", "VALID_STATUSES", "VALID_TYPES", "all_names", "bantamkit_dir_for", "empty_pool", "ensure_bantamkit_gitignore", "jaccard", "lone_surrogate", "one_line", "pick_hits", "pool_of", "pool_without", "pooled_ranking", "py_compare_lt", "py_equal_value", "py_hash_key", "py_text", "sort_scored", "tokens", "undegraded_index_ceiling", "utc_now"]
 
 
-_JS_RE_0 = _js_re.compile("^[a-z0-9][a-z0-9-]*\\n?\\Z", _js_re.ASCII)
-_JS_RE_1 = _JsGlobalRegExp(_js_re.compile("[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+", _js_re.ASCII))
-_JS_RE_2 = _js_re.compile("[\\ud800-\\udbff](?![\\udc00-\\udfff])|(?<![\\ud800-\\udbff])[\\udc00-\\udfff]", _js_re.ASCII)
-_JS_RE_3 = _js_re.compile("[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]", _js_re.ASCII)
-_JS_RE_4 = _js_re.compile("\\.[0-9]{3}Z\\Z", _js_re.ASCII)
-_JS_RE_5 = _JsGlobalRegExp(_js_re.compile("[a-z0-9]+", _js_re.ASCII))
-_JS_RE_6 = _JsGlobalRegExp(_js_re.compile("[A-Za-z0-9]+", _js_re.ASCII))
-_JS_RE_7 = _JsGlobalRegExp(_js_re.compile("[^\\u0000-\\u007f\\u0130\\u212a]", _js_re.ASCII))
-_JS_RE_8 = _js_re.compile("^[ \\t]+", _js_re.ASCII)
-_JS_RE_9 = _js_re.compile(":([\\t\\n\\u000b\\u000c\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]|\\Z)", _js_re.ASCII)
+_JS_RE_0: _Final = _js_re.compile("^[a-z0-9][a-z0-9-]*\\n?\\Z", _js_re.ASCII)
+_JS_RE_1: _Final = _JsGlobalRegExp(_js_re.compile("[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+", _js_re.ASCII))
+_JS_RE_2: _Final = _js_re.compile("[\\ud800-\\udbff](?![\\udc00-\\udfff])|(?<![\\ud800-\\udbff])[\\udc00-\\udfff]", _js_re.ASCII)
+_JS_RE_3: _Final = _js_re.compile("[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]", _js_re.ASCII)
+_JS_RE_4: _Final = _js_re.compile("\\.[0-9]{3}Z\\Z", _js_re.ASCII)
+_JS_RE_5: _Final = _JsGlobalRegExp(_js_re.compile("[a-z0-9]+", _js_re.ASCII))
+_JS_RE_6: _Final = _JsGlobalRegExp(_js_re.compile("[A-Za-z0-9]+", _js_re.ASCII))
+_JS_RE_7: _Final = _JsGlobalRegExp(_js_re.compile("[^\\u0000-\\u007f\\u0130\\u212a]", _js_re.ASCII))
+_JS_RE_8: _Final = _js_re.compile("^[ \\t]+", _js_re.ASCII)
+_JS_RE_9: _Final = _js_re.compile(":([\\t\\n\\u000b\\u000c\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]|\\Z)", _js_re.ASCII)
 
 
-BANTAMKIT_GITIGNORE_TEXT = "# Created by bantamkit: this directory is local state. Delete this file to commit it.\n" + "*\n"
+BANTAMKIT_GITIGNORE_TEXT: _JsAny = "# Created by bantamkit: this directory is local state. Delete this file to commit it.\n" + "*\n"
 
 
 def _ensure_bantamkit_gitignore__typed(directory, created):
@@ -161,16 +166,16 @@ def bantamkit_dir_for(path):
 _bantamkit_dir_for__typed = bantamkit_dir_for
 
 
-VALID_STATUSES = ["active", "done"]
+VALID_STATUSES: _JsAny = ["active", "done"]
 
 
-OUTCOME_TYPES = ["feedback", "project"]
+OUTCOME_TYPES: _JsAny = ["feedback", "project"]
 
 
-DONE_WORDS = ["done", "shipped", "completed", "closed", "released", "merged"]
+DONE_WORDS: _JsAny = ["done", "shipped", "completed", "closed", "released", "merged"]
 
 
-_DONE_WORD_ALTERNATIVES = _js_list_join(DONE_WORDS, "|")
+_DONE_WORD_ALTERNATIVES: _JsAny = _js_list_join(DONE_WORDS, "|")
 
 
 def _py_list_text__typed(items):
@@ -209,25 +214,25 @@ def _validate_outcome_status(type_, outcome, status):
     return _JS_UNDEFINED
 
 
-VALID_TYPES = ["feedback", "project", "reference", "user"]
+VALID_TYPES: _JsAny = ["feedback", "project", "reference", "user"]
 
 
-DURABLE_TYPES = ["feedback", "user"]
+DURABLE_TYPES: _JsAny = ["feedback", "user"]
 
 
-_NAME_RE = _JS_RE_0
+_NAME_RE: _JsAny = _JS_RE_0
 
 
-_NAME_PATTERN = "^[a-z0-9][a-z0-9-]*$"
+_NAME_PATTERN: _JsAny = "^[a-z0-9][a-z0-9-]*$"
 
 
-NAME_MAX_CHARS = 128
+NAME_MAX_CHARS: _JsAny = 128
 
 
-_NOT_ONE_LINE = _JS_RE_1
+_NOT_ONE_LINE: _JsAny = _JS_RE_1
 
 
-_LONE_SURROGATE = _JS_RE_2
+_LONE_SURROGATE: _JsAny = _JS_RE_2
 
 
 def _codepoint(unit):
@@ -253,7 +258,7 @@ def one_line(text):
 _one_line__typed = one_line
 
 
-_NOT_ONE_LINE_UNIT = _JS_RE_3
+_NOT_ONE_LINE_UNIT: _JsAny = _JS_RE_3
 
 
 def _not_one_line__typed(text):
@@ -268,19 +273,19 @@ def _not_one_line(text):
     return None if found is None else _codepoint(_js_get(found, 0))
 
 
-DUPLICATE_JACCARD = 0.5
+DUPLICATE_JACCARD: _JsAny = 0.5
 
 
-RECALL_MIN_SCORE_RATIO = GATE_RATIO
+RECALL_MIN_SCORE_RATIO: _JsAny = GATE_RATIO
 
 
-MIN_RATIO_RANGE = "recall min-score ratio must be between 0.0 and 1.0"
+MIN_RATIO_RANGE: _JsAny = "recall min-score ratio must be between 0.0 and 1.0"
 
 
-DEFAULT_INDEX_BUDGET = 24000
+DEFAULT_INDEX_BUDGET: _JsAny = 24000
 
 
-INDEX_PRESSURE_PERCENT = 90
+INDEX_PRESSURE_PERCENT: _JsAny = 90
 
 
 def undegraded_index_ceiling(budget):
@@ -290,37 +295,39 @@ def undegraded_index_ceiling(budget):
 _undegraded_index_ceiling__typed = undegraded_index_ceiling
 
 
-_FACTS_UNREADABLE = "a store whose facts could not be listed is not a store with no facts, and " + "answering 'empty' here is what rewrites index.md from nothing"
+_FACTS_UNREADABLE: _JsAny = "a store whose facts could not be listed is not a store with no facts, and " + "answering 'empty' here is what rewrites index.md from nothing"
 
 
-_ARCHIVE_UNREADABLE = "an archive that could not be listed is not an empty archive, and answering " + "'nothing is archived' here is what makes compaction look like deletion — the " + "facts that compaction moved are still on disk under this path"
+_ARCHIVE_UNREADABLE: _JsAny = "an archive that could not be listed is not an empty archive, and answering " + "'nothing is archived' here is what makes compaction look like deletion — the " + "facts that compaction moved are still on disk under this path"
 
 
-_ARCHIVE_UNREACHABLE = "an archived fact that could not be stat'd is not an archived fact that is not " + "there, and answering 'no archived fact' here sends the operator looking for a " + "file that is still on disk under this path"
+_ARCHIVE_UNREACHABLE: _JsAny = "an archived fact that could not be stat'd is not an archived fact that is not " + "there, and answering 'no archived fact' here sends the operator looking for a " + "file that is still on disk under this path"
 
 
-_FACTS_UNREACHABLE = "a destination that could not be stat'd is not a name that is already taken, and " + "nothing has moved: the fact is still in archive/"
+_FACTS_UNREACHABLE: _JsAny = "a destination that could not be stat'd is not a name that is already taken, and " + "nothing has moved: the fact is still in archive/"
 
 
-_FACT_UNREACHABLE = "a fact that could not be stat'd is not a fact that is not there, and answering " + "'no fact' here sends the operator looking for a file that is still on disk under " + "this path"
+_FACT_UNREACHABLE: _JsAny = "a fact that could not be stat'd is not a fact that is not there, and answering " + "'no fact' here sends the operator looking for a file that is still on disk under " + "this path"
 
 
-_ARCHIVE_DESTINATION_UNREACHABLE = "a destination that could not be stat'd is not a name that is already archived, " + "and nothing has moved: the fact is still in facts/"
+_ARCHIVE_DESTINATION_UNREACHABLE: _JsAny = "a destination that could not be stat'd is not a name that is already archived, " + "and nothing has moved: the fact is still in facts/"
 
 
-_NOT_WRITABLE_CODES = _JsSet(["EACCES", "EPERM", "EROFS"])
+_NOT_WRITABLE_CODES: _JsAny = _JsSet(["EACCES", "EPERM", "EROFS"])
 
 
+@_mypyc_attr(native_class=False)
 class MemoryValidationError(BantamError):
-    _js_name = "MemoryValidationError"
-    _js_own = frozenset()
-    _js_own_methods = frozenset()
+    _js_name: _ClassVar[str] = "MemoryValidationError"
+    _js_own: _ClassVar[frozenset[str]] = frozenset()
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset()
 
 
+@_mypyc_attr(native_class=False)
 class MemoryBudgetExceeded(BantamError):
-    _js_name = "MemoryBudgetExceeded"
-    _js_own = frozenset()
-    _js_own_methods = frozenset()
+    _js_name: _ClassVar[str] = "MemoryBudgetExceeded"
+    _js_own: _ClassVar[frozenset[str]] = frozenset()
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset()
 
 
 def all_names(pool):
@@ -707,7 +714,7 @@ def tokens(text):
     return out
 
 
-_NOT_TOKEN_SOURCE = _JS_RE_7
+_NOT_TOKEN_SOURCE: _JsAny = _JS_RE_7
 
 
 def jaccard(a, b):
@@ -894,49 +901,17 @@ def _looks_like_mapping(front):
 _looks_like_mapping__typed = _looks_like_mapping
 
 
+@_mypyc_attr(native_class=False)
 class MemoryStore(_JsObject):
-    _js_name = "MemoryStore"
-    _js_own = frozenset({"afterWrite", "archive", "archived", "archivedRecall", "byEviction", "candidates", "candidatesDone", "checkIndexBudget", "cold", "coldIdx", "coldSynced", "compact", "ensureDirs", "factCount", "factNamed", "factPath", "factPaths", "facts", "hot", "index", "indexBudget", "indexLine", "indexText", "indexTextOf", "indexed", "indexedFact", "internals", "k", "lint", "listFacts", "listing", "lookup", "merge", "now", "pool", "present", "probeFacts", "reachable", "readFact", "readableFacts", "rebuildIndex", "recall", "repair", "resolve", "restore", "root", "save", "today", "unreadable", "unwritable", "usageLedger", "use", "writeFact"})
-    _js_own_methods = frozenset({"afterWrite", "archive", "archived", "archivedRecall", "byEviction", "candidates", "candidatesDone", "checkIndexBudget", "cold", "coldSynced", "compact", "ensureDirs", "factCount", "factNamed", "factPath", "factPaths", "facts", "index", "indexLine", "indexText", "indexTextOf", "indexed", "indexedFact", "internals", "lint", "listFacts", "listing", "lookup", "merge", "pool", "present", "probeFacts", "reachable", "readFact", "readableFacts", "rebuildIndex", "recall", "repair", "resolve", "restore", "save", "unreadable", "unwritable", "usageLedger", "use", "writeFact"})
+    _js_name: _ClassVar[str] = "MemoryStore"
+    _js_own: _ClassVar[frozenset[str]] = frozenset({"afterWrite", "archive", "archived", "archivedRecall", "byEviction", "candidates", "candidatesDone", "checkIndexBudget", "cold", "coldIdx", "coldSynced", "compact", "ensureDirs", "factCount", "factNamed", "factPath", "factPaths", "facts", "hot", "index", "indexBudget", "indexLine", "indexText", "indexTextOf", "indexed", "indexedFact", "internals", "k", "lint", "listFacts", "listing", "lookup", "merge", "now", "pool", "present", "probeFacts", "reachable", "readFact", "readableFacts", "rebuildIndex", "recall", "repair", "resolve", "restore", "root", "save", "today", "unreadable", "unwritable", "usageLedger", "use", "writeFact"})
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset({"afterWrite", "archive", "archived", "archivedRecall", "byEviction", "candidates", "candidatesDone", "checkIndexBudget", "cold", "coldSynced", "compact", "ensureDirs", "factCount", "factNamed", "factPath", "factPaths", "facts", "index", "indexLine", "indexText", "indexTextOf", "indexed", "indexedFact", "internals", "lint", "listFacts", "listing", "lookup", "merge", "pool", "present", "probeFacts", "reachable", "readFact", "readableFacts", "rebuildIndex", "recall", "repair", "resolve", "restore", "save", "unreadable", "unwritable", "usageLedger", "use", "writeFact"})
 
     def __init__(self, root, options=_JS_UNDEFINED, *_):
-        if options is _JS_UNDEFINED:
-            options = {}
-        self.root = _JS_UNDEFINED
-        self.indexBudget = _JS_UNDEFINED
-        self.k = _JS_UNDEFINED
-        self.today = _JS_UNDEFINED
-        self.now = _JS_UNDEFINED
-        self.hot = None
-        self.coldIdx = None
-        self.root = py_join(root)
-        self.indexBudget = _js_coalesce_value(_js_get(options, "indexBudget"), DEFAULT_INDEX_BUDGET)
-        self.k = _js_coalesce_value(_js_get(options, "k"), 3)
-        def _js_fn12(*_):
-            return today_local()
-        self.today = _js_coalesce(_js_get(options, "today"), lambda: _js_fn12)
-        self.now = _js_coalesce_value(_js_get(options, "now"), utc_now)
-        if _js_truthy(_js_coalesce_value(_js_get(options, "create"), True)):
-            self.ensureDirs()
+        return _js_method_MemoryStore___init__(self, root, options)
 
     def ensureDirs(self):
-        bantamkit_dir = bantamkit_dir_for(self.root)
-        bantamkit_dir_existed_before = _js_and(bantamkit_dir is not None, lambda: py_exists(bantamkit_dir))
-        _js_caught13 = None
-        try:
-            py_mkdir_parents(py_join(self.root, "facts"))
-            py_mkdir_parents(py_join(self.root, "archive"))
-        except Exception as _js_error13:
-            _js_caught13 = _js_catch(_js_error13)
-        if _js_caught13 is not None:
-            if not isinstance(_js_caught13, PyOSError):
-                raise _js_caught13
-            if _js_truthy(_js_and(_js_m_has(_NOT_WRITABLE_CODES, _js_get(_js_caught13, "code")), lambda: self.present())):
-                raise _js_throw(self.unwritable(_js_caught13))
-            raise MemoryValidationError("memory store could not be created: " + _js_str(self.root) + "; the directory is not" + " there and this filesystem would not make it, so nothing was written")
-        if bantamkit_dir is not None:
-            ensure_bantamkit_gitignore(bantamkit_dir, not _js_truthy(bantamkit_dir_existed_before))
-        return _JS_UNDEFINED
+        return _js_method_MemoryStore_ensureDirs(self)
 
     def present(self):
         _js_caught14 = None
@@ -945,7 +920,7 @@ class MemoryStore(_JsObject):
         except Exception as _js_error14:
             _js_caught14 = _js_catch(_js_error14)
         if _js_caught14 is not None:
-            if not isinstance(_js_caught14, PyOSError):
+            if not _js_instanceof(_js_caught14, PyOSError):
                 raise _js_caught14
             return True
 
@@ -953,105 +928,10 @@ class MemoryStore(_JsObject):
         return MemoryValidationError("memory store is not writable: " + _js_str(self.root) + ": " + _js_str(py_os_error_strerror(error)) + "; the directory" + " exists but cannot be written to, so nothing was written")
 
     def save(self, type_, name, description, body, links=_JS_UNDEFINED, keywords=_JS_UNDEFINED, outcome=_JS_UNDEFINED, status=_JS_UNDEFINED, dup_exempt=_JS_UNDEFINED):
-        if links is _JS_UNDEFINED:
-            links = []
-        if keywords is _JS_UNDEFINED:
-            keywords = []
-        if outcome is _JS_UNDEFINED:
-            outcome = None
-        if status is _JS_UNDEFINED:
-            status = None
-        if dup_exempt is _JS_UNDEFINED:
-            dup_exempt = []
-        self.ensureDirs()
-        if not _js_m_includes(VALID_TYPES, type_):
-            raise MemoryValidationError("invalid type '" + _js_str(type_) + "'; must be one of [" + _js_list_join(["'" + _js_str(t) + "'" for t in VALID_TYPES], ", ") + "]")
-        _validate_outcome_status(type_, outcome, status)
-        if not _js_m_test(_NAME_RE, _js_or_value(name, "")):
-            raise MemoryValidationError("invalid name '" + _js_str(name) + "'; must match " + _NAME_PATTERN)
-        if py_strip(_js_or_value(description, "")) == "":
-            raise MemoryValidationError("description must be a non-empty line")
-        if _js_gt(_js_len(name), NAME_MAX_CHARS):
-            raise MemoryValidationError("invalid name: " + _js_str(_js_len(name)) + " characters; must be at most " + _js_str(NAME_MAX_CHARS))
-        texts = [["description", description], ["body", body], *_js_m_map(links, lambda link, i, *_: ["links[" + _js_str(i) + "]", link]), *_js_m_map(keywords, lambda word, i, *_: ["keywords[" + _js_str(i) + "]", word])]
-        for label, value in _js_rows(texts, 2, (0, 1)):
-            bad = lone_surrogate(value) if isinstance(value, str) else None
-            if bad is not None:
-                raise MemoryValidationError(_js_str(label) + " holds a lone surrogate (" + bad + "), which is not text and cannot be stored as UTF-8; nothing was saved")
-        broken = _not_one_line(py_strip(description))
-        if broken is not None:
-            raise MemoryValidationError("description must be one line; it holds the control character " + broken)
-        new_tokens = _tokens__typed(_js_str(name) + " " + _js_str(description))
-        existing = None
-        skipped = []
-        for fact in self.facts(_JS_UNDEFINED, skipped):
-            if (_js_h10 == name if type(_js_h10 := _js_get(fact, "name")) is type(name) is str else _js_strict_eq(_js_h10, name)):
-                existing = fact
-                continue
-            if _js_m_includes(dup_exempt, py_text(_js_get(fact, "name"))):
-                continue
-            if jaccard(new_tokens, _tokens__typed(py_text(_js_get(fact, "name")) + " " + py_text(_js_get(fact, "description")))) >= DUPLICATE_JACCARD:
-                return {"status": "duplicate", "name": name, "similar": _js_get(fact, "name"), **_js_spread({"skipped": skipped} if len(skipped) > 0 else {})}
-        target = _js_str(name) + ".md"
-        for s in skipped:
-            if _js_get(s, "file") == target:
-                raise MemoryValidationError(_js_str(_js_get(s, "reason")) + "; saving '" + _js_str(name) + "' would overwrite that file, so nothing was saved " + "-- repair it or move it out of facts/ first")
-        fact = {"name": name, "description": py_strip(description), "type": type_, "body": body, "links": [*links], "keywords": [*keywords], "last_recalled": None, **_js_spread({"extra": [*_js_get(existing, "extra")]} if existing is not None and _js_get(existing, "extra") is not _JS_UNDEFINED and _js_gt(_js_len(_js_get(existing, "extra")), 0) else {}), "created": _js_coalesce_value(_js_get(existing, "created"), None) if existing is not None else self.today(), "outcome": outcome, "status": None if status == "active" else status}
-        path = self.factPath(name)
-        existed = py_read_text(path) if _js_truthy(py_exists(path)) else None
-        _js_caught15 = None
-        try:
-            self.writeFact(fact)
-        except Exception as _js_error15:
-            _js_caught15 = _js_catch(_js_error15)
-        if _js_caught15 is not None:
-            if isinstance(_js_caught15, PyOSError) and _js_m_has(_NOT_WRITABLE_CODES, _js_get(_js_caught15, "code")):
-                raise _js_throw(self.unwritable(_js_caught15))
-            raise _js_caught15
-        _js_caught16 = None
-        try:
-            self.checkIndexBudget(True)
-        except Exception as _js_error16:
-            _js_caught16 = _js_catch(_js_error16)
-        if _js_caught16 is not None:
-            if not isinstance(_js_caught16, MemoryBudgetExceeded):
-                raise _js_caught16
-            if existed is None:
-                py_unlink(path)
-            else:
-                py_write_text_atomic(path, existed)
-            self.rebuildIndex(True)
-            raise _js_caught16
-        self.rebuildIndex(True)
-        return {"status": "saved", "name": name, "similar": None, **_js_spread({"skipped": skipped} if len(skipped) > 0 else {})}
+        return _js_method_MemoryStore_save(self, type_, name, description, body, links, keywords, outcome, status, dup_exempt)
 
     def recall(self, query, k=_JS_UNDEFINED, stamp=_JS_UNDEFINED, min_ratio=_JS_UNDEFINED, skipped=_JS_UNDEFINED, outcome=_JS_UNDEFINED):
-        if k is _JS_UNDEFINED:
-            k = None
-        if stamp is _JS_UNDEFINED:
-            stamp = True
-        if min_ratio is _JS_UNDEFINED:
-            min_ratio = RECALL_MIN_SCORE_RATIO
-        if outcome is _JS_UNDEFINED:
-            outcome = None
-        if not (_js_ge(min_ratio, 0) and _js_le(min_ratio, 1)):
-            raise MemoryValidationError(MIN_RATIO_RANGE)
-        limit = _js_coalesce(k, lambda: self.k)
-        q = query_terms(query)
-        ledger = self.usageLedger()
-        def facts_pool():
-            got = self.candidates(skipped)
-            if outcome is not None:
-                got = [f for f in _js_array("filter", got) if _js_strict_eq(_js_get(f, "outcome"), outcome)]
-            return pool_of(got, q)
-        def _js_fn17(*_):
-            return _js_invoke(ledger, "weights", self.now())
-        def _js_fn18(*_):
-            return facts_pool()
-        hits = _js_m_map(pick_hits([self], [self.pool(q, skipped) if outcome is None else facts_pool()], q, limit, min_ratio, _js_fn17, _js_fn18), lambda _js_arg19, *_: (lambda _, fact: fact)(*_js_destructure(_js_arg19, 2)))
-        if _js_truthy(stamp):
-            self.use(ledger, hits, "recall_hit")
-        return hits
+        return _js_method_MemoryStore_recall(self, query, k, stamp, min_ratio, skipped, outcome)
 
     def usageLedger(self):
         return UsageLedger(homedir(), self.root)
@@ -1080,7 +960,7 @@ class MemoryStore(_JsObject):
         except Exception as _js_error20:
             _js_caught20 = _js_catch(_js_error20)
         if _js_caught20 is not None:
-            if isinstance(_js_caught20, PyOSError):
+            if _js_instanceof(_js_caught20, PyOSError):
                 return False
             raise _js_caught20
         self.afterWrite()
@@ -1104,55 +984,13 @@ class MemoryStore(_JsObject):
         return pool_of(self.candidates(skipped), q, every_row)
 
     def resolve(self, pool, row):
-        if _js_get(pool, "facts") is not None:
-            return _js_get(_js_get(pool, "facts"), row)
-        name = _js_get(_js_get(pool, "names"), row)
-        return self.factNamed(_js_or(_js_get(_js_get(pool, "files"), row), lambda: _js_str(name) + ".md"), name)
+        return _js_method_MemoryStore_resolve(self, pool, row)
 
     def listFacts(self, type_=_JS_UNDEFINED, outcome=_JS_UNDEFINED, status=_JS_UNDEFINED):
-        if type_ is _JS_UNDEFINED:
-            type_ = None
-        if outcome is _JS_UNDEFINED:
-            outcome = None
-        if status is _JS_UNDEFINED:
-            status = None
-        facts = []
-        for fact in self.facts():
-            if type_ is not None and (_js_h11 != type_ if type(_js_h11 := _js_get(fact, "type")) is type(type_) is str else not _js_strict_eq(_js_h11, type_)):
-                continue
-            if outcome is not None and (_js_h12 != outcome if type(_js_h12 := _js_get(fact, "outcome")) is type(outcome) is str else not _js_strict_eq(_js_h12, outcome)):
-                continue
-            if status is not None and (_js_h13 != status if type(_js_h13 := _js_get(fact, "status") if _js_truthy(py_truthy(_js_coalesce_value(_js_get(fact, "status"), None))) else "active") is type(status) is str else not _js_strict_eq(_js_h13, status)):
-                continue
-            facts.append(fact)
-        return _js_m_sort(facts, lambda a, b, *_: cmp_codepoint(py_text(_js_get(a, "name")), py_text(_js_get(b, "name"))))
+        return _js_method_MemoryStore_listFacts(self, type_, outcome, status)
 
     def candidatesDone(self, older_than_days=_JS_UNDEFINED, today=_JS_UNDEFINED):
-        if older_than_days is _JS_UNDEFINED:
-            older_than_days = None
-        today_s = _js_or(today, lambda: self.today())
-        out = []
-        def ordinal(iso):
-            t = parse_ts(_js_str(iso) + "T00:00:00Z")
-            return None if _js_number_is_nan(t) else _js_div(t, 86400000)
-        sorted_ = _js_m_sort([*self.facts()], lambda a, b, *_: cmp_codepoint(py_text(_js_get(a, "name")), py_text(_js_get(b, "name"))))
-        for fact in sorted_:
-            if _js_get(fact, "status") == "done":
-                out.append([fact, "status: done"])
-                continue
-            if _js_get(fact, "type") == "project":
-                word = py_search_word(_DONE_WORD_ALTERNATIVES, py_text(_js_get(fact, "description")))
-                if word is not None:
-                    out.append([fact, "done-word '" + _js_m_toLowerCase(word) + "' in description"])
-                    continue
-            if older_than_days is not None and isinstance(_js_get(fact, "created"), str):
-                a = ordinal(today_s)
-                b = ordinal(_js_m_slice(_js_get(fact, "created"), 0, 10))
-                if a is None or b is None:
-                    continue
-                if _js_gt(_js_num(_js_num(a) - _js_num(b)), older_than_days):
-                    out.append([fact, "older than " + _js_str(older_than_days) + "d (created " + _js_str(_js_m_slice(_js_get(fact, "created"), 0, 10)) + ")"])
-        return out
+        return _js_method_MemoryStore_candidatesDone(self, older_than_days, today)
 
     def merge(self, names, name, type_, description, body, outcome=_JS_UNDEFINED, status=_JS_UNDEFINED, apply=_JS_UNDEFINED):
         if outcome is _JS_UNDEFINED:
@@ -1247,7 +1085,7 @@ class MemoryStore(_JsObject):
         except Exception as _js_error21:
             _js_caught21 = _js_catch(_js_error21)
         if _js_caught21 is not None:
-            error = _js_caught21 if isinstance(_js_caught21, PyOSError) else as_py_os_error(_js_caught21, directory)
+            error = _js_caught21 if _js_instanceof(_js_caught21, PyOSError) else as_py_os_error(_js_caught21, directory)
             if _js_get(error, "code") == "ENOENT":
                 if _js_truthy(py_lexists(directory)):
                     raise _js_throw(self.unreadable(directory, error, _FACTS_UNREADABLE, "a path exists there"))
@@ -1267,7 +1105,7 @@ class MemoryStore(_JsObject):
         except Exception as _js_error22:
             _js_caught22 = _js_catch(_js_error22)
         if _js_caught22 is not None:
-            if isinstance(_js_caught22, BantamError) or isinstance(_js_caught22, PyOSError):
+            if _js_instanceof(_js_caught22, BantamError) or _js_instanceof(_js_caught22, PyOSError):
                 return None
             raise _js_caught22
         return fact if isinstance(_js_get(fact, "name"), str) and _js_strict_eq(_js_get(fact, "name"), name) else None
@@ -1282,7 +1120,7 @@ class MemoryStore(_JsObject):
         except Exception as _js_error23:
             _js_caught23 = _js_catch(_js_error23)
         if _js_caught23 is not None:
-            if not (isinstance(_js_caught23, BantamError) or isinstance(_js_caught23, PyOSError)):
+            if not (_js_instanceof(_js_caught23, BantamError) or _js_instanceof(_js_caught23, PyOSError)):
                 raise _js_caught23
             _js_invoke(idx, "invalidate")
         return _JS_UNDEFINED
@@ -1304,7 +1142,7 @@ class MemoryStore(_JsObject):
         except Exception as _js_error24:
             _js_caught24 = _js_catch(_js_error24)
         if _js_caught24 is not None:
-            if not isinstance(_js_caught24, ColdIndexError):
+            if not _js_instanceof(_js_caught24, ColdIndexError):
                 raise _js_caught24
             _js_invoke(cold, "reset")
             held = []
@@ -1335,7 +1173,7 @@ class MemoryStore(_JsObject):
             except Exception as _js_error26:
                 _js_caught26 = _js_catch(_js_error26)
             if _js_caught26 is not None:
-                if not isinstance(_js_caught26, ColdIndexError):
+                if not _js_instanceof(_js_caught26, ColdIndexError):
                     raise _js_caught26
                 _js_invoke(cold, "reset")
                 return self.coldSynced()
@@ -1355,7 +1193,7 @@ class MemoryStore(_JsObject):
         except Exception as _js_error27:
             _js_caught27 = _js_catch(_js_error27)
         if _js_caught27 is not None:
-            if not isinstance(_js_caught27, ColdIndexError):
+            if not _js_instanceof(_js_caught27, ColdIndexError):
                 raise _js_caught27
             _js_invoke(cold, "reset")
             cold = self.coldSynced()
@@ -1377,7 +1215,7 @@ class MemoryStore(_JsObject):
             except Exception as _js_error28:
                 _js_caught28 = _js_catch(_js_error28)
             if _js_caught28 is not None:
-                if isinstance(_js_caught28, BantamError) or isinstance(_js_caught28, PyOSError):
+                if _js_instanceof(_js_caught28, BantamError) or _js_instanceof(_js_caught28, PyOSError):
                     continue
                 raise _js_caught28
             if isinstance(_js_get(fact, "name"), str) and (_js_h15 == name if type(_js_h15 := _js_get(fact, "name")) is type(name) is str else _js_strict_eq(_js_h15, name)):
@@ -1399,38 +1237,10 @@ class MemoryStore(_JsObject):
         return _JS_UNDEFINED
 
     def compact(self, reserve=_JS_UNDEFINED):
-        if reserve is _JS_UNDEFINED:
-            reserve = None
-        facts = self.facts()
-        self.ensureDirs()
-        sizes = _JsMap()
-        for fact in facts:
-            _js_m_set(sizes, fact, buffer_byte_length(self.indexLine(fact), "utf8"))
-        all_ = [*_js_m_values(sizes)]
-        if reserve is None:
-            reserve = _js_num(_js_num(_js_num(self.indexBudget) - undegraded_index_ceiling(self.indexBudget)) + (0 if len(all_) == 0 else _js_max(*all_)))
-        reserve = _js_max(0, _js_min(reserve, _js_floor(_js_div(self.indexBudget, 2))))
-        target = _js_num(_js_num(self.indexBudget) - _js_num(reserve))
-        size = _js_m_reduce(all_, lambda total, bytes, *_: _js_add(total, bytes), 0)
-        before = size
-        archived = []
-        for fact in self.byEviction(facts, _js_invoke(self.usageLedger(), "lastUsedMap")):
-            if _js_le(size, target):
-                break
-            path = _js_coalesce(_js_get(fact, "source"), lambda: self.factPath(_js_get(fact, "name")))
-            py_replace(path, py_join(self.root, "archive", py_name(path)))
-            bytes = (sizes._entries.get(fact, _JS_UNDEFINED) if type(sizes) is _JsMap and type(fact) is str else _js_m_get(sizes, fact))
-            size = _js_num(_js_num(size) - _js_num(bytes))
-            archived.append({"name": _js_get(fact, "name"), "type": _js_get(fact, "type"), "description": _js_get(fact, "description"), "indexBytes": bytes, "lastRecalled": _js_coalesce_value(_js_get(fact, "last_recalled"), None), "created": _js_coalesce_value(_js_get(fact, "created"), None)})
-        self.rebuildIndex()
-        return {"archived": archived, "indexBefore": before, "indexAfter": size, "budget": self.indexBudget, "target": target, "reserve": reserve, "headroom": _js_num(_js_num(self.indexBudget) - _js_num(size)), "archiveDir": py_join(self.root, "archive")}
+        return _js_method_MemoryStore_compact(self, reserve)
 
     def archived(self):
-        archive = py_join(self.root, "archive")
-        def _js_fn29(name=_JS_UNDEFINED, *_):
-            suffix = py_suffix(name)
-            return name if suffix == "" else _js_m_slice(name, 0, _js_num(_js_num(_js_len(name)) - _js_num(_js_len(suffix))))
-        return _js_m_sort(_js_m_map(self.listing(archive, _ARCHIVE_UNREADABLE), _js_fn29), cmp_codepoint)
+        return _js_method_MemoryStore_archived(self)
 
     def archive(self, name):
         if not _js_m_test(_NAME_RE, _js_or_value(name, "")):
@@ -1496,19 +1306,7 @@ class MemoryStore(_JsObject):
         return {"facts": self.facts(_JS_UNDEFINED, skipped), "skipped": skipped}
 
     def internals(self):
-        def _js_fn32(*_):
-            return self.facts()
-        def _js_fn33(name=_JS_UNDEFINED, *_):
-            return self.factPath(name)
-        def _js_fn34(fact=_JS_UNDEFINED, *_):
-            return self.indexLine(fact)
-        def _js_fn35(fact=_JS_UNDEFINED, *_):
-            return self.writeFact(fact)
-        def _js_fn36(*_):
-            return self.rebuildIndex()
-        def _js_fn37(*_):
-            return self.afterWrite()
-        return {"facts": _js_fn32, "factPath": _js_fn33, "indexLine": _js_fn34, "writeFact": _js_fn35, "rebuildIndex": _js_fn36, "afterWrite": _js_fn37}
+        return _js_method_MemoryStore_internals(self)
 
     def factPath(self, name):
         return py_join(self.root, "facts", py_text(name) + ".md")
@@ -1517,29 +1315,7 @@ class MemoryStore(_JsObject):
         return "- [[" + py_text(_js_get(fact, "name")) + "]] (" + py_text(_js_get(fact, "type")) + ") — " + py_text(_js_get(fact, "description")) + "\n"
 
     def byEviction(self, facts, used=_JS_UNDEFINED):
-        if used is _JS_UNDEFINED:
-            used = _JsMap()
-        def rank(fact):
-            return 1 if any(py_equal_value(_js_get(fact, "type"), durable) for durable in DURABLE_TYPES) else 0
-        def key(fact):
-            last = _js_m_get(used, _js_get(fact, "name")) if isinstance(_js_get(fact, "name"), str) else _JS_UNDEFINED
-            return [last if _js_truthy(last) else _js_get(fact, "last_recalled") if _js_truthy(py_truthy(_js_get(fact, "last_recalled"))) else _js_get(fact, "created") if _js_truthy(py_truthy(_js_get(fact, "created"))) else "", _js_get(fact, "name")]
-        def _js_fn38(a=_JS_UNDEFINED, b=_JS_UNDEFINED, *_):
-            left_rank = rank(a)
-            right_rank = rank(b)
-            if not _js_strict_eq(left_rank, right_rank):
-                return -1 if _js_lt(left_rank, right_rank) else 1
-            left = key(a)
-            right = key(b)
-            slot = 0
-            while slot < 2:
-                if py_compare_lt(_js_get(left, slot), _js_get(right, slot)):
-                    return -1
-                if py_compare_lt(_js_get(right, slot), _js_get(left, slot)):
-                    return 1
-                slot = _js_num(slot + 1)
-            return 0
-        return _js_m_sort([*facts], _js_fn38)
+        return _js_method_MemoryStore_byEviction(self, facts, used)
 
     def reachable(self, path, directory, consequence):
         _js_caught39 = None
@@ -1548,7 +1324,7 @@ class MemoryStore(_JsObject):
         except Exception as _js_error39:
             _js_caught39 = _js_catch(_js_error39)
         if _js_caught39 is not None:
-            error = _js_caught39 if isinstance(_js_caught39, PyOSError) else as_py_os_error(_js_caught39, path)
+            error = _js_caught39 if _js_instanceof(_js_caught39, PyOSError) else as_py_os_error(_js_caught39, path)
             raise _js_throw(self.unreadable(directory, error, consequence, "stat of " + _js_str(py_name(path))))
 
     def listing(self, directory, consequence):
@@ -1558,7 +1334,7 @@ class MemoryStore(_JsObject):
         except Exception as _js_error40:
             _js_caught40 = _js_catch(_js_error40)
         if _js_caught40 is not None:
-            error = _js_caught40 if isinstance(_js_caught40, PyOSError) else as_py_os_error(_js_caught40, directory)
+            error = _js_caught40 if _js_instanceof(_js_caught40, PyOSError) else as_py_os_error(_js_caught40, directory)
             if _js_get(error, "code") == "ENOENT":
                 if _js_truthy(py_lexists(directory)):
                     raise _js_throw(self.unreadable(directory, error, consequence, "a path exists there"))
@@ -1587,71 +1363,13 @@ class MemoryStore(_JsObject):
             except Exception as _js_error41:
                 _js_caught41 = _js_catch(_js_error41)
             if _js_caught41 is not None:
-                if not (isinstance(_js_caught41, BantamError) or isinstance(_js_caught41, PyOSError)):
+                if not (_js_instanceof(_js_caught41, BantamError) or _js_instanceof(_js_caught41, PyOSError)):
                     raise _js_caught41
-                _js_m_push(skipped, {"file": path_basename(path), "reason": py_os_error_text(_js_caught41) if isinstance(_js_caught41, PyOSError) else _js_get(_js_caught41, "message")})
+                _js_m_push(skipped, {"file": path_basename(path), "reason": py_os_error_text(_js_caught41) if _js_instanceof(_js_caught41, PyOSError) else _js_get(_js_caught41, "message")})
         return out
 
     def readFact(self, path, findings=_JS_UNDEFINED):
-        def timestamp_text(value):
-            return _js_get(value, "text") if isinstance(value, PyScalar) and (_js_get(_js_get(value, "ord"), "kind") == "date" or _js_get(_js_get(value, "ord"), "kind") == "datetime") else value
-        file = path_basename(path)
-        def malformed(reason):
-            return MemoryValidationError("malformed fact file " + _js_str(file) + ": " + _js_str(reason))
-        text = _JS_UNDEFINED
-        _js_caught42 = None
-        try:
-            text = py_read_text(path)
-        except Exception as _js_error42:
-            _js_caught42 = _js_catch(_js_error42)
-        if _js_caught42 is not None:
-            if isinstance(_js_caught42, PyUnicodeDecodeError):
-                raise _js_throw(malformed(_js_get(_js_caught42, "message")))
-            raise _js_caught42
-        parts = py_split(text, "---\n", 2)
-        if not _js_strict_eq(_js_len(parts), 3):
-            raise _js_throw(malformed("not enough values to unpack (expected 3, got " + _js_str(_js_len(parts)) + ")"))
-        front = _js_get(parts, 1)
-        meta = _JS_UNDEFINED
-        if not _looks_like_mapping(front):
-            raise _js_throw(malformed("frontmatter is not a mapping"))
-        _js_caught43 = None
-        try:
-            meta = parse_frontmatter(front)
-        except Exception as _js_error43:
-            _js_caught43 = _js_catch(_js_error43)
-        if _js_caught43 is not None:
-            raise _js_throw(malformed(_js_get(_js_caught43, "message") if isinstance(_js_caught43, _JsError) else _js_str(_js_caught43)))
-        for key in ["name", "description"]:
-            if not _js_in(key, meta):
-                raise _js_throw(malformed("'" + key + "'"))
-        alias = lifecycle_of(meta)
-        if not _js_in("type", meta) and _js_get(alias, "type") is None:
-            raise _js_throw(malformed("'type'"))
-        name = _js_get(meta, "name")
-        stamps = {}
-        for key in ["created", "last_recalled"]:
-            raw = _js_get(meta, key)
-            value = timestamp_text(raw)
-            if findings is not _JS_UNDEFINED and (value != raw if type(value) is type(raw) is str else not _js_strict_eq(value, raw)):
-                _js_m_push(findings, "fact '" + py_text(name) + "' in " + _js_str(file) + ": " + key + " is the unquoted timestamp " + _js_str(value) + ", " + ("read as '" + _js_str(value) + "'; quote it"))
-            _js_put(stamps, key, value)
-        suffix = py_suffix(file)
-        stem = file if suffix == "" else _js_m_slice(file, 0, _js_num(_js_num(_js_len(file)) - _js_num(_js_len(suffix))))
-        if findings is not _JS_UNDEFINED and stem != py_text(name):
-            _js_m_push(findings, "fact '" + py_text(name) + "' in " + _js_str(file) + ": the file name does not match the fact name; " + ("rename the file to " + py_text(name) + ".md or the fact to " + _js_str(stem)))
-        raw_created = _js_get(stamps, "created")
-        description = _js_get(meta, "description")
-        broken = _not_one_line(description) if isinstance(description, str) else None
-        if broken is not None:
-            description = _js_dispatch(description, "replace", _js_m_replace, _NOT_ONE_LINE, " ")
-            if findings is not _JS_UNDEFINED:
-                _js_m_push(findings, "fact '" + py_text(name) + "' in " + _js_str(file) + ": the description is not one line " + ("(it holds the control character " + broken + "), read as '" + _js_str(description) + "'; make it one line"))
-        links = py_list(_js_get(meta, "links"))
-        keywords = _js_get(meta, "keywords") if _js_in("keywords", meta) else []
-        if not (isinstance(keywords, list) and _js_every_string(keywords)):
-            raise MemoryValidationError("fact '" + py_text(name) + "' in " + _js_str(file) + ": keywords must be a list of strings")
-        return {"name": name, "description": description, "type": _js_get(alias, "type"), "body": py_strip(_js_get(parts, 2)), "links": links, "keywords": [*keywords], **_js_spread({"extra": extra_of(meta)} if _js_gt(_js_len(extra_of(meta)), 0) else {}), "last_recalled": _js_coalesce_value(_js_get(stamps, "last_recalled"), None), "created": raw_created if _js_truthy(py_truthy(raw_created)) else py_mtime_date(path), "outcome": _js_get(alias, "outcome"), "status": _js_get(alias, "status"), "source": path}
+        return _js_method_MemoryStore_readFact(self, path, findings)
 
     def writeFact(self, fact):
         py_write_text_atomic(self.factPath(_js_get(fact, "name")), format_fact(fact))
@@ -1674,33 +1392,375 @@ class MemoryStore(_JsObject):
 
     @staticmethod
     def poolIndexed(idx, q):
-        cols = _js_invoke(idx, "cols")
-        n = _js_len(_js_get(cols, "name"))
-        bn, bd, bk = _js_destructure(_js_m_map(FIELD_BOOST, lambda _js_arg44, *_: (lambda _, b: b)(*_js_destructure(_js_arg44, 2))), 3)
-        segs = _JsMap()
-        df = _JsMap([[t, 0] for t in _js_array("map", q)])
-        for t, seg in _js_rows(_js_invoke(idx, "segments", q), 2, (0, 1)):
-            if not isinstance(seg, list) or not _js_strict_eq(_js_mod(_js_len(seg), 5), 0):
+        return _js_method_MemoryStore_poolIndexed(idx, q)
+
+
+def _js_method_MemoryStore___init__(self, root, options=_JS_UNDEFINED, *_):
+    if options is _JS_UNDEFINED:
+        options = {}
+    self.root = _JS_UNDEFINED
+    self.indexBudget = _JS_UNDEFINED
+    self.k = _JS_UNDEFINED
+    self.today = _JS_UNDEFINED
+    self.now = _JS_UNDEFINED
+    self.hot = None
+    self.coldIdx = None
+    self.root = py_join(root)
+    self.indexBudget = _js_coalesce_value(_js_get(options, "indexBudget"), DEFAULT_INDEX_BUDGET)
+    self.k = _js_coalesce_value(_js_get(options, "k"), 3)
+    def _js_fn12(*_):
+        return today_local()
+    self.today = _js_coalesce(_js_get(options, "today"), lambda: _js_fn12)
+    self.now = _js_coalesce_value(_js_get(options, "now"), utc_now)
+    if _js_truthy(_js_coalesce_value(_js_get(options, "create"), True)):
+        self.ensureDirs()
+
+
+def _js_method_MemoryStore_ensureDirs(self):
+    bantamkit_dir = bantamkit_dir_for(self.root)
+    bantamkit_dir_existed_before = _js_and(bantamkit_dir is not None, lambda: py_exists(bantamkit_dir))
+    _js_caught13 = None
+    try:
+        py_mkdir_parents(py_join(self.root, "facts"))
+        py_mkdir_parents(py_join(self.root, "archive"))
+    except Exception as _js_error13:
+        _js_caught13 = _js_catch(_js_error13)
+    if _js_caught13 is not None:
+        if not _js_instanceof(_js_caught13, PyOSError):
+            raise _js_caught13
+        if _js_truthy(_js_and(_js_m_has(_NOT_WRITABLE_CODES, _js_get(_js_caught13, "code")), lambda: self.present())):
+            raise _js_throw(self.unwritable(_js_caught13))
+        raise MemoryValidationError("memory store could not be created: " + _js_str(self.root) + "; the directory is not" + " there and this filesystem would not make it, so nothing was written")
+    if bantamkit_dir is not None:
+        ensure_bantamkit_gitignore(bantamkit_dir, not _js_truthy(bantamkit_dir_existed_before))
+    return _JS_UNDEFINED
+
+
+def _js_method_MemoryStore_save(self, type_, name, description, body, links=_JS_UNDEFINED, keywords=_JS_UNDEFINED, outcome=_JS_UNDEFINED, status=_JS_UNDEFINED, dup_exempt=_JS_UNDEFINED):
+    if links is _JS_UNDEFINED:
+        links = []
+    if keywords is _JS_UNDEFINED:
+        keywords = []
+    if outcome is _JS_UNDEFINED:
+        outcome = None
+    if status is _JS_UNDEFINED:
+        status = None
+    if dup_exempt is _JS_UNDEFINED:
+        dup_exempt = []
+    self.ensureDirs()
+    if not _js_m_includes(VALID_TYPES, type_):
+        raise MemoryValidationError("invalid type '" + _js_str(type_) + "'; must be one of [" + _js_list_join(["'" + _js_str(t) + "'" for t in VALID_TYPES], ", ") + "]")
+    _validate_outcome_status(type_, outcome, status)
+    if not _js_m_test(_NAME_RE, _js_or_value(name, "")):
+        raise MemoryValidationError("invalid name '" + _js_str(name) + "'; must match " + _NAME_PATTERN)
+    if py_strip(_js_or_value(description, "")) == "":
+        raise MemoryValidationError("description must be a non-empty line")
+    if _js_gt(_js_len(name), NAME_MAX_CHARS):
+        raise MemoryValidationError("invalid name: " + _js_str(_js_len(name)) + " characters; must be at most " + _js_str(NAME_MAX_CHARS))
+    texts = [["description", description], ["body", body], *_js_m_map(links, lambda link, i, *_: ["links[" + _js_str(i) + "]", link]), *_js_m_map(keywords, lambda word, i, *_: ["keywords[" + _js_str(i) + "]", word])]
+    for label, value in _js_rows(texts, 2, (0, 1)):
+        bad = lone_surrogate(value) if isinstance(value, str) else None
+        if bad is not None:
+            raise MemoryValidationError(_js_str(label) + " holds a lone surrogate (" + bad + "), which is not text and cannot be stored as UTF-8; nothing was saved")
+    broken = _not_one_line(py_strip(description))
+    if broken is not None:
+        raise MemoryValidationError("description must be one line; it holds the control character " + broken)
+    new_tokens = _tokens__typed(_js_str(name) + " " + _js_str(description))
+    existing = None
+    skipped = []
+    for fact in self.facts(_JS_UNDEFINED, skipped):
+        if (_js_h10 == name if type(_js_h10 := _js_get(fact, "name")) is type(name) is str else _js_strict_eq(_js_h10, name)):
+            existing = fact
+            continue
+        if _js_m_includes(dup_exempt, py_text(_js_get(fact, "name"))):
+            continue
+        if jaccard(new_tokens, _tokens__typed(py_text(_js_get(fact, "name")) + " " + py_text(_js_get(fact, "description")))) >= DUPLICATE_JACCARD:
+            return {"status": "duplicate", "name": name, "similar": _js_get(fact, "name"), **_js_spread({"skipped": skipped} if len(skipped) > 0 else {})}
+    target = _js_str(name) + ".md"
+    for s in skipped:
+        if _js_get(s, "file") == target:
+            raise MemoryValidationError(_js_str(_js_get(s, "reason")) + "; saving '" + _js_str(name) + "' would overwrite that file, so nothing was saved " + "-- repair it or move it out of facts/ first")
+    fact = {"name": name, "description": py_strip(description), "type": type_, "body": body, "links": [*links], "keywords": [*keywords], "last_recalled": None, **_js_spread({"extra": [*_js_get(existing, "extra")]} if existing is not None and _js_get(existing, "extra") is not _JS_UNDEFINED and _js_gt(_js_len(_js_get(existing, "extra")), 0) else {}), "created": _js_coalesce_value(_js_get(existing, "created"), None) if existing is not None else self.today(), "outcome": outcome, "status": None if status == "active" else status}
+    path = self.factPath(name)
+    existed = py_read_text(path) if _js_truthy(py_exists(path)) else None
+    _js_caught15 = None
+    try:
+        self.writeFact(fact)
+    except Exception as _js_error15:
+        _js_caught15 = _js_catch(_js_error15)
+    if _js_caught15 is not None:
+        if _js_instanceof(_js_caught15, PyOSError) and _js_m_has(_NOT_WRITABLE_CODES, _js_get(_js_caught15, "code")):
+            raise _js_throw(self.unwritable(_js_caught15))
+        raise _js_caught15
+    _js_caught16 = None
+    try:
+        self.checkIndexBudget(True)
+    except Exception as _js_error16:
+        _js_caught16 = _js_catch(_js_error16)
+    if _js_caught16 is not None:
+        if not _js_instanceof(_js_caught16, MemoryBudgetExceeded):
+            raise _js_caught16
+        if existed is None:
+            py_unlink(path)
+        else:
+            py_write_text_atomic(path, existed)
+        self.rebuildIndex(True)
+        raise _js_caught16
+    self.rebuildIndex(True)
+    return {"status": "saved", "name": name, "similar": None, **_js_spread({"skipped": skipped} if len(skipped) > 0 else {})}
+
+
+def _js_method_MemoryStore_recall(self, query, k=_JS_UNDEFINED, stamp=_JS_UNDEFINED, min_ratio=_JS_UNDEFINED, skipped=_JS_UNDEFINED, outcome=_JS_UNDEFINED):
+    if k is _JS_UNDEFINED:
+        k = None
+    if stamp is _JS_UNDEFINED:
+        stamp = True
+    if min_ratio is _JS_UNDEFINED:
+        min_ratio = RECALL_MIN_SCORE_RATIO
+    if outcome is _JS_UNDEFINED:
+        outcome = None
+    if not (_js_ge(min_ratio, 0) and _js_le(min_ratio, 1)):
+        raise MemoryValidationError(MIN_RATIO_RANGE)
+    limit = _js_coalesce(k, lambda: self.k)
+    q = query_terms(query)
+    ledger = self.usageLedger()
+    def facts_pool():
+        got = self.candidates(skipped)
+        if outcome is not None:
+            got = [f for f in _js_array("filter", got) if _js_strict_eq(_js_get(f, "outcome"), outcome)]
+        return pool_of(got, q)
+    def _js_fn17(*_):
+        return _js_invoke(ledger, "weights", self.now())
+    def _js_fn18(*_):
+        return facts_pool()
+    hits = _js_m_map(pick_hits([self], [self.pool(q, skipped) if outcome is None else facts_pool()], q, limit, min_ratio, _js_fn17, _js_fn18), lambda _js_arg19, *_: (lambda _, fact: fact)(*_js_destructure(_js_arg19, 2)))
+    if _js_truthy(stamp):
+        self.use(ledger, hits, "recall_hit")
+    return hits
+
+
+def _js_method_MemoryStore_resolve(self, pool, row):
+    if _js_get(pool, "facts") is not None:
+        return _js_get(_js_get(pool, "facts"), row)
+    name = _js_get(_js_get(pool, "names"), row)
+    return self.factNamed(_js_or(_js_get(_js_get(pool, "files"), row), lambda: _js_str(name) + ".md"), name)
+
+
+def _js_method_MemoryStore_listFacts(self, type_=_JS_UNDEFINED, outcome=_JS_UNDEFINED, status=_JS_UNDEFINED):
+    if type_ is _JS_UNDEFINED:
+        type_ = None
+    if outcome is _JS_UNDEFINED:
+        outcome = None
+    if status is _JS_UNDEFINED:
+        status = None
+    facts = []
+    for fact in self.facts():
+        if type_ is not None and (_js_h11 != type_ if type(_js_h11 := _js_get(fact, "type")) is type(type_) is str else not _js_strict_eq(_js_h11, type_)):
+            continue
+        if outcome is not None and (_js_h12 != outcome if type(_js_h12 := _js_get(fact, "outcome")) is type(outcome) is str else not _js_strict_eq(_js_h12, outcome)):
+            continue
+        if status is not None and (_js_h13 != status if type(_js_h13 := _js_get(fact, "status") if _js_truthy(py_truthy(_js_coalesce_value(_js_get(fact, "status"), None))) else "active") is type(status) is str else not _js_strict_eq(_js_h13, status)):
+            continue
+        facts.append(fact)
+    return _js_m_sort(facts, lambda a, b, *_: cmp_codepoint(py_text(_js_get(a, "name")), py_text(_js_get(b, "name"))))
+
+
+def _js_method_MemoryStore_candidatesDone(self, older_than_days=_JS_UNDEFINED, today=_JS_UNDEFINED):
+    if older_than_days is _JS_UNDEFINED:
+        older_than_days = None
+    today_s = _js_or(today, lambda: self.today())
+    out = []
+    def ordinal(iso):
+        t = parse_ts(_js_str(iso) + "T00:00:00Z")
+        return None if _js_number_is_nan(t) else _js_div(t, 86400000)
+    sorted_ = _js_m_sort([*self.facts()], lambda a, b, *_: cmp_codepoint(py_text(_js_get(a, "name")), py_text(_js_get(b, "name"))))
+    for fact in sorted_:
+        if _js_get(fact, "status") == "done":
+            out.append([fact, "status: done"])
+            continue
+        if _js_get(fact, "type") == "project":
+            word = py_search_word(_DONE_WORD_ALTERNATIVES, py_text(_js_get(fact, "description")))
+            if word is not None:
+                out.append([fact, "done-word '" + _js_m_toLowerCase(word) + "' in description"])
+                continue
+        if older_than_days is not None and isinstance(_js_get(fact, "created"), str):
+            a = ordinal(today_s)
+            b = ordinal(_js_m_slice(_js_get(fact, "created"), 0, 10))
+            if a is None or b is None:
+                continue
+            if _js_gt(_js_num(_js_num(a) - _js_num(b)), older_than_days):
+                out.append([fact, "older than " + _js_str(older_than_days) + "d (created " + _js_str(_js_m_slice(_js_get(fact, "created"), 0, 10)) + ")"])
+    return out
+
+
+def _js_method_MemoryStore_compact(self, reserve=_JS_UNDEFINED):
+    if reserve is _JS_UNDEFINED:
+        reserve = None
+    facts = self.facts()
+    self.ensureDirs()
+    sizes = _JsMap()
+    for fact in facts:
+        _js_m_set(sizes, fact, buffer_byte_length(self.indexLine(fact), "utf8"))
+    all_ = [*_js_m_values(sizes)]
+    if reserve is None:
+        reserve = _js_num(_js_num(_js_num(self.indexBudget) - undegraded_index_ceiling(self.indexBudget)) + (0 if len(all_) == 0 else _js_max(*all_)))
+    reserve = _js_max(0, _js_min(reserve, _js_floor(_js_div(self.indexBudget, 2))))
+    target = _js_num(_js_num(self.indexBudget) - _js_num(reserve))
+    size = _js_m_reduce(all_, lambda total, bytes, *_: _js_add(total, bytes), 0)
+    before = size
+    archived = []
+    for fact in self.byEviction(facts, _js_invoke(self.usageLedger(), "lastUsedMap")):
+        if _js_le(size, target):
+            break
+        path = _js_coalesce(_js_get(fact, "source"), lambda: self.factPath(_js_get(fact, "name")))
+        py_replace(path, py_join(self.root, "archive", py_name(path)))
+        bytes = (sizes._entries.get(fact, _JS_UNDEFINED) if type(sizes) is _JsMap and type(fact) is str else _js_m_get(sizes, fact))
+        size = _js_num(_js_num(size) - _js_num(bytes))
+        archived.append({"name": _js_get(fact, "name"), "type": _js_get(fact, "type"), "description": _js_get(fact, "description"), "indexBytes": bytes, "lastRecalled": _js_coalesce_value(_js_get(fact, "last_recalled"), None), "created": _js_coalesce_value(_js_get(fact, "created"), None)})
+    self.rebuildIndex()
+    return {"archived": archived, "indexBefore": before, "indexAfter": size, "budget": self.indexBudget, "target": target, "reserve": reserve, "headroom": _js_num(_js_num(self.indexBudget) - _js_num(size)), "archiveDir": py_join(self.root, "archive")}
+
+
+def _js_method_MemoryStore_archived(self):
+    archive = py_join(self.root, "archive")
+    def _js_fn29(name=_JS_UNDEFINED, *_):
+        suffix = py_suffix(name)
+        return name if suffix == "" else _js_m_slice(name, 0, _js_num(_js_num(_js_len(name)) - _js_num(_js_len(suffix))))
+    return _js_m_sort(_js_m_map(self.listing(archive, _ARCHIVE_UNREADABLE), _js_fn29), cmp_codepoint)
+
+
+def _js_method_MemoryStore_internals(self):
+    def _js_fn32(*_):
+        return self.facts()
+    def _js_fn33(name=_JS_UNDEFINED, *_):
+        return self.factPath(name)
+    def _js_fn34(fact=_JS_UNDEFINED, *_):
+        return self.indexLine(fact)
+    def _js_fn35(fact=_JS_UNDEFINED, *_):
+        return self.writeFact(fact)
+    def _js_fn36(*_):
+        return self.rebuildIndex()
+    def _js_fn37(*_):
+        return self.afterWrite()
+    return {"facts": _js_fn32, "factPath": _js_fn33, "indexLine": _js_fn34, "writeFact": _js_fn35, "rebuildIndex": _js_fn36, "afterWrite": _js_fn37}
+
+
+def _js_method_MemoryStore_byEviction(self, facts, used=_JS_UNDEFINED):
+    if used is _JS_UNDEFINED:
+        used = _JsMap()
+    def rank(fact):
+        return 1 if any(py_equal_value(_js_get(fact, "type"), durable) for durable in DURABLE_TYPES) else 0
+    def key(fact):
+        last = _js_m_get(used, _js_get(fact, "name")) if isinstance(_js_get(fact, "name"), str) else _JS_UNDEFINED
+        return [last if _js_truthy(last) else _js_get(fact, "last_recalled") if _js_truthy(py_truthy(_js_get(fact, "last_recalled"))) else _js_get(fact, "created") if _js_truthy(py_truthy(_js_get(fact, "created"))) else "", _js_get(fact, "name")]
+    def _js_fn38(a=_JS_UNDEFINED, b=_JS_UNDEFINED, *_):
+        left_rank = rank(a)
+        right_rank = rank(b)
+        if not _js_strict_eq(left_rank, right_rank):
+            return -1 if _js_lt(left_rank, right_rank) else 1
+        left = key(a)
+        right = key(b)
+        slot = 0
+        while slot < 2:
+            if py_compare_lt(_js_get(left, slot), _js_get(right, slot)):
+                return -1
+            if py_compare_lt(_js_get(right, slot), _js_get(left, slot)):
+                return 1
+            slot = _js_num(slot + 1)
+        return 0
+    return _js_m_sort([*facts], _js_fn38)
+
+
+def _js_method_MemoryStore_readFact(self, path, findings=_JS_UNDEFINED):
+    def timestamp_text(value):
+        return _js_get(value, "text") if _js_instanceof(value, PyScalar) and (_js_get(_js_get(value, "ord"), "kind") == "date" or _js_get(_js_get(value, "ord"), "kind") == "datetime") else value
+    file = path_basename(path)
+    def malformed(reason):
+        return MemoryValidationError("malformed fact file " + _js_str(file) + ": " + _js_str(reason))
+    text = _JS_UNDEFINED
+    _js_caught42 = None
+    try:
+        text = py_read_text(path)
+    except Exception as _js_error42:
+        _js_caught42 = _js_catch(_js_error42)
+    if _js_caught42 is not None:
+        if _js_instanceof(_js_caught42, PyUnicodeDecodeError):
+            raise _js_throw(malformed(_js_get(_js_caught42, "message")))
+        raise _js_caught42
+    parts = py_split(text, "---\n", 2)
+    if not _js_strict_eq(_js_len(parts), 3):
+        raise _js_throw(malformed("not enough values to unpack (expected 3, got " + _js_str(_js_len(parts)) + ")"))
+    front = _js_get(parts, 1)
+    meta = _JS_UNDEFINED
+    if not _looks_like_mapping(front):
+        raise _js_throw(malformed("frontmatter is not a mapping"))
+    _js_caught43 = None
+    try:
+        meta = parse_frontmatter(front)
+    except Exception as _js_error43:
+        _js_caught43 = _js_catch(_js_error43)
+    if _js_caught43 is not None:
+        raise _js_throw(malformed(_js_get(_js_caught43, "message") if _js_instanceof(_js_caught43, _JsError) else _js_str(_js_caught43)))
+    for key in ["name", "description"]:
+        if not _js_in(key, meta):
+            raise _js_throw(malformed("'" + key + "'"))
+    alias = lifecycle_of(meta)
+    if not _js_in("type", meta) and _js_get(alias, "type") is None:
+        raise _js_throw(malformed("'type'"))
+    name = _js_get(meta, "name")
+    stamps = {}
+    for key in ["created", "last_recalled"]:
+        raw = _js_get(meta, key)
+        value = timestamp_text(raw)
+        if findings is not _JS_UNDEFINED and (value != raw if type(value) is type(raw) is str else not _js_strict_eq(value, raw)):
+            _js_m_push(findings, "fact '" + py_text(name) + "' in " + _js_str(file) + ": " + key + " is the unquoted timestamp " + _js_str(value) + ", " + ("read as '" + _js_str(value) + "'; quote it"))
+        _js_put(stamps, key, value)
+    suffix = py_suffix(file)
+    stem = file if suffix == "" else _js_m_slice(file, 0, _js_num(_js_num(_js_len(file)) - _js_num(_js_len(suffix))))
+    if findings is not _JS_UNDEFINED and stem != py_text(name):
+        _js_m_push(findings, "fact '" + py_text(name) + "' in " + _js_str(file) + ": the file name does not match the fact name; " + ("rename the file to " + py_text(name) + ".md or the fact to " + _js_str(stem)))
+    raw_created = _js_get(stamps, "created")
+    description = _js_get(meta, "description")
+    broken = _not_one_line(description) if isinstance(description, str) else None
+    if broken is not None:
+        description = _js_dispatch(description, "replace", _js_m_replace, _NOT_ONE_LINE, " ")
+        if findings is not _JS_UNDEFINED:
+            _js_m_push(findings, "fact '" + py_text(name) + "' in " + _js_str(file) + ": the description is not one line " + ("(it holds the control character " + broken + "), read as '" + _js_str(description) + "'; make it one line"))
+    links = py_list(_js_get(meta, "links"))
+    keywords = _js_get(meta, "keywords") if _js_in("keywords", meta) else []
+    if not (isinstance(keywords, list) and _js_every_string(keywords)):
+        raise MemoryValidationError("fact '" + py_text(name) + "' in " + _js_str(file) + ": keywords must be a list of strings")
+    return {"name": name, "description": description, "type": _js_get(alias, "type"), "body": py_strip(_js_get(parts, 2)), "links": links, "keywords": [*keywords], **_js_spread({"extra": extra_of(meta)} if _js_gt(_js_len(extra_of(meta)), 0) else {}), "last_recalled": _js_coalesce_value(_js_get(stamps, "last_recalled"), None), "created": raw_created if _js_truthy(py_truthy(raw_created)) else py_mtime_date(path), "outcome": _js_get(alias, "outcome"), "status": _js_get(alias, "status"), "source": path}
+
+
+def _js_method_MemoryStore_poolIndexed(idx, q):
+    cols = _js_invoke(idx, "cols")
+    n = _js_len(_js_get(cols, "name"))
+    bn, bd, bk = _js_destructure(_js_m_map(FIELD_BOOST, lambda _js_arg44, *_: (lambda _, b: b)(*_js_destructure(_js_arg44, 2))), 3)
+    segs = _JsMap()
+    df = _JsMap([[t, 0] for t in _js_array("map", q)])
+    for t, seg in _js_rows(_js_invoke(idx, "segments", q), 2, (0, 1)):
+        if not isinstance(seg, list) or not _js_strict_eq(_js_mod(_js_len(seg), 5), 0):
+            return None
+        out = []
+        d = 0
+        j = 0
+        while _js_lt(j, _js_len(seg)):
+            a = _js_get(seg, j)
+            c = _js_get(seg, _js_num(j + 1))
+            x = _js_get(seg, _js_num(j + 2))
+            y = _js_get(seg, _js_num(j + 3))
+            z = _js_get(seg, _js_num(j + 4))
+            if not ((type(a) is int and -2**53 <= a <= 2**53 or _js_number_is_integer(a)) and (type(c) is int and -2**53 <= c <= 2**53 or _js_number_is_integer(c)) and (type(x) is int and -2**53 <= x <= 2**53 or _js_number_is_integer(x)) and (type(y) is int and -2**53 <= y <= 2**53 or _js_number_is_integer(y)) and (type(z) is int and -2**53 <= z <= 2**53 or _js_number_is_integer(z))):
                 return None
-            out = []
-            d = 0
-            j = 0
-            while _js_lt(j, _js_len(seg)):
-                a = _js_get(seg, j)
-                c = _js_get(seg, _js_num(j + 1))
-                x = _js_get(seg, _js_num(j + 2))
-                y = _js_get(seg, _js_num(j + 3))
-                z = _js_get(seg, _js_num(j + 4))
-                if not ((type(a) is int and -2**53 <= a <= 2**53 or _js_number_is_integer(a)) and (type(c) is int and -2**53 <= c <= 2**53 or _js_number_is_integer(c)) and (type(x) is int and -2**53 <= x <= 2**53 or _js_number_is_integer(x)) and (type(y) is int and -2**53 <= y <= 2**53 or _js_number_is_integer(y)) and (type(z) is int and -2**53 <= z <= 2**53 or _js_number_is_integer(z))):
-                    return None
-                if _js_lt(c, 1) or _js_lt(a, 0) or _js_gt((a + c if type(a) is int and type(c) is int and -4503599627370496 <= c <= 4503599627370496 and -4503599627370496 <= a <= 4503599627370496 else _js_add(a, c)), n) or _js_lt(x, 0) or _js_lt(y, 0) or _js_lt(z, 0):
-                    return None
-                _js_m_push(out, a, c, _js_add(_js_add(_js_mul(bn, x), _js_mul(bd, y)), _js_mul(bk, z)))
-                d = _js_add(d, c)
-                j = _js_num(j + 5)
-            _js_m_set(segs, t, out)
-            _js_m_set(df, t, d)
-        return {"n": n, "total": length_of(_js_invoke(idx, "lensTotal")), "df": df, "names": _js_get(cols, "name"), "lengths": _js_len(cols), "types": _js_get(cols, "type"), "typeNames": _js_get(cols, "types"), "stale": _js_get(cols, "stale"), "segs": segs, "facts": None, "files": _js_get(cols, "file"), "indexed": True, "every": None}
+            if _js_lt(c, 1) or _js_lt(a, 0) or _js_gt((a + c if type(a) is int and type(c) is int and -4503599627370496 <= c <= 4503599627370496 and -4503599627370496 <= a <= 4503599627370496 else _js_add(a, c)), n) or _js_lt(x, 0) or _js_lt(y, 0) or _js_lt(z, 0):
+                return None
+            _js_m_push(out, a, c, _js_add(_js_add(_js_mul(bn, x), _js_mul(bd, y)), _js_mul(bk, z)))
+            d = _js_add(d, c)
+            j = _js_num(j + 5)
+        _js_m_set(segs, t, out)
+        _js_m_set(df, t, d)
+    return {"n": n, "total": length_of(_js_invoke(idx, "lensTotal")), "df": df, "names": _js_get(cols, "name"), "lengths": _js_len(cols), "types": _js_get(cols, "type"), "typeNames": _js_get(cols, "types"), "stale": _js_get(cols, "stale"), "segs": segs, "facts": None, "files": _js_get(cols, "file"), "indexed": True, "every": None}
 
 
 # Imported last: these modules import this one back (an import cycle).

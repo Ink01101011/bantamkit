@@ -5,6 +5,7 @@
 
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
+    _Final,
     _js_array,
     _js_coalesce_value,
     _js_code_units,
@@ -42,7 +43,7 @@ from ._ts2py_runtime import (  # noqa: F401
 __all__ = ["plan", "touches_refusal"]
 
 
-_JS_RE_0 = _js_re.compile("^[A-Za-z]:", _js_re.ASCII)
+_JS_RE_0: _Final = _js_re.compile("^[A-Za-z]:", _js_re.ASCII)
 
 
 def _refuse(reason):

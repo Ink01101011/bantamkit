@@ -5,6 +5,8 @@
 
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
+    _ClassVar,
+    _Final,
     _js_add,
     _js_array,
     _js_coalesce_value,
@@ -56,23 +58,25 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_to_f64,
     _js_truthy,
     _js_units_slice,
+    _JsAny,
     _JsError,
     _JsGlobalRegExp,
     _JsMap,
     _JsObject,
     _JsSet,
+    _mypyc_attr,
 )
 from ._ts2py_adapters import cmp_codepoint, py_log, py_log1p, py_nfkc_lower, py_round_float9, py_wordchar
 
 __all__ = ["BM25F", "BM25_B", "BM25_K1", "Bm25fScorer", "FIELD_BOOST", "GATE_FLOOR", "GATE_RATIO", "QUERY_WEIGHT", "QueryScorer", "SCORE_ROUND", "STALE_WORDS", "W_CONTEXT", "W_FLOOR", "W_FRESH_DEMOTE", "W_TYPE", "W_TYPE_OTHER", "W_USAGE", "bm25_pooled", "bm25_postings", "bm25_rows", "bm25_scores", "bm25_segments", "doc_terms", "gate", "length_of", "nospace", "nospace_table", "py_round9", "query_terms", "rank", "rank_columns", "set_context_weight", "stale", "strip_nospace", "tokenize_v2", "weight", "weight_of"]
 
 
-_JS_RE_0 = _JsGlobalRegExp(_js_re.compile("[\\u0e00-\\u0eff\\u1000-\\u109f\\u1780-\\u17ff\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff]", _js_re.ASCII))
-_JS_RE_1 = _js_re.compile("^[\\u0000-\\u007f]*\\Z", _js_re.ASCII)
-_JS_RE_2 = _JsGlobalRegExp(_js_re.compile("[a-z0-9]+", _js_re.ASCII))
+_JS_RE_0: _Final = _JsGlobalRegExp(_js_re.compile("[\\u0e00-\\u0eff\\u1000-\\u109f\\u1780-\\u17ff\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff]", _js_re.ASCII))
+_JS_RE_1: _Final = _js_re.compile("^[\\u0000-\\u007f]*\\Z", _js_re.ASCII)
+_JS_RE_2: _Final = _JsGlobalRegExp(_js_re.compile("[a-z0-9]+", _js_re.ASCII))
 
 
-_NOSPACE = [[3584, 3711], [3712, 3839], [4096, 4255], [6016, 6143], [12352, 12543], [13312, 19903], [19968, 40959]]
+_NOSPACE: _JsAny = [[3584, 3711], [3712, 3839], [4096, 4255], [6016, 6143], [12352, 12543], [13312, 19903], [19968, 40959]]
 
 
 def _nospace__typed(cp):
@@ -101,7 +105,7 @@ def nospace_table(cp):
     return False
 
 
-_NOSPACE_UNITS = _JS_RE_0
+_NOSPACE_UNITS: _JsAny = _JS_RE_0
 
 
 def strip_nospace(text):
@@ -111,10 +115,10 @@ def strip_nospace(text):
 _strip_nospace__typed = strip_nospace
 
 
-_ASCII_ONLY = _JS_RE_1
+_ASCII_ONLY: _JsAny = _JS_RE_1
 
 
-_ASCII_WORDS = _JS_RE_2
+_ASCII_WORDS: _JsAny = _JS_RE_2
 
 
 def _tokenize_v2__typed(text):
@@ -225,19 +229,19 @@ def tokenize_v2(text):
     return out
 
 
-BM25_K1 = 1.2
+BM25_K1: _JsAny = 1.2
 
 
-BM25_B = 0.75
+BM25_B: _JsAny = 0.75
 
 
-FIELD_BOOST = [["name", 2], ["description", 1], ["keywords", 2]]
+FIELD_BOOST: _JsAny = [["name", 2], ["description", 1], ["keywords", 2]]
 
 
-SCORE_ROUND = 9
+SCORE_ROUND: _JsAny = 9
 
 
-QUERY_WEIGHT = 1
+QUERY_WEIGHT: _JsAny = 1
 
 
 def py_round9(x):
@@ -569,10 +573,11 @@ def bm25_rows(query, rows):
     return bm25_postings(q, _js_len(rows), total, df, lengths, postings)
 
 
+@_mypyc_attr(native_class=False)
 class Bm25fScorer(_JsObject):
-    _js_name = "Bm25fScorer"
-    _js_own = frozenset({"column", "dense", "fallback", "floor", "label", "used"})
-    _js_own_methods = frozenset({"column", "floor", "label", "used"})
+    _js_name: _ClassVar[str] = "Bm25fScorer"
+    _js_own: _ClassVar[frozenset[str]] = frozenset({"column", "dense", "fallback", "floor", "label", "used"})
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset({"column", "floor", "label", "used"})
 
     def __init__(self, fallback=_JS_UNDEFINED, *_):
         if fallback is _JS_UNDEFINED:
@@ -594,13 +599,14 @@ class Bm25fScorer(_JsObject):
         return bm25_segments(_js_get(cols, "q"), _js_get(cols, "n"), _js_get(cols, "total"), _js_get(cols, "df"), _js_get(cols, "lengths"), _js_get(cols, "segs"))
 
 
-BM25F = Bm25fScorer()
+BM25F: _JsAny = Bm25fScorer()
 
 
+@_mypyc_attr(native_class=False)
 class QueryScorer(_JsObject):
-    _js_name = "QueryScorer"
-    _js_own = frozenset({"column", "dense", "fallback", "floor", "label", "prompt", "used"})
-    _js_own_methods = frozenset({"column", "floor", "label", "used"})
+    _js_name: _ClassVar[str] = "QueryScorer"
+    _js_own: _ClassVar[frozenset[str]] = frozenset({"column", "dense", "fallback", "floor", "label", "prompt", "used"})
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset({"column", "floor", "label", "used"})
 
     def __init__(self, prompt, *_):
         self.dense = True
@@ -618,43 +624,47 @@ class QueryScorer(_JsObject):
         return GATE_FLOOR
 
     def column(self, cols, vecs):
-        if vecs is None:
-            return None
-        a = bm25_segments(_js_get(cols, "q"), _js_get(cols, "n"), _js_get(cols, "total"), _js_get(cols, "df"), _js_get(cols, "lengths"), _js_get(cols, "segs"))
-        b = bm25_rows(self.prompt, vecs)
-        if not _js_strict_eq(_js_len(a), len(b)):
-            raise _JsError("zip() argument 2 is shorter than argument 1")
-        return _js_m_map(a, lambda x, i, *_: _js_add(x, _js_mul(QUERY_WEIGHT, _js_list_at(b, i))))
+        return _js_method_QueryScorer_column(self, cols, vecs)
 
 
-GATE_FLOOR = 0
+def _js_method_QueryScorer_column(self, cols, vecs):
+    if vecs is None:
+        return None
+    a = bm25_segments(_js_get(cols, "q"), _js_get(cols, "n"), _js_get(cols, "total"), _js_get(cols, "df"), _js_get(cols, "lengths"), _js_get(cols, "segs"))
+    b = bm25_rows(self.prompt, vecs)
+    if not _js_strict_eq(_js_len(a), len(b)):
+        raise _JsError("zip() argument 2 is shorter than argument 1")
+    return _js_m_map(a, lambda x, i, *_: _js_add(x, _js_mul(QUERY_WEIGHT, _js_list_at(b, i))))
 
 
-GATE_RATIO = 0
+GATE_FLOOR: _JsAny = 0
 
 
-W_TYPE = _JsMap([["feedback", 1.3], ["project", 1.1], ["reference", 1], ["user", 1]])
+GATE_RATIO: _JsAny = 0
 
 
-W_TYPE_OTHER = 1
+W_TYPE: _JsAny = _JsMap([["feedback", 1.3], ["project", 1.1], ["reference", 1], ["user", 1]])
 
 
-W_FRESH_DEMOTE = -0.5
+W_TYPE_OTHER: _JsAny = 1
 
 
-W_USAGE = 0.2
+W_FRESH_DEMOTE: _JsAny = -0.5
 
 
-W_CONTEXT = 0
+W_USAGE: _JsAny = 0.2
 
 
-W_FLOOR = 0.1
+W_CONTEXT: _JsAny = 0
 
 
-STALE_WORDS = ["SUPERSEDED", "CLOSED", "REFUTED"]
+W_FLOOR: _JsAny = 0.1
 
 
-_STALE_FIRST = _JsSet([" ", "\t", *[_js_get(w, 0) for w in STALE_WORDS]])
+STALE_WORDS: _JsAny = ["SUPERSEDED", "CLOSED", "REFUTED"]
+
+
+_STALE_FIRST: _JsAny = _JsSet([" ", "\t", *[_js_get(w, 0) for w in STALE_WORDS]])
 
 
 def _stale__typed(description):

@@ -6,6 +6,8 @@
 from ._ts2py_runtime import (  # noqa: F401
     _JS_NAN,
     _JS_UNDEFINED,
+    _ClassVar,
+    _Final,
     _js_add,
     _js_array,
     _js_catch,
@@ -52,10 +54,12 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_strict_eq,
     _js_truthy,
     _js_typeof,
+    _JsAny,
     _JsError,
     _JsMap,
     _JsObject,
     _JsSet,
+    _mypyc_attr,
 )
 from ._ts2py_adapters import create_hash, hash_hex, path_join, py_pow, py_realpath, read_file_sync
 from .logsegment import ROTATE_BYTES, LogSegment
@@ -63,29 +67,29 @@ from .logsegment import ROTATE_BYTES, LogSegment
 __all__ = ["LEDGER_FOLD_LINES", "LOCK_POLL_MS", "LOCK_STALE_MS", "LOCK_WAIT_MS", "USAGE_HALF_LIFE_DAYS", "UsageLedger", "WEIGHT_MAX", "missed_writes", "parse_ts", "reduce_usage", "seed_ts", "status_line", "store_id"]
 
 
-_JS_RE_0 = _js_re.compile("^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z\\Z", _js_re.ASCII)
-_JS_RE_1 = _js_re.compile("^([0-9]{4})-([0-9]{2})-([0-9]{2})", _js_re.ASCII)
+_JS_RE_0: _Final = _js_re.compile("^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})Z\\Z", _js_re.ASCII)
+_JS_RE_1: _Final = _js_re.compile("^([0-9]{4})-([0-9]{2})-([0-9]{2})", _js_re.ASCII)
 
 
-USAGE_HALF_LIFE_DAYS = 14
+USAGE_HALF_LIFE_DAYS: _JsAny = 14
 
 
-LEDGER_FOLD_LINES = 5000
+LEDGER_FOLD_LINES: _JsAny = 5000
 
 
-LOCK_WAIT_MS = 2000
+LOCK_WAIT_MS: _JsAny = 2000
 
 
-LOCK_STALE_MS = 10000
+LOCK_STALE_MS: _JsAny = 10000
 
 
-LOCK_POLL_MS = 5
+LOCK_POLL_MS: _JsAny = 5
 
 
-WEIGHT_MAX = 1000000
+WEIGHT_MAX: _JsAny = 1000000
 
 
-_USE = ["recall_hit", "body_read", "seed"]
+_USE: _JsAny = ["recall_hit", "body_read", "seed"]
 
 
 def _clamp__typed(w):
@@ -123,7 +127,7 @@ def _last_used_of(events):
 _last_used_of__typed = _last_used_of
 
 
-_TS = _JS_RE_0
+_TS: _JsAny = _JS_RE_0
 
 
 def store_id(store_root):
@@ -133,10 +137,10 @@ def store_id(store_root):
 _store_id__typed = store_id
 
 
-_PARSED = _JsMap()
+_PARSED: _JsAny = _JsMap()
 
 
-_PARSED_MAX = 8192
+_PARSED_MAX: _JsAny = 8192
 
 
 def _parse_ts__typed(ts):
@@ -210,7 +214,7 @@ def _days_from_civil(y, mo, d):
     return _js_num(_js_num(_js_mul(era, 146097) + doe) - 719468)
 
 
-_STAMP_DAY = _JS_RE_1
+_STAMP_DAY: _JsAny = _JS_RE_1
 
 
 def _seed_ts__typed(stamp, now):
@@ -301,7 +305,7 @@ def _count_newlines(b):
     return _js_num(len(_js_m_split(_js_m_toString(b, "latin1"), "\n")) - 1)
 
 
-_MISSED = _JsMap()
+_MISSED: _JsAny = _JsMap()
 
 
 def missed_writes(ledger_path):
@@ -325,10 +329,11 @@ def status_line(ledger_path, lines, skipped):
     return "usage ledger: " + _js_str(ledger_path) + " (" + _js_str(lines) + " lines, " + _js_str(skipped) + " skipped" + tail + ")"
 
 
+@_mypyc_attr(native_class=False)
 class UsageLedger(_JsObject):
-    _js_name = "UsageLedger"
-    _js_own = frozenset({"append", "census", "events", "fold", "foldInto", "foldLines", "keywordsCopy", "lastUsed", "lastUsedMap", "lockWaitMs", "path", "rotateBytes", "segment", "skipped", "weights"})
-    _js_own_methods = frozenset({"append", "census", "events", "fold", "foldInto", "keywordsCopy", "lastUsed", "lastUsedMap", "segment", "weights"})
+    _js_name: _ClassVar[str] = "UsageLedger"
+    _js_own: _ClassVar[frozenset[str]] = frozenset({"append", "census", "events", "fold", "foldInto", "foldLines", "keywordsCopy", "lastUsed", "lastUsedMap", "lockWaitMs", "path", "rotateBytes", "segment", "skipped", "weights"})
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset({"append", "census", "events", "fold", "foldInto", "keywordsCopy", "lastUsed", "lastUsedMap", "segment", "weights"})
 
     def __init__(self, home, store_root, options=_JS_UNDEFINED, *_):
         if options is _JS_UNDEFINED:
@@ -416,10 +421,14 @@ class UsageLedger(_JsObject):
         return _JS_UNDEFINED
 
     def foldInto(self, seg, now):
-        def _js_fn3(pairs=_JS_UNDEFINED, *_):
-            return reduce_usage(pairs, now)
-        _js_invoke(seg, "foldLines", None, _js_fn3)
-        return _JS_UNDEFINED
+        return _js_method_UsageLedger_foldInto(self, seg, now)
+
+
+def _js_method_UsageLedger_foldInto(self, seg, now):
+    def _js_fn3(pairs=_JS_UNDEFINED, *_):
+        return reduce_usage(pairs, now)
+    _js_invoke(seg, "foldLines", None, _js_fn3)
+    return _JS_UNDEFINED
 
 
 def _reduce_usage__typed(pairs, now):

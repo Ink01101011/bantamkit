@@ -27,6 +27,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_str,
     _js_truthy,
     _js_units_slice,
+    _JsAny,
     _JsSet,
 )
 from ._ts2py_adapters import close_sync, cmp_codepoint, lstat_sync, open_sync, path_join, performance_now, readdir_sync, rm_sync, stat_sync, unlink_sync
@@ -34,16 +35,16 @@ from ._ts2py_adapters import close_sync, cmp_codepoint, lstat_sync, open_sync, p
 __all__ = ["LOCK_POLL_MS", "LOCK_STALE_MS", "LOCK_WAIT_MS", "acquire_lock", "exclusive", "release_lock", "remove_stale_temps", "temp_base"]
 
 
-LOCK_WAIT_MS = 2000
+LOCK_WAIT_MS: _JsAny = 2000
 
 
-LOCK_STALE_MS = 10000
+LOCK_STALE_MS: _JsAny = 10000
 
 
-LOCK_POLL_MS = 5
+LOCK_POLL_MS: _JsAny = 5
 
 
-_REFUSED = _JsSet(["EACCES", "EPERM", "EROFS"])
+_REFUSED: _JsAny = _JsSet(["EACCES", "EPERM", "EROFS"])
 
 
 def _refused(lock, e):

@@ -6,6 +6,8 @@
 from ._ts2py_runtime import (  # noqa: F401
     _JS_OBJECT_PROTOTYPE,
     _JS_UNDEFINED,
+    _ClassVar,
+    _Final,
     _js_add,
     _js_and,
     _js_array,
@@ -69,10 +71,12 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_units_at,
     _js_units_index_of,
     _js_units_slice,
+    _JsAny,
     _JsError,
     _JsGlobalRegExp,
     _JsMap,
     _JsTypeError,
+    _mypyc_attr,
 )
 from ._ts2py_adapters import Date, py_strip, TextDecoder
 from .pyyaml import construct_plain, PyScalar, safe_dump_mapping
@@ -80,28 +84,29 @@ from .pyyaml import construct_plain, PyScalar, safe_dump_mapping
 __all__ = ["FactParseError", "OWNED_KEYS", "VALID_OUTCOMES", "decode_fact_bytes", "extra_of", "format_fact", "is_text_key", "lifecycle_of", "parse_fact_text", "parse_frontmatter", "py_list", "py_split", "py_strip", "py_truthy", "today_local", "well_formed"]
 
 
-_JS_RE_0 = _JsGlobalRegExp(_js_re.compile("\\r\\n?", _js_re.ASCII))
-_JS_RE_1 = _js_re.compile("^ *(?:#[^\\n]*)?(?:\\n|\\Z)", _js_re.ASCII)
-_JS_RE_2 = _js_re.compile("^([A-Za-z_][A-Za-z0-9_-]*):", _js_re.ASCII)
-_JS_RE_3 = _js_re.compile("^ +(?:#[^\\n]*)?(?=\\n)", _js_re.ASCII)
-_JS_RE_4 = _js_re.compile("^(?: *(?:#[^\\n]*)?\\n)*", _js_re.ASCII)
-_JS_RE_5 = _js_re.compile("^-(?: |\\n|\\Z)", _js_re.ASCII)
-_JS_RE_6 = _JsGlobalRegExp(_js_re.compile("[\\ud800-\\udbff](?![\\udc00-\\udfff])|(?<![\\ud800-\\udbff])[\\udc00-\\udfff]", _js_re.ASCII))
-_JS_RE_7 = _js_re.compile("^( +)([A-Za-z_][A-Za-z0-9_-]*):(?= |\\Z)", _js_re.ASCII)
-_JS_RE_8 = _js_re.compile("[\\r\\u0085\\u2028\\u2029]", _js_re.ASCII)
-_JS_RE_9 = _js_re.compile("[ \\t]+\\Z", _js_re.ASCII)
-_JS_RE_10 = _js_re.compile("^[ \\t]+", _js_re.ASCII)
-_JS_RE_11 = _js_re.compile(":([ \\t]|\\Z)", _js_re.ASCII)
-_JS_RE_12 = _js_re.compile("^[ \\t]\\Z", _js_re.ASCII)
+_JS_RE_0: _Final = _JsGlobalRegExp(_js_re.compile("\\r\\n?", _js_re.ASCII))
+_JS_RE_1: _Final = _js_re.compile("^ *(?:#[^\\n]*)?(?:\\n|\\Z)", _js_re.ASCII)
+_JS_RE_2: _Final = _js_re.compile("^([A-Za-z_][A-Za-z0-9_-]*):", _js_re.ASCII)
+_JS_RE_3: _Final = _js_re.compile("^ +(?:#[^\\n]*)?(?=\\n)", _js_re.ASCII)
+_JS_RE_4: _Final = _js_re.compile("^(?: *(?:#[^\\n]*)?\\n)*", _js_re.ASCII)
+_JS_RE_5: _Final = _js_re.compile("^-(?: |\\n|\\Z)", _js_re.ASCII)
+_JS_RE_6: _Final = _JsGlobalRegExp(_js_re.compile("[\\ud800-\\udbff](?![\\udc00-\\udfff])|(?<![\\ud800-\\udbff])[\\udc00-\\udfff]", _js_re.ASCII))
+_JS_RE_7: _Final = _js_re.compile("^( +)([A-Za-z_][A-Za-z0-9_-]*):(?= |\\Z)", _js_re.ASCII)
+_JS_RE_8: _Final = _js_re.compile("[\\r\\u0085\\u2028\\u2029]", _js_re.ASCII)
+_JS_RE_9: _Final = _js_re.compile("[ \\t]+\\Z", _js_re.ASCII)
+_JS_RE_10: _Final = _js_re.compile("^[ \\t]+", _js_re.ASCII)
+_JS_RE_11: _Final = _js_re.compile(":([ \\t]|\\Z)", _js_re.ASCII)
+_JS_RE_12: _Final = _js_re.compile("^[ \\t]\\Z", _js_re.ASCII)
 
 
+@_mypyc_attr(native_class=False)
 class FactParseError(_JsError):
-    _js_name = "FactParseError"
-    _js_own = frozenset()
-    _js_own_methods = frozenset()
+    _js_name: _ClassVar[str] = "FactParseError"
+    _js_own: _ClassVar[frozenset[str]] = frozenset()
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset()
 
 
-OWNED_KEYS = ["name", "description", "type", "created", "last_recalled", "links", "keywords", "outcome", "status"]
+OWNED_KEYS: _JsAny = ["name", "description", "type", "created", "last_recalled", "links", "keywords", "outcome", "status"]
 
 
 def is_text_key(key):
@@ -115,7 +120,7 @@ def extra_of(meta):
     return [[k, _js_get(meta, k)] for k in [k for k in _js_array("filter", _js_object_keys(meta)) if not _js_m_includes(OWNED_KEYS, k) and is_text_key(k)]]
 
 
-VALID_OUTCOMES = ["error", "success"]
+VALID_OUTCOMES: _JsAny = ["error", "success"]
 
 
 def lifecycle_of(meta):
@@ -315,7 +320,7 @@ def parse_frontmatter(front):
     return _well_formed_meta(meta) if _js_m_includes(front, "\\u") or _js_m_includes(front, "\\U") else meta
 
 
-_LONE_SURROGATES = _JS_RE_6
+_LONE_SURROGATES: _JsAny = _JS_RE_6
 
 
 def well_formed(text):
@@ -400,7 +405,7 @@ def _line(text, pos):
     return _js_json_stringify(_js_m_slice(text, pos, _JS_UNDEFINED if end == -1 else end))
 
 
-_REFUSED_INDICATORS = {"&": "an anchor", "*": "an alias", "!": "a tag", "%": "a directive", "@": "a reserved indicator", "`": "a reserved indicator", "{": "a flow mapping", "}": "a flow-mapping end outside a flow collection", "]": "a flow-sequence end outside a flow collection", ",": "a flow-entry separator outside a flow collection", "\t": "a tab, which cannot start a YAML token"}
+_REFUSED_INDICATORS: _JsAny = {"&": "an anchor", "*": "an alias", "!": "a tag", "%": "a directive", "@": "a reserved indicator", "`": "a reserved indicator", "{": "a flow mapping", "}": "a flow-mapping end outside a flow collection", "]": "a flow-sequence end outside a flow collection", ",": "a flow-entry separator outside a flow collection", "\t": "a tab, which cannot start a YAML token"}
 
 
 def _blank_or_end(ch):
@@ -1035,10 +1040,10 @@ def _scan_quoted(front, pos, quote):
     return _JS_UNDEFINED
 
 
-_UNESCAPE = _JsMap([["0", "\x00"], ["a", "\x07"], ["b", "\x08"], ["t", "\t"], ["\t", "\t"], ["n", "\n"], ["v", "\x0b"], ["f", "\x0c"], ["r", "\r"], ["e", "\x1b"], [" ", " "], ["\"", "\""], ["/", "/"], ["\\", "\\"], ["N", "\u0085"], ["_", " "], ["L", "\u2028"], ["P", "\u2029"]])
+_UNESCAPE: _JsAny = _JsMap([["0", "\x00"], ["a", "\x07"], ["b", "\x08"], ["t", "\t"], ["\t", "\t"], ["n", "\n"], ["v", "\x0b"], ["f", "\x0c"], ["r", "\r"], ["e", "\x1b"], [" ", " "], ["\"", "\""], ["/", "/"], ["\\", "\\"], ["N", "\u0085"], ["_", " "], ["L", "\u2028"], ["P", "\u2029"]])
 
 
-_NUMERIC_ESCAPE = {"x": 2, "u": 4, "U": 8}
+_NUMERIC_ESCAPE: _JsAny = {"x": 2, "u": 4, "U": 8}
 
 
 def _unescape__typed(front, at):

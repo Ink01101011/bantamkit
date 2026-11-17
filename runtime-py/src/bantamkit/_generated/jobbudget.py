@@ -30,15 +30,16 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_strict_eq,
     _js_trunc,
     _js_typeof,
+    _JsAny,
 )
 
 __all__ = ["DIMENSIONS", "FALLBACK_TOKENS_PER_UNIT", "budget", "refusal"]
 
 
-FALLBACK_TOKENS_PER_UNIT = 60000
+FALLBACK_TOKENS_PER_UNIT: _JsAny = 60000
 
 
-DIMENSIONS = ["tokens", "units", "wallclock_ms"]
+DIMENSIONS: _JsAny = ["tokens", "units", "wallclock_ms"]
 
 
 def _counted(lines):

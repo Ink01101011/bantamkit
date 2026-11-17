@@ -87,7 +87,7 @@ fn g3_constructs_answer_like_node() {
     let modules = compile_package(&[("j89_g3_probe.ts", source)]);
     let code = &modules[0].code;
     // The lowerings themselves.
-    assert!(code.contains("COUNTER = 0\n"), "{code}");
+    assert!(code.contains("COUNTER: _JsAny = 0\n"), "{code}");
     assert!(code.contains("    global COUNTER\n"), "{code}");
     assert!(code.contains("def named(type_, len_):"), "{code}");
     assert!(

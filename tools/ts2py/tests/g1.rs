@@ -85,8 +85,11 @@ fn g1_constructs_answer_like_node() {
     let module = ts2py::compile(source, "j87_g1_probe.ts", &ts2py::Options::default())
         .unwrap_or_else(|lines| panic!("probe refused:\n{}", lines.join("\n")));
     // The lowerings themselves: a folded power, the constant, the optional read, the catch.
-    assert!(module.contains("BIG = 9007199254740992\n"), "{module}");
-    assert!(module.contains("MAX = 9007199254740991\n"));
+    assert!(
+        module.contains("BIG: _JsAny = 9007199254740992\n"),
+        "{module}"
+    );
+    assert!(module.contains("MAX: _JsAny = 9007199254740991\n"));
     assert!(module.contains("_js_opt_get(o, k)"));
     assert!(module.contains("except Exception as _js_error"));
     assert!(module.contains("= _js_catch(_js_error"));

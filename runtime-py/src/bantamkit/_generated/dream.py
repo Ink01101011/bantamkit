@@ -5,6 +5,7 @@
 
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
+    _Final,
     _js_abs,
     _js_add,
     _js_and,
@@ -72,6 +73,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_strict_eq,
     _js_throw,
     _js_truthy,
+    _JsAny,
     _JsError,
     _JsGlobalRegExp,
     _JsMap,
@@ -84,30 +86,30 @@ from .store import DUPLICATE_JACCARD, jaccard, MemoryStore, py_compare_lt, py_eq
 __all__ = ["PROFILE_LAYER", "PROJECT_LAYER", "SUPERSEDED_HEADING", "absolutise", "block_key", "claim_slot", "collapse", "dream", "format_fixed3", "merge_bodies", "merge_descriptions", "merge_links", "py_int_digits", "sorted_names", "split_blocks", "union_keywords"]
 
 
-_JS_RE_0 = _js_re.compile("\\n[ \\t]*\\n+", _js_re.ASCII)
-_JS_RE_1 = _js_re.compile("^[A-Za-z][A-Za-z0-9 ._'()\\[\\]-]*\\Z", _js_re.ASCII)
-_JS_RE_2 = _js_re.compile("^([0-9]{4})-([0-9]{2})-([0-9]{2})\\Z", _js_re.ASCII)
-_JS_RE_3 = _JsGlobalRegExp(_js_re.compile("\\r\\n", _js_re.ASCII))
-_JS_RE_4 = _JsGlobalRegExp(_js_re.compile("\\r", _js_re.ASCII))
-_JS_RE_5 = _JsGlobalRegExp(_js_re.compile("^\\*+|\\*+\\Z", _js_re.ASCII))
+_JS_RE_0: _Final = _js_re.compile("\\n[ \\t]*\\n+", _js_re.ASCII)
+_JS_RE_1: _Final = _js_re.compile("^[A-Za-z][A-Za-z0-9 ._'()\\[\\]-]*\\Z", _js_re.ASCII)
+_JS_RE_2: _Final = _js_re.compile("^([0-9]{4})-([0-9]{2})-([0-9]{2})\\Z", _js_re.ASCII)
+_JS_RE_3: _Final = _JsGlobalRegExp(_js_re.compile("\\r\\n", _js_re.ASCII))
+_JS_RE_4: _Final = _JsGlobalRegExp(_js_re.compile("\\r", _js_re.ASCII))
+_JS_RE_5: _Final = _JsGlobalRegExp(_js_re.compile("^\\*+|\\*+\\Z", _js_re.ASCII))
 
 
-PROJECT_LAYER = "project"
+PROJECT_LAYER: _JsAny = "project"
 
 
-PROFILE_LAYER = "profile"
+PROFILE_LAYER: _JsAny = "profile"
 
 
-SUPERSEDED_HEADING = "## superseded by a dream merge"
+SUPERSEDED_HEADING: _JsAny = "## superseded by a dream merge"
 
 
-_DAY_OFFSET = {"today": 0, "tonight": 0, "yesterday": -1, "tomorrow": 1}
+_DAY_OFFSET: _JsAny = {"today": 0, "tonight": 0, "yesterday": -1, "tomorrow": 1}
 
 
-_BLOCK_SPLIT = _JS_RE_0
+_BLOCK_SPLIT: _JsAny = _JS_RE_0
 
 
-_SUBJECT_OK = _JS_RE_1
+_SUBJECT_OK: _JsAny = _JS_RE_1
 
 
 def _py_error(kind, message):
@@ -173,13 +175,13 @@ def sorted_names(values):
 _sorted_names__typed = sorted_names
 
 
-_DAYS_IN_MONTH = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+_DAYS_IN_MONTH: _JsAny = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
 
-_MAX_ORDINAL = 3652059
+_MAX_ORDINAL: _JsAny = 3652059
 
 
-_TIMEDELTA_MAX_DAYS = 999999999
+_TIMEDELTA_MAX_DAYS: _JsAny = 999999999
 
 
 def _is_leap(year):

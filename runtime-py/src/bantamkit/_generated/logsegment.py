@@ -5,6 +5,7 @@
 
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
+    _ClassVar,
     _js_add,
     _js_and,
     _js_array,
@@ -42,17 +43,20 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_throw,
     _js_truthy,
     _js_typeof,
+    _JsAny,
     _JsError,
     _JsObject,
     _JsRangeError,
+    _mypyc_attr,
 )
 from ._ts2py_adapters import append_file_sync, buffer_alloc, buffer_concat, buffer_from, close_sync, exists_sync, fstat_sync, gunzip_sync, gzip_sync, link_sync, mkdir_sync, open_sync, path_basename, path_dirname, path_join, process_pid, random_bytes, read_file_sync, read_sync, readdir_sync, rename_sync, rm_sync, stat_sync, write_sync
-from .lock import LOCK_POLL_MS, LOCK_STALE_MS, exclusive
+from .lock import LOCK_POLL_MS, LOCK_STALE_MS, exclusive as _js_bound_exclusive
+exclusive: _JsAny = _js_bound_exclusive
 
 __all__ = ["LogSegment", "ROTATE_BYTES", "dumps_line", "rewrite_held", "write_over"]
 
 
-ROTATE_BYTES = 1000000
+ROTATE_BYTES: _JsAny = 1000000
 
 
 def _refuse_non_finite(_key, value):
@@ -345,10 +349,11 @@ def rewrite_held(p, build, stale_ms=_JS_UNDEFINED, poll_ms=_JS_UNDEFINED):
     return _JS_UNDEFINED
 
 
+@_mypyc_attr(native_class=False)
 class LogSegment(_JsObject):
-    _js_name = "LogSegment"
-    _js_own = frozenset({"append", "fold", "foldLines", "foldWith", "lockOptions", "parse", "path", "read", "replace", "rewrite", "rotate", "segments", "size", "skipped"})
-    _js_own_methods = frozenset({"append", "fold", "foldLines", "foldWith", "parse", "read", "replace", "rewrite", "rotate", "segments"})
+    _js_name: _ClassVar[str] = "LogSegment"
+    _js_own: _ClassVar[frozenset[str]] = frozenset({"append", "fold", "foldLines", "foldWith", "lockOptions", "parse", "path", "read", "replace", "rewrite", "rotate", "segments", "size", "skipped"})
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset({"append", "fold", "foldLines", "foldWith", "parse", "read", "replace", "rewrite", "rotate", "segments"})
 
     def __init__(self, p, lock_options=_JS_UNDEFINED, *_):
         if lock_options is _JS_UNDEFINED:
@@ -405,49 +410,7 @@ class LogSegment(_JsObject):
         return out
 
     def append(self, obj):
-        data = _JS_UNDEFINED
-        _js_caught14 = None
-        try:
-            data = dumps_line(obj)
-        except Exception as _js_error14:
-            _js_caught14 = _js_catch(_js_error14)
-        if _js_caught14 is not None:
-            return False
-        _js_caught15 = None
-        try:
-            mkdir_sync(path_dirname(self.path), {"recursive": True})
-            def _js_fn16(held=_JS_UNDEFINED, *_):
-                nonlocal data
-                m = None if _js_truthy(held) else _mark(self.path)
-                try:
-                    fd = open_sync(self.path, "a+")
-                    try:
-                        size = _js_size(fstat_sync(fd))
-                        if _js_gt(size, 0):
-                            last = buffer_alloc(1)
-                            read_sync(fd, last, 0, 1, _js_num(_js_num(size) - 1))
-                            if not _js_strict_eq(_js_get(last, 0), 10):
-                                data = buffer_concat([buffer_from("\n"), data])
-                        _write_all(fd, data)
-                        self.size = _js_add(size, _js_len(data))
-                    finally:
-                        close_sync(fd)
-                finally:
-                    if m is not None:
-                        _js_caught17 = None
-                        try:
-                            rm_sync(m, {"force": True})
-                        except Exception as _js_error17:
-                            _js_caught17 = _js_catch(_js_error17)
-                        if _js_caught17 is not None:
-                            pass
-                return _JS_UNDEFINED
-            exclusive(self.path, _js_fn16, self.lockOptions)
-            return True
-        except Exception as _js_error15:
-            _js_caught15 = _js_catch(_js_error15)
-        if _js_caught15 is not None:
-            return False
+        return _js_method_LogSegment_append(self, obj)
 
     def replace(self, target, data):
         tmp = _js_str(self.path) + "." + _js_str(process_pid()) + "." + _js_m_toString(random_bytes(4), "hex") + ".tmp"
@@ -467,66 +430,132 @@ class LogSegment(_JsObject):
         return _JS_UNDEFINED
 
     def fold(self, older_than, reducer):
-        def _js_fn19(old=_JS_UNDEFINED, *_):
-            return buffer_concat(_js_m_map(reducer(_js_m_map(old, lambda _js_arg20, *_: (lambda row: row)(*_js_destructure(_js_arg20, 1)))), lambda _js_a0=_JS_UNDEFINED, *_: dumps_line(_js_a0)))
-        self.foldWith(older_than, _js_fn19)
-        return _JS_UNDEFINED
+        return _js_method_LogSegment_fold(self, older_than, reducer)
 
     def foldLines(self, older_than, reducer):
-        def _js_fn21(old=_JS_UNDEFINED, *_):
-            return buffer_from(_js_list_join([_js_str(l) + "\n" for l in _js_array("map", reducer(old))], ""), "utf8")
-        self.foldWith(older_than, _js_fn21)
-        return _JS_UNDEFINED
+        return _js_method_LogSegment_foldLines(self, older_than, reducer)
 
     def rewrite(self, build):
-        def _js_fn22(held=_JS_UNDEFINED, *_):
-            return _js_and(held, lambda: rewrite_held(self.path, build, _js_coalesce_value(_js_get(self.lockOptions, "staleMs"), LOCK_STALE_MS), _js_coalesce_value(_js_get(self.lockOptions, "pollMs"), LOCK_POLL_MS)))
-        return exclusive(self.path, _js_fn22, self.lockOptions)
+        return _js_method_LogSegment_rewrite(self, build)
 
     def foldWith(self, older_than, build):
-        if not _js_truthy(exists_sync(self.path)):
-            return _JS_UNDEFINED
-        _js_caught23 = None
-        try:
-            def _js_fn24(data=_JS_UNDEFINED, *_):
-                old = []
-                kept = []
-                for line in _split(data):
-                    row = _load(line)
-                    if row is None:
-                        continue
-                    if older_than is None or _is_old(row, older_than):
-                        old.append([row, line])
-                    else:
-                        kept.append(line)
-                if len(old) == 0 and older_than is not None:
-                    return None
-                return buffer_concat([build(old), *[buffer_from(_js_str(line) + "\n", "utf8") for line in kept]])
-            self.rewrite(_js_fn24)
-        except Exception as _js_error23:
-            _js_caught23 = _js_catch(_js_error23)
-        if _js_caught23 is not None:
-            if not isinstance(_js_get(_js_caught23, "code"), str):
-                raise _js_caught23
-        return _JS_UNDEFINED
+        return _js_method_LogSegment_foldWith(self, older_than, build)
 
     def rotate(self, max_bytes=_JS_UNDEFINED):
-        if max_bytes is _JS_UNDEFINED:
-            max_bytes = ROTATE_BYTES
-        if not _js_truthy(exists_sync(self.path)):
-            return False
-        _js_caught25 = None
-        try:
-            def _js_fn26(data=_JS_UNDEFINED, *_):
-                if _js_le(_js_len(data), max_bytes) or _js_strict_eq(_js_len(data), 0):
-                    return None
-                target = _js_str(self.path) + "." + _js_str(_js_add(_js_len(self.segments()), 1)) + ".gz"
-                if _js_truthy(exists_sync(target)):
-                    return None
-                self.replace(target, gzip_sync(data))
-                return buffer_alloc(0)
-            return self.rewrite(_js_fn26)
-        except Exception as _js_error25:
-            _js_caught25 = _js_catch(_js_error25)
-        if _js_caught25 is not None:
-            return False
+        return _js_method_LogSegment_rotate(self, max_bytes)
+
+
+def _js_method_LogSegment_append(self, obj):
+    data = _JS_UNDEFINED
+    _js_caught14 = None
+    try:
+        data = dumps_line(obj)
+    except Exception as _js_error14:
+        _js_caught14 = _js_catch(_js_error14)
+    if _js_caught14 is not None:
+        return False
+    _js_caught15 = None
+    try:
+        mkdir_sync(path_dirname(self.path), {"recursive": True})
+        def _js_fn16(held=_JS_UNDEFINED, *_):
+            nonlocal data
+            m = None if _js_truthy(held) else _mark(self.path)
+            try:
+                fd = open_sync(self.path, "a+")
+                try:
+                    size = _js_size(fstat_sync(fd))
+                    if _js_gt(size, 0):
+                        last = buffer_alloc(1)
+                        read_sync(fd, last, 0, 1, _js_num(_js_num(size) - 1))
+                        if not _js_strict_eq(_js_get(last, 0), 10):
+                            data = buffer_concat([buffer_from("\n"), data])
+                    _write_all(fd, data)
+                    self.size = _js_add(size, _js_len(data))
+                finally:
+                    close_sync(fd)
+            finally:
+                if m is not None:
+                    _js_caught17 = None
+                    try:
+                        rm_sync(m, {"force": True})
+                    except Exception as _js_error17:
+                        _js_caught17 = _js_catch(_js_error17)
+                    if _js_caught17 is not None:
+                        pass
+            return _JS_UNDEFINED
+        exclusive(self.path, _js_fn16, self.lockOptions)
+        return True
+    except Exception as _js_error15:
+        _js_caught15 = _js_catch(_js_error15)
+    if _js_caught15 is not None:
+        return False
+
+
+def _js_method_LogSegment_fold(self, older_than, reducer):
+    def _js_fn19(old=_JS_UNDEFINED, *_):
+        return buffer_concat(_js_m_map(reducer(_js_m_map(old, lambda _js_arg20, *_: (lambda row: row)(*_js_destructure(_js_arg20, 1)))), lambda _js_a0=_JS_UNDEFINED, *_: dumps_line(_js_a0)))
+    self.foldWith(older_than, _js_fn19)
+    return _JS_UNDEFINED
+
+
+def _js_method_LogSegment_foldLines(self, older_than, reducer):
+    def _js_fn21(old=_JS_UNDEFINED, *_):
+        return buffer_from(_js_list_join([_js_str(l) + "\n" for l in _js_array("map", reducer(old))], ""), "utf8")
+    self.foldWith(older_than, _js_fn21)
+    return _JS_UNDEFINED
+
+
+def _js_method_LogSegment_rewrite(self, build):
+    def _js_fn22(held=_JS_UNDEFINED, *_):
+        return _js_and(held, lambda: rewrite_held(self.path, build, _js_coalesce_value(_js_get(self.lockOptions, "staleMs"), LOCK_STALE_MS), _js_coalesce_value(_js_get(self.lockOptions, "pollMs"), LOCK_POLL_MS)))
+    return exclusive(self.path, _js_fn22, self.lockOptions)
+
+
+def _js_method_LogSegment_foldWith(self, older_than, build):
+    if not _js_truthy(exists_sync(self.path)):
+        return _JS_UNDEFINED
+    _js_caught23 = None
+    try:
+        def _js_fn24(data=_JS_UNDEFINED, *_):
+            old = []
+            kept = []
+            for line in _split(data):
+                row = _load(line)
+                if row is None:
+                    continue
+                if older_than is None or _is_old(row, older_than):
+                    old.append([row, line])
+                else:
+                    kept.append(line)
+            if len(old) == 0 and older_than is not None:
+                return None
+            return buffer_concat([build(old), *[buffer_from(_js_str(line) + "\n", "utf8") for line in kept]])
+        self.rewrite(_js_fn24)
+    except Exception as _js_error23:
+        _js_caught23 = _js_catch(_js_error23)
+    if _js_caught23 is not None:
+        if not isinstance(_js_get(_js_caught23, "code"), str):
+            raise _js_caught23
+    return _JS_UNDEFINED
+
+
+def _js_method_LogSegment_rotate(self, max_bytes=_JS_UNDEFINED):
+    if max_bytes is _JS_UNDEFINED:
+        max_bytes = ROTATE_BYTES
+    if not _js_truthy(exists_sync(self.path)):
+        return False
+    _js_caught25 = None
+    try:
+        def _js_fn26(data=_JS_UNDEFINED, *_):
+            if _js_le(_js_len(data), max_bytes) or _js_strict_eq(_js_len(data), 0):
+                return None
+            target = _js_str(self.path) + "." + _js_str(_js_add(_js_len(self.segments()), 1)) + ".gz"
+            if _js_truthy(exists_sync(target)):
+                return None
+            self.replace(target, gzip_sync(data))
+            return buffer_alloc(0)
+        return self.rewrite(_js_fn26)
+    except Exception as _js_error25:
+        _js_caught25 = _js_catch(_js_error25)
+    if _js_caught25 is not None:
+        return False

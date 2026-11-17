@@ -2953,6 +2953,72 @@ descriptor), the class split above, and `mypy_extensions` at run time for the `m
 decorators (or a guarded import). No value annotations: every gain above is untyped code compiled
 to C calls; typed parameters were not tried.
 
+### The generated Python compiled with mypyc, as it stands (#316 G4, J90-P7)
+
+**What moved (`tools/ts2py/RULES.md`, *J90-P7 rules*).** The runtime and all 22 generated modules
+compile with mypyc (mypy 2.4.1) straight from the committed files, with no step between: classes
+are non-native with `_ClassVar` lists and `-> object` getters; a method holding a closure forwards
+to a module function (mypyc/mypyc#1205); `instanceof` is `_js_instanceof` (`-> bool`); a module
+variable is `_JsAny`; four shim-rebound names read at call time (`lib.rs`, `REBOUND`); the runtime's
+constants are `_Final`; `fromJs` moved from the adapters into the runtime. The adapter module stays
+interpreted. No TypeScript changed. Interpreted, every change is the same code or an alias of it:
+`pytest`, every conformance suite and `--all` are green on the pure build AND with the `.so` files
+beside the `.py` files (cp312, and cp311 for the `--python` 3.11 suites).
+
+**Three mypyc faults that change answers silently**, each pinned by `tests/j90p7.rs` (compiled leg
+with `TS2PY_MYPYC` set), none in a mypyc release or issue we could find for the last two:
+a compiled `isinstance(x, C)` of a non-native class C tests the exact type (`flatten_classes`
+takes it for a native class), so an interpreted subclass is not an instance and `_js_get` read
+`undefined` from every adapter object; a class whose base mypy sees as `Any` (the adapters'
+`BantamError`, built by `__getattr__`) is built on `object` alone; and an unannotated function
+returning a generic `isinstance` answers the int `1` / `0` (the `instanceof` probe printed
+`1,1,0` where Node prints `true,true,false`; the compiled `--all` run before that fix was green,
+so no conformance case reaches an `instanceof` value). A module variable typed by its first value
+refused a forwarded `GATE_FLOOR = 1.5` (TypeError, pytest red before `_JsAny`).
+
+| path (n = 9 interleaved, median ms [min..max], macOS arm64) | 9c6bc181 (hand) 3.12 | J90-P7 pure 3.12 | J90-P7 mypyc 3.11 | 3.12 | 3.13 | 3.14 | hand 3.11 / 3.13 / 3.14 | Node |
+|---|---|---|---|---|---|---|---|---|
+| hot index build | 415.6 [406.4..435.8] | 494.1 | 420.1 | 430.9 [412.7..449.5] | 449.3 | 439.0 | 428.4 / 442.9 / 421.9 | 269.7 |
+| open + query | 6.67 [5.7..7.1] | 6.62 | 5.91 | 6.75 | 6.21 | 6.26 | 6.22 / 6.22 / 6.10 | 5.16 |
+| held query x20 | 5.59 [5.5..5.8] | 9.24 | 4.98 | 5.48 | 5.92 | 6.44 | 5.45 / 5.71 / 5.87 | 2.71 |
+| full refresh | 16.68 [16.1..17.6] | 27.63 | 23.11 | 23.24 [22.0..24.4] | 24.39 | 24.68 | 15.91 / 17.89 / 16.75 | 37.56 |
+| cold build | 85.83 | 89.67 | 45.55 | 47.99 | 53.01 | 56.54 | 92.14 / 107.43 / 87.65 | 32.52 |
+| cold query x20 | 36.69 [36.1..38.9] | 55.57 | 40.93 | 30.69 | 32.67 | 35.12 | 34.21 / 33.50 / 33.65 | 21.66 |
+| compaction with `keep` | 51.96 | 58.99 | 35.91 | 37.00 | 39.43 | 41.69 | 53.75 / 62.21 / 53.78 | 29.70 |
+| retention run | 1251.9 | 1236.5 | 904.8 | 955.0 | 981.4 | 962.9 | 1296.8 / 1415.1 / 1228.2 | 218.5 |
+| tier lines x5 | 1445.0 | 781.6 | 678.5 | 698.9 | 734.1 | 761.3 | 1367.9 / 1630.0 / 1742.7 | 252.7 |
+| first `memory_save` | 33.06 | 40.21 | 29.97 | 30.87 | 33.27 | 33.46 | 34.30 / 36.03 / 33.45 | 28.08 |
+| #204 bar recall p50 | 8.23 [8.1..9.4] | 8.96 | 7.70 | 8.52 | 9.17 | 9.33 | 8.05 / 8.94 / 8.68 [8.3..9.0] | 3.06 |
+
+Against the hand-written module on the same interpreter, the compiled build is faster or inside its
+spread on every path except: **full refresh** on all four (+36 to +47%), **cold query** on 3.11
+(+20%) and 3.14 (+4%, outside a 32.8..34.6 spread), and the **#204 bar** on 3.14 (+8%). The pure
+build is J90-P6's code: every path within J90-P6's spread on that interpreter but held query 3.12
+(9.24 against 8.85, max 9.2) and compaction 3.11 (62.5 against 61.5), both within 4%. Runtime +
+coldindex + hotindex alone (3.12): hot build 437.5, held 5.70, full refresh 23.70, cold query 30.68,
+bar 8.56 — no better than all modules on any path that still loses.
+
+**Full refresh is not a compiler gap** (cProfile of one refresh of 14 sources, 3.12; compiled code
+appears as its caller's tottime): the compiled build spends 3 ms in 26 `os.listdir` where the
+hand-written one makes 14 `os.scandir` calls (the generated `refresh` lists a native directory and,
+in `remove_stale_temps`, the index directory once per write; the hand-written one did neither
+twice), 750 `os.stat` against 736, and the interpreted adapters 722 `stat_sync` / `Stats` objects
+and 694 `path_basename`. The JSON encode and decode are the same 6 ms on both. Closing it means
+changing what the TypeScript asks the file system (both runtimes) or compiling the adapters.
+
+**Not taken, measured.** Compiling the adapter module: after a concrete `BantamError`, a native
+`_JsReadMap` and `cmp_codepoint`'s function attribute replaced by a list, it compiled and
+segfaulted on the first hot-index build (exit 139). Native generated classes: `_js_object_get` reads
+an instance's `__dict__` and `Object.freeze` overrides `__setattr__`, neither of which a native
+class has. Type annotations from TypeScript types (lever 1) were not built in this unit.
+
+**Size.** Pure wheel 968,167 bytes (J90-P6's rebuilt here 966,014; cap x1.005 = 970,844). `.so`
+total, all modules, `-g0` + `strip -x`, raw / zip -9: cp311 8,414,344 / 2,209,453; cp312 8,425,944 /
+2,165,111; cp313 8,307,352 / 2,154,858; cp314 8,274,152 / 2,133,459; cp312 at `-g1` unstripped
+13,421,544 / 2,910,790. Runtime + coldindex + hotindex, cp312, `-g0` + strip: 2,037,736 / 593,638.
+`mypy_extensions` is not needed at run time (the runtime falls back to an identity decorator).
+Compile time, all modules: about 35 s per interpreter on this machine.
+
 ## Concurrency
 
 Measured, not assumed: 12 pipelined saves all land in order; a recall behind a save **sees**

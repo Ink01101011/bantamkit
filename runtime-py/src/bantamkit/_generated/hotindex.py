@@ -7,6 +7,8 @@ from ._ts2py_runtime import (  # noqa: F401
     _JS_INFINITY,
     _JS_NAN,
     _JS_UNDEFINED,
+    _ClassVar,
+    _Final,
     _js_add,
     _js_and,
     _js_array,
@@ -25,6 +27,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_get,
     _js_gt,
     _js_in,
+    _js_instanceof,
     _js_invoke,
     _js_is_double,
     _js_json_parse,
@@ -85,11 +88,13 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_strict_eq,
     _js_truthy,
     _js_typeof,
+    _JsAny,
     _JsError,
     _JsGlobalRegExp,
     _JsMap,
     _JsObject,
     _JsSet,
+    _mypyc_attr,
 )
 from ._ts2py_adapters import BantamError, cmp_codepoint, create_hash, dump_js_value, extract_refs, fact_refs, hash_hex, lstat_sync, mkdir_sync, node_realpath, parse_frontmatter, parse_native, path_basename, path_dirname, path_join, process_pid, py_decode_utf8, py_join, py_os_error_text, py_read_text, py_split, py_strip, PyOSError, read_file_sync, readdir_sync, rename_sync, rm_sync, stat_sync, write_file_sync
 from .lock import exclusive, remove_stale_temps
@@ -98,34 +103,34 @@ from .retrieval import FIELD_BOOST, py_round9, stale, tokenize_v2
 __all__ = ["DUPLICATE", "FAMILIES", "FULL_REFRESH_EVERY_S", "HEAD_KEYS", "HotIndex", "INDEX_DIR_ENV", "INDEX_VERSION", "SEG", "SHARDS", "TAIL_KEYS", "days_from_civil", "decode_segments", "dump_index", "encode_segments", "head_text", "sha16", "shard_of"]
 
 
-_JS_RE_0 = _JsGlobalRegExp(_js_re.compile("\\[\\[[^\\[\\]\\n]+\\]\\]", _js_re.ASCII))
-_JS_RE_1 = _js_re.compile("(?:^|[\\n\\r\\u2028\\u2029])tags:", _js_re.ASCII)
-_JS_RE_2 = _js_re.compile("(?:^|[\\n\\r\\u2028\\u2029])[ \\t]*(?:tags|links):", _js_re.ASCII)
-_JS_RE_3 = _js_re.compile("^([0-9]{4})-([0-9]{1,2})-([0-9]{1,2})T([0-9]{1,2}):([0-9]{1,2}):([0-9]{1,2})Z\\Z", _js_re.ASCII)
+_JS_RE_0: _Final = _JsGlobalRegExp(_js_re.compile("\\[\\[[^\\[\\]\\n]+\\]\\]", _js_re.ASCII))
+_JS_RE_1: _Final = _js_re.compile("(?:^|[\\n\\r\\u2028\\u2029])tags:", _js_re.ASCII)
+_JS_RE_2: _Final = _js_re.compile("(?:^|[\\n\\r\\u2028\\u2029])[ \\t]*(?:tags|links):", _js_re.ASCII)
+_JS_RE_3: _Final = _js_re.compile("^([0-9]{4})-([0-9]{1,2})-([0-9]{1,2})T([0-9]{1,2}):([0-9]{1,2}):([0-9]{1,2})Z\\Z", _js_re.ASCII)
 
 
-INDEX_VERSION = 5
+INDEX_VERSION: _JsAny = 5
 
 
-FULL_REFRESH_EVERY_S = 600
+FULL_REFRESH_EVERY_S: _JsAny = 600
 
 
-SHARDS = 16
+SHARDS: _JsAny = 16
 
 
-FAMILIES = ["postings", "words"]
+FAMILIES: _JsAny = ["postings", "words"]
 
 
-INDEX_DIR_ENV = "BANTAMKIT_INDEX_DIR"
+INDEX_DIR_ENV: _JsAny = "BANTAMKIT_INDEX_DIR"
 
 
-HEAD_KEYS = ["avgdl", "boost", "cols", "dir_mtime_ns", "fingerprint", "full_at", "kind", "lens_total", "loose", "shards", "skipped", "source", "version"]
+HEAD_KEYS: _JsAny = ["avgdl", "boost", "cols", "dir_mtime_ns", "fingerprint", "full_at", "kind", "lens_total", "loose", "shards", "skipped", "source", "version"]
 
 
-TAIL_KEYS = ["df", "docs", "files", "lens"]
+TAIL_KEYS: _JsAny = ["df", "docs", "files", "lens"]
 
 
-SEG = 5
+SEG: _JsAny = 5
 
 
 def _boost_ints():
@@ -182,16 +187,16 @@ def _segment_fields():
     return [_js_list_at(fields, 0), _js_list_at(fields, 1), _js_list_at(fields, 2)]
 
 
-_SEG_FIELDS = _segment_fields()
+_SEG_FIELDS: _JsAny = _segment_fields()
 
 
-_FIELD0 = _js_list_at(_SEG_FIELDS, 0)
+_FIELD0: _JsAny = _js_list_at(_SEG_FIELDS, 0)
 
 
-_FIELD1 = _js_list_at(_SEG_FIELDS, 1)
+_FIELD1: _JsAny = _js_list_at(_SEG_FIELDS, 1)
 
 
-_FIELD2 = _js_list_at(_SEG_FIELDS, 2)
+_FIELD2: _JsAny = _js_list_at(_SEG_FIELDS, 2)
 
 
 def decode_segments(names, seg):
@@ -289,19 +294,19 @@ def _is_lens(v):
     return isinstance(v, list) and len(v) == 3 and all((type(x) is int and -2**53 <= x <= 2**53 or _js_number_is_integer(x)) and _js_ge(x, 0) for x in v)
 
 
-_WIKI = _JS_RE_0
+_WIKI: _JsAny = _JS_RE_0
 
 
-_TAGS_LINE = _JS_RE_1
+_TAGS_LINE: _JsAny = _JS_RE_1
 
 
-_NATIVE_EXTRA_LINE = _JS_RE_2
+_NATIVE_EXTRA_LINE: _JsAny = _JS_RE_2
 
 
-_ISO = _JS_RE_3
+_ISO: _JsAny = _JS_RE_3
 
 
-DUPLICATE = "duplicate name"
+DUPLICATE: _JsAny = "duplicate name"
 
 
 def sha16(p):
@@ -326,10 +331,10 @@ def shard_of(term):
 _shard_of__typed = shard_of
 
 
-_SHARD_MEMO_MAX = 4096
+_SHARD_MEMO_MAX: _JsAny = 4096
 
 
-_SHARD_MEMO = _JsMap()
+_SHARD_MEMO: _JsAny = _JsMap()
 
 
 def _fingerprint(value):
@@ -351,7 +356,7 @@ def _iso_now(now_ms):
 _iso_now__typed = _iso_now
 
 
-_MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+_MONTH_DAYS: _JsAny = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
 
 def _days_from_civil__typed(y, m, d):
@@ -412,7 +417,7 @@ def _full_at_ms(full_at):
     return _js_num(_js_num(_js_num(_js_mul(_days_from_civil__typed(y, mo, d), 86400000) + _js_mul(h, 3600000)) + _js_mul(mi, 60000)) + _js_mul(s, 1000))
 
 
-_full_at_last = ["", _JS_NAN]
+_full_at_last: _JsAny = ["", _JS_NAN]
 
 
 def _age_s__typed(full_at, now_ms):
@@ -477,10 +482,11 @@ def _secondary(p, pattern):
 _secondary__typed = _secondary
 
 
+@_mypyc_attr(native_class=False)
 class _Shape(_JsError):
-    _js_name = "Shape"
-    _js_own = frozenset()
-    _js_own_methods = frozenset()
+    _js_name: _ClassVar[str] = "Shape"
+    _js_own: _ClassVar[frozenset[str]] = frozenset()
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset()
 
 
 def _is_obj(v):
@@ -513,7 +519,7 @@ def _is_doc(v):
     except Exception as _js_error4:
         _js_caught4 = _js_catch(_js_error4)
     if _js_caught4 is not None:
-        if isinstance(_js_caught4, _Shape):
+        if _js_instanceof(_js_caught4, _Shape):
             return False
         raise _js_caught4
 
@@ -536,36 +542,14 @@ def _entries(v):
     return _js_object_entries(v)
 
 
+@_mypyc_attr(native_class=False)
 class HotIndex(_JsObject):
-    _js_name = "HotIndex"
-    _js_own = frozenset({"avgdl", "build", "check", "checked", "cols", "current", "data", "derive", "df", "dir", "dirMtime", "doc", "docCount", "docs", "docsUnchecked", "exists", "fileOf", "headPrint", "headStat", "home", "idOf", "ids", "invalidate", "kind", "lens", "lensTotal", "listing", "load", "loaded", "lookup", "loose", "mdPaths", "names", "parse", "parseFile", "patch", "path", "persisted", "postings", "query", "queryWords", "readShard", "reader", "real", "rebuild", "refresh", "segments", "shard", "shardPath", "shards", "skipped", "source", "statHead", "statListing", "store", "whole", "write", "writesName"})
-    _js_own_methods = frozenset({"avgdl", "build", "check", "cols", "current", "derive", "df", "dirMtime", "doc", "docCount", "docs", "docsUnchecked", "exists", "fileOf", "headPrint", "ids", "invalidate", "lens", "lensTotal", "listing", "load", "loaded", "lookup", "mdPaths", "names", "parse", "parseFile", "patch", "postings", "query", "queryWords", "readShard", "rebuild", "refresh", "segments", "shard", "shardPath", "statHead", "statListing", "store", "whole", "write", "writesName"})
+    _js_name: _ClassVar[str] = "HotIndex"
+    _js_own: _ClassVar[frozenset[str]] = frozenset({"avgdl", "build", "check", "checked", "cols", "current", "data", "derive", "df", "dir", "dirMtime", "doc", "docCount", "docs", "docsUnchecked", "exists", "fileOf", "headPrint", "headStat", "home", "idOf", "ids", "invalidate", "kind", "lens", "lensTotal", "listing", "load", "loaded", "lookup", "loose", "mdPaths", "names", "parse", "parseFile", "patch", "path", "persisted", "postings", "query", "queryWords", "readShard", "reader", "real", "rebuild", "refresh", "segments", "shard", "shardPath", "shards", "skipped", "source", "statHead", "statListing", "store", "whole", "write", "writesName"})
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset({"avgdl", "build", "check", "cols", "current", "derive", "df", "dirMtime", "doc", "docCount", "docs", "docsUnchecked", "exists", "fileOf", "headPrint", "ids", "invalidate", "lens", "lensTotal", "listing", "load", "loaded", "lookup", "mdPaths", "names", "parse", "parseFile", "patch", "postings", "query", "queryWords", "readShard", "rebuild", "refresh", "segments", "shard", "shardPath", "statHead", "statListing", "store", "whole", "write", "writesName"})
 
     def __init__(self, source, kind, home, index_dir=_JS_UNDEFINED, *_):
-        if index_dir is _JS_UNDEFINED:
-            index_dir = None
-        self.source = _JS_UNDEFINED
-        self.kind = _JS_UNDEFINED
-        self.home = _JS_UNDEFINED
-        self.real = _JS_UNDEFINED
-        self.path = _JS_UNDEFINED
-        self.dir = _JS_UNDEFINED
-        self.persisted = True
-        self.data = None
-        self.headStat = None
-        self.shards = _JsMap()
-        self.checked = False
-        self.reader = None
-        self.idOf = None
-        if kind != "facts" and kind != "native":
-            raise _JsError("unknown index kind: " + _js_str(kind))
-        self.source = py_join(source)
-        self.kind = kind
-        self.home = home
-        self.real = node_realpath(self.source)
-        where = _js_coalesce(index_dir, lambda: path_join(home, ".bantamkit", "index"))
-        self.path = path_join(where, sha16(self.source) + ".json")
-        self.dir = py_join(self.source, "facts") if kind == "facts" else self.source
+        return _js_method_HotIndex___init__(self, source, kind, home, index_dir)
 
     def docs(self):
         data = self.whole()
@@ -594,17 +578,10 @@ class HotIndex(_JsObject):
         return _js_get(data, "cols")
 
     def fileOf(self, name):
-        i = _js_m_get(self.ids(), name)
-        if i is _JS_UNDEFINED:
-            return None
-        return _js_or(_js_get(_js_get(self.cols(), "file"), i), lambda: _js_str(name) + ".md")
+        return _js_method_HotIndex_fileOf(self, name)
 
     def ids(self):
-        data = self.loaded()
-        names = _js_get(_js_get(data, "cols"), "name")
-        if self.idOf is None or not _js_strict_eq(_js_get(self.idOf, 0), names):
-            self.idOf = [names, _JsMap(_js_m_map(names, lambda n, i, *_: [n, i]))]
-        return _js_get(self.idOf, 1)
+        return _js_method_HotIndex_ids(self)
 
     def postings(self):
         names = _js_get(self.cols(), "name")
@@ -654,11 +631,11 @@ class HotIndex(_JsObject):
         return _js_get(data, "lensTotal")
 
     @property
-    def skipped(self):
+    def skipped(self) -> object:
         return _js_get(self.loaded(), "skipped")
 
     @property
-    def loose(self):
+    def loose(self) -> object:
         return _js_get(self.loaded(), "loose")
 
     def exists(self):
@@ -704,22 +681,7 @@ class HotIndex(_JsObject):
         return self.data
 
     def lookup(self, family, terms):
-        want = _js_m_sort([*_JsSet(terms)], cmp_codepoint)
-        by_shard = _JsMap()
-        for t in want:
-            i = shard_of(t)
-            list_ = (by_shard._entries.get(i, _JS_UNDEFINED) if type(by_shard) is _JsMap and type(i) is str else _js_m_get(by_shard, i))
-            if list_ is _JS_UNDEFINED:
-                list_ = []
-                _js_m_set(by_shard, i, list_)
-            _js_m_push(list_, t)
-        out = _JsMap()
-        for i in _js_sort_keyed([*_js_m_keys(by_shard)], lambda a, *_: a, False, lambda a, b, *_: _js_num(_js_num(a) - _js_num(b))):
-            table = self.shard(family, i)
-            for t in (by_shard._entries.get(i, _JS_UNDEFINED) if type(by_shard) is _JsMap and type(i) is str else _js_m_get(by_shard, i)):
-                if _js_m_has(table, t):
-                    _js_m_set(out, t, (table._entries.get(t, _JS_UNDEFINED) if type(table) is _JsMap and type(t) is str else _js_m_get(table, t)))
-        return out
+        return _js_method_HotIndex_lookup(self, family, terms)
 
     def shard(self, family, i):
         fp = _js_get(_js_get(_js_get(self.loaded(), "shards"), family), i)
@@ -793,9 +755,7 @@ class HotIndex(_JsObject):
         return _JS_UNDEFINED
 
     def check(self, data):
-        if _js_truthy(_js_and(_js_strict_eq(data, self.data), lambda: self.checked)):
-            return True
-        return _all_docs(_js_get(data, "docs"))
+        return _js_method_HotIndex_check(self, data)
 
     def statHead(self):
         _js_caught7 = None
@@ -819,139 +779,10 @@ class HotIndex(_JsObject):
         return data
 
     def load(self):
-        raw = _JS_UNDEFINED
-        _js_caught8 = None
-        try:
-            raw = read_file_sync(self.path)
-        except Exception as _js_error8:
-            _js_caught8 = _js_catch(_js_error8)
-        if _js_caught8 is not None:
-            return None
-        top = None
-        tail_bytes = None
-        tail_obj = None
-        cut = _js_m_indexOf(raw, 10)
-        if cut > 0 and _js_strict_eq(_js_get(raw, _js_num(cut - 1)), 44):
-            _js_caught9 = None
-            try:
-                got = _js_json_parse(_js_str(py_decode_utf8(_js_m_subarray(raw, 0, _js_num(cut - 1)))) + "}")
-                if _is_obj(got) and _same_keys(got, HEAD_KEYS):
-                    top = got
-                    tail_bytes = _js_m_subarray(raw, _js_num(cut + 1))
-            except Exception as _js_error9:
-                _js_caught9 = _js_catch(_js_error9)
-            if _js_caught9 is not None:
-                top = None
-        if top is None:
-            whole = _JS_UNDEFINED
-            _js_caught10 = None
-            try:
-                whole = _js_json_parse(py_decode_utf8(raw))
-            except Exception as _js_error10:
-                _js_caught10 = _js_catch(_js_error10)
-            if _js_caught10 is not None:
-                return None
-            if not _is_obj(whole) or not _same_keys(whole, [*HEAD_KEYS, *TAIL_KEYS]):
-                return None
-            parsed = whole
-            top = parsed
-            tail_obj = _js_object_from_entries([[k, _js_get(parsed, k)] for k in TAIL_KEYS])
-        if not _js_strict_eq(_js_get(top, "version"), INDEX_VERSION):
-            return None
-        if not _js_strict_eq(_js_get(top, "kind"), self.kind) or not _js_strict_eq(_js_get(top, "source"), self.real):
-            return None
-        for key in ["skipped", "shards"]:
-            if not _is_obj(_js_get(top, key)):
-                return None
-        if not isinstance(_js_get(top, "full_at"), str) or not isinstance(_js_get(top, "fingerprint"), str):
-            return None
-        dm = _js_get(top, "dir_mtime_ns")
-        if not (dm is None or isinstance(dm, str)):
-            return None
-        if not _is_str_list(_js_get(top, "loose")) or not _is_lens(_js_get(top, "lens_total")):
-            return None
-        boost = _js_get(top, "boost")
-        want = _boost_ints()
-        if not (isinstance(boost, list) and len(boost) == len(want) and _js_m_every(boost, lambda b, i, *_: _js_strict_eq(b, _js_list_at(want, i)))):
-            return None
-        parts = top
-        if not _is_cols(_js_get(parts, "cols")):
-            return None
-        sh = _js_get(top, "shards")
-        prints = sh
-        fams = _js_m_sort(_js_object_keys(sh), cmp_codepoint)
-        if len(fams) != len(FAMILIES) or _js_m_some(fams, lambda f, i, *_: not _js_strict_eq(f, _js_list_at(FAMILIES, i))):
-            return None
-        if not all(_is_fps(_js_get(sh, f)) for f in FAMILIES):
-            return None
-        skipped = _JsMap()
-        for k, v in _js_rows(_entries(_js_get(top, "skipped")), 2, (0, 1)):
-            if not isinstance(v, str):
-                return None
-            _js_m_set(skipped, k, v)
-        data = {"version": INDEX_VERSION, "kind": self.kind, "source": self.real, "dir_mtime_ns": dm, "full_at": _js_get(top, "full_at"), "files": _JsMap(), "docs": _JsMap(), "skipped": skipped, "loose": [*_js_get(top, "loose")], "df": _JsMap(), "dfRaw": None, "avgdl": _js_get(parts, "avgdl"), "lens": _JsMap(), "lensRaw": None, "lensTotal": [*_js_get(top, "lens_total")], "boost": want, "cols": _js_get(parts, "cols"), "fingerprint": _js_get(top, "fingerprint"), "shards": {"postings": [*_js_get(prints, "postings")], "words": [*_js_get(prints, "words")]}, "tailBytes": tail_bytes, "tailObj": tail_obj}
-        if tail_obj is not None and not _complete_tail(data):
-            return None
-        return data
+        return _js_method_HotIndex_load(self)
 
     def write(self, before):
-        d = self.data
-        texts = []
-        for family in FAMILIES:
-            i = 0
-            _js_first11 = True
-            while True:
-                if _js_first11:
-                    _js_first11 = False
-                else:
-                    i = _js_num(i + 1)
-                if not (i < SHARDS):
-                    break
-                fp = _js_get(_js_get(_js_get(d, "shards"), family), i)
-                if before is not None and (_js_h11 == fp if type(_js_h11 := _js_get(_js_get(before, family), i)) is type(fp) is str else _js_strict_eq(_js_h11, fp)):
-                    continue
-                held = _js_m_get(self.shards, _js_str(family) + ":" + _js_str(i))
-                if held is _JS_UNDEFINED or (_js_h12 != fp if type(_js_h12 := _js_get(held, 0)) is type(fp) is str else not _js_strict_eq(_js_h12, fp)):
-                    raise _JsError("hotindex: shard " + _js_str(family) + "-" + _js_str(i) + " not held")
-                texts.append([self.shardPath(family, i), dump_index({"fingerprint": fp, "terms": _js_get(held, 1)})])
-        texts.append([self.path, head_text({"version": _js_get(d, "version"), "kind": _js_get(d, "kind"), "source": _js_get(d, "source"), "dir_mtime_ns": _js_get(d, "dir_mtime_ns"), "full_at": _js_get(d, "full_at"), "files": _js_get(d, "files"), "docs": _js_get(d, "docs"), "skipped": _js_get(d, "skipped"), "loose": _js_get(d, "loose"), "df": _js_coalesce(_js_get(d, "dfRaw"), lambda: _js_get(d, "df")), "avgdl": _js_get(d, "avgdl"), "lens": _js_coalesce(_js_get(d, "lensRaw"), lambda: _js_get(d, "lens")), "lens_total": _js_get(d, "lensTotal"), "boost": _js_get(d, "boost"), "cols": _js_get(d, "cols"), "fingerprint": _js_get(d, "fingerprint"), "shards": _js_get(d, "shards")})])
-        _js_caught12 = None
-        try:
-            mkdir_sync(path_dirname(self.path), {"recursive": True})
-            def _js_fn13(*_):
-                def _js_fn14(b=_JS_UNDEFINED, *_):
-                    return self.writesName(b)
-                remove_stale_temps(path_dirname(self.path), _js_fn14)
-                for p, text in _js_rows(texts, 2, (0, 1)):
-                    tmp = path_join(path_dirname(p), _js_str(path_basename(p)) + "." + _js_str(process_pid()) + ".tmp")
-                    _js_caught15 = None
-                    try:
-                        write_file_sync(tmp, text, "utf8")
-                        rename_sync(tmp, p)
-                    except Exception as _js_error15:
-                        _js_caught15 = _js_catch(_js_error15)
-                    if _js_caught15 is not None:
-                        _js_caught16 = None
-                        try:
-                            rm_sync(tmp, {"force": True})
-                        except Exception as _js_error16:
-                            _js_caught16 = _js_catch(_js_error16)
-                        if _js_caught16 is not None:
-                            pass
-                        raise _js_caught15
-                return _JS_UNDEFINED
-            exclusive(self.path, _js_fn13)
-        except Exception as _js_error12:
-            _js_caught12 = _js_catch(_js_error12)
-        if _js_caught12 is not None:
-            if isinstance(_js_get(_js_caught12, "code"), str):
-                self.persisted = False
-                self.headStat = None
-                return _JS_UNDEFINED
-            raise _js_caught12
-        self.persisted = True
-        self.headStat = self.statHead()
-        return _JS_UNDEFINED
+        return _js_method_HotIndex_write(self, before)
 
     def store(self):
         if self.reader is None:
@@ -1009,56 +840,7 @@ class HotIndex(_JsObject):
         return data
 
     def patch(self, data, stats, force=_JS_UNDEFINED):
-        if force is _JS_UNDEFINED:
-            force = False
-        files = _js_get(data, "files")
-        docs = _js_get(data, "docs")
-        skipped = _js_get(data, "skipped")
-        loose = _JsSet(_js_get(data, "loose"))
-        order = _JsMap(_js_m_map(stats, lambda _js_arg20, i, *_: (lambda n: [n, i])(*_js_destructure(_js_arg20, 1))))
-        now_files = _JsMap(_js_m_map(stats, lambda _js_arg21, *_: (lambda n, m, s: [n, [m, s]])(*_js_destructure(_js_arg21, 3))))
-        redo = _JsSet()
-        for name, now in _js_rows(now_files, 2, (0, 1)):
-            was = (files._entries.get(name, _JS_UNDEFINED) if type(files) is _JsMap and type(name) is str else _js_m_get(files, name))
-            if was is _JS_UNDEFINED or not _js_strict_eq(_js_get(was, 0), _js_get(now, 0)) or not _js_strict_eq(_js_get(was, 1), _js_get(now, 1)):
-                _js_m_add(redo, name)
-        gone = _JsSet([n for n in [*_js_m_keys(files)] if not _js_m_has(now_files, n)])
-        if _js_strict_eq(_js_size(redo), 0) and _js_strict_eq(_js_size(gone), 0) and not _js_truthy(force):
-            return False
-        derived_from = _derived_key(docs)
-        for name in _js_m_keys(now_files):
-            if _js_m_startsWith(_js_coalesce_value((skipped._entries.get(name, _JS_UNDEFINED) if type(skipped) is _JsMap and type(name) is str else _js_m_get(skipped, name)), ""), DUPLICATE):
-                _js_m_add(redo, name)
-        for name, doc in _js_rows(docs, 2, (0, 1)):
-            if _js_m_has(redo, _js_get(doc, "file")) or _js_m_has(gone, _js_get(doc, "file")):
-                _js_m_delete(docs, name)
-        for file in [*redo, *gone]:
-            _js_m_delete(skipped, file)
-            _js_m_delete(loose, file)
-        for file in _js_sort_keyed([*redo], lambda a, *_: _js_m_get(order, a), False, lambda a, b, *_: _js_num(_js_num(_js_m_get(order, a)) - _js_num(_js_m_get(order, b)))):
-            mtime_ns, size = _js_destructure((now_files._entries.get(file, _JS_UNDEFINED) if type(now_files) is _JsMap and type(file) is str else _js_m_get(now_files, file)), 2)
-            parsed = self.parse(py_join(self.dir, file))
-            if isinstance(parsed, str):
-                _js_m_set(skipped, file, parsed)
-                continue
-            if _js_truthy(_js_get(parsed, "loose")):
-                _js_m_add(loose, file)
-            doc = _stamped(parsed, mtime_ns, size)
-            held = _js_m_get(docs, _js_get(doc, "name"))
-            if held is _JS_UNDEFINED:
-                _js_m_set(docs, _js_get(doc, "name"), doc)
-            elif _js_lt((order._entries.get(file, _JS_UNDEFINED) if type(order) is _JsMap and type(file) is str else _js_m_get(order, file)), _js_m_get(order, _js_get(held, "file"))):
-                _js_m_set(docs, _js_get(doc, "name"), doc)
-                _js_m_set(skipped, _js_get(held, "file"), DUPLICATE + " '" + _js_str(_js_get(doc, "name")) + "': " + _js_str(file) + " holds it")
-            else:
-                _js_m_set(skipped, file, DUPLICATE + " '" + _js_str(_js_get(doc, "name")) + "': " + _js_str(_js_get(held, "file")) + " holds it")
-        _js_put(data, "files", now_files)
-        _js_put(data, "loose", _js_m_sort([*loose], cmp_codepoint))
-        if _js_truthy(_js_or(force, lambda: not _js_strict_eq(_derived_key(docs), derived_from))):
-            self.derive(data)
-        _js_put(data, "cols", _columns(docs, data))
-        _js_put(data, "boost", _boost_ints())
-        return True
+        return _js_method_HotIndex_patch(self, data, stats, force)
 
     def parseFile(self, p, mtime_ns, size):
         got = self.parse(p)
@@ -1078,9 +860,9 @@ class HotIndex(_JsObject):
             except Exception as _js_error22:
                 _js_caught22 = _js_catch(_js_error22)
             if _js_caught22 is not None:
-                if isinstance(_js_caught22, PyOSError):
+                if _js_instanceof(_js_caught22, PyOSError):
                     return py_os_error_text(_js_caught22)
-                if isinstance(_js_caught22, BantamError):
+                if _js_instanceof(_js_caught22, BantamError):
                     return _js_get(_js_caught22, "message")
                 raise _js_caught22
             extra = _secondary(p, _TAGS_LINE)
@@ -1092,7 +874,7 @@ class HotIndex(_JsObject):
         except Exception as _js_error23:
             _js_caught23 = _js_catch(_js_error23)
         if _js_caught23 is not None:
-            if isinstance(_js_caught23, BantamError):
+            if _js_instanceof(_js_caught23, BantamError):
                 return _js_get(_js_caught23, "message")
             raise _js_caught23
         extra = _js_get(stored, "meta") if _js_m_test(_NATIVE_EXTRA_LINE, _front_of(_safe_read(p))) else {}
@@ -1104,82 +886,343 @@ class HotIndex(_JsObject):
         return {"file": file, "name": _js_get(stored, "name"), "description": _js_get(stored, "description"), "type": _js_get(stored, "type"), "keywords": [], "links": _dedupe([*front_links, *_wiki_links(_js_get(stored, "body"))]), "tags": _str_list(tags), "refs": extract_refs(_js_str(_js_get(stored, "description")) + "\n" + _js_str(_js_get(stored, "body"))), "loose": False}
 
     def derive(self, data):
-        rows = []
-        words = []
+        return _js_method_HotIndex_derive(self, data)
+
+
+def _js_method_HotIndex___init__(self, source, kind, home, index_dir=_JS_UNDEFINED, *_):
+    if index_dir is _JS_UNDEFINED:
+        index_dir = None
+    self.source = _JS_UNDEFINED
+    self.kind = _JS_UNDEFINED
+    self.home = _JS_UNDEFINED
+    self.real = _JS_UNDEFINED
+    self.path = _JS_UNDEFINED
+    self.dir = _JS_UNDEFINED
+    self.persisted = True
+    self.data = None
+    self.headStat = None
+    self.shards = _JsMap()
+    self.checked = False
+    self.reader = None
+    self.idOf = None
+    if kind != "facts" and kind != "native":
+        raise _JsError("unknown index kind: " + _js_str(kind))
+    self.source = py_join(source)
+    self.kind = kind
+    self.home = home
+    self.real = node_realpath(self.source)
+    where = _js_coalesce(index_dir, lambda: path_join(home, ".bantamkit", "index"))
+    self.path = path_join(where, sha16(self.source) + ".json")
+    self.dir = py_join(self.source, "facts") if kind == "facts" else self.source
+
+
+def _js_method_HotIndex_fileOf(self, name):
+    i = _js_m_get(self.ids(), name)
+    if i is _JS_UNDEFINED:
+        return None
+    return _js_or(_js_get(_js_get(self.cols(), "file"), i), lambda: _js_str(name) + ".md")
+
+
+def _js_method_HotIndex_ids(self):
+    data = self.loaded()
+    names = _js_get(_js_get(data, "cols"), "name")
+    if self.idOf is None or not _js_strict_eq(_js_get(self.idOf, 0), names):
+        self.idOf = [names, _JsMap(_js_m_map(names, lambda n, i, *_: [n, i]))]
+    return _js_get(self.idOf, 1)
+
+
+def _js_method_HotIndex_lookup(self, family, terms):
+    want = _js_m_sort([*_JsSet(terms)], cmp_codepoint)
+    by_shard = _JsMap()
+    for t in want:
+        i = shard_of(t)
+        list_ = (by_shard._entries.get(i, _JS_UNDEFINED) if type(by_shard) is _JsMap and type(i) is str else _js_m_get(by_shard, i))
+        if list_ is _JS_UNDEFINED:
+            list_ = []
+            _js_m_set(by_shard, i, list_)
+        _js_m_push(list_, t)
+    out = _JsMap()
+    for i in _js_sort_keyed([*_js_m_keys(by_shard)], lambda a, *_: a, False, lambda a, b, *_: _js_num(_js_num(a) - _js_num(b))):
+        table = self.shard(family, i)
+        for t in (by_shard._entries.get(i, _JS_UNDEFINED) if type(by_shard) is _JsMap and type(i) is str else _js_m_get(by_shard, i)):
+            if _js_m_has(table, t):
+                _js_m_set(out, t, (table._entries.get(t, _JS_UNDEFINED) if type(table) is _JsMap and type(t) is str else _js_m_get(table, t)))
+    return out
+
+
+def _js_method_HotIndex_check(self, data):
+    if _js_truthy(_js_and(_js_strict_eq(data, self.data), lambda: self.checked)):
+        return True
+    return _all_docs(_js_get(data, "docs"))
+
+
+def _js_method_HotIndex_load(self):
+    raw = _JS_UNDEFINED
+    _js_caught8 = None
+    try:
+        raw = read_file_sync(self.path)
+    except Exception as _js_error8:
+        _js_caught8 = _js_catch(_js_error8)
+    if _js_caught8 is not None:
+        return None
+    top = None
+    tail_bytes = None
+    tail_obj = None
+    cut = _js_m_indexOf(raw, 10)
+    if cut > 0 and _js_strict_eq(_js_get(raw, _js_num(cut - 1)), 44):
+        _js_caught9 = None
+        try:
+            got = _js_json_parse(_js_str(py_decode_utf8(_js_m_subarray(raw, 0, _js_num(cut - 1)))) + "}")
+            if _is_obj(got) and _same_keys(got, HEAD_KEYS):
+                top = got
+                tail_bytes = _js_m_subarray(raw, _js_num(cut + 1))
+        except Exception as _js_error9:
+            _js_caught9 = _js_catch(_js_error9)
+        if _js_caught9 is not None:
+            top = None
+    if top is None:
+        whole = _JS_UNDEFINED
+        _js_caught10 = None
+        try:
+            whole = _js_json_parse(py_decode_utf8(raw))
+        except Exception as _js_error10:
+            _js_caught10 = _js_catch(_js_error10)
+        if _js_caught10 is not None:
+            return None
+        if not _is_obj(whole) or not _same_keys(whole, [*HEAD_KEYS, *TAIL_KEYS]):
+            return None
+        parsed = whole
+        top = parsed
+        tail_obj = _js_object_from_entries([[k, _js_get(parsed, k)] for k in TAIL_KEYS])
+    if not _js_strict_eq(_js_get(top, "version"), INDEX_VERSION):
+        return None
+    if not _js_strict_eq(_js_get(top, "kind"), self.kind) or not _js_strict_eq(_js_get(top, "source"), self.real):
+        return None
+    for key in ["skipped", "shards"]:
+        if not _is_obj(_js_get(top, key)):
+            return None
+    if not isinstance(_js_get(top, "full_at"), str) or not isinstance(_js_get(top, "fingerprint"), str):
+        return None
+    dm = _js_get(top, "dir_mtime_ns")
+    if not (dm is None or isinstance(dm, str)):
+        return None
+    if not _is_str_list(_js_get(top, "loose")) or not _is_lens(_js_get(top, "lens_total")):
+        return None
+    boost = _js_get(top, "boost")
+    want = _boost_ints()
+    if not (isinstance(boost, list) and len(boost) == len(want) and _js_m_every(boost, lambda b, i, *_: _js_strict_eq(b, _js_list_at(want, i)))):
+        return None
+    parts = top
+    if not _is_cols(_js_get(parts, "cols")):
+        return None
+    sh = _js_get(top, "shards")
+    prints = sh
+    fams = _js_m_sort(_js_object_keys(sh), cmp_codepoint)
+    if len(fams) != len(FAMILIES) or _js_m_some(fams, lambda f, i, *_: not _js_strict_eq(f, _js_list_at(FAMILIES, i))):
+        return None
+    if not all(_is_fps(_js_get(sh, f)) for f in FAMILIES):
+        return None
+    skipped = _JsMap()
+    for k, v in _js_rows(_entries(_js_get(top, "skipped")), 2, (0, 1)):
+        if not isinstance(v, str):
+            return None
+        _js_m_set(skipped, k, v)
+    data = {"version": INDEX_VERSION, "kind": self.kind, "source": self.real, "dir_mtime_ns": dm, "full_at": _js_get(top, "full_at"), "files": _JsMap(), "docs": _JsMap(), "skipped": skipped, "loose": [*_js_get(top, "loose")], "df": _JsMap(), "dfRaw": None, "avgdl": _js_get(parts, "avgdl"), "lens": _JsMap(), "lensRaw": None, "lensTotal": [*_js_get(top, "lens_total")], "boost": want, "cols": _js_get(parts, "cols"), "fingerprint": _js_get(top, "fingerprint"), "shards": {"postings": [*_js_get(prints, "postings")], "words": [*_js_get(prints, "words")]}, "tailBytes": tail_bytes, "tailObj": tail_obj}
+    if tail_obj is not None and not _complete_tail(data):
+        return None
+    return data
+
+
+def _js_method_HotIndex_write(self, before):
+    d = self.data
+    texts = []
+    for family in FAMILIES:
         i = 0
-        while i < SHARDS:
-            rows.append(_JsMap())
-            words.append(_JsMap())
-            i = _js_num(i + 1)
-        df = _JsMap()
-        at = _JsMap()
-        def shard_at(t):
-            i = _js_m_get(at, t)
-            if i is _JS_UNDEFINED:
-                i = shard_of(t)
-                _js_m_set(at, t, i)
-            return i
-        total = 0
-        lens = _JsMap()
-        lens_total = [0, 0, 0]
-        names = _js_m_sort([*_js_m_keys(_js_get(data, "docs"))], cmp_codepoint)
-        def _js_fn24(name=_JS_UNDEFINED, doc_id=_JS_UNDEFINED, *_):
-            nonlocal total
-            d = _js_m_get(_js_get(data, "docs"), name)
-            text = {"name": _js_get(d, "name"), "description": _js_get(d, "description"), "keywords": _js_m_join(_js_get(d, "keywords"), " ")}
-            tfs = _JsMap()
-            flens = [0, 0, 0]
-            _js_m_set(lens, name, flens)
-            fi = 0
-            while _js_lt(fi, _js_len(FIELD_BOOST)):
-                field = _js_get(_js_get(FIELD_BOOST, fi), 0)
-                boost = _js_get(_js_get(FIELD_BOOST, fi), 1)
-                toks = tokenize_v2(_js_get(text, field))
-                total = _js_add(total, _js_mul(boost, _js_len(toks)))
-                _js_put(flens, fi, _js_len(toks))
-                _js_put(lens_total, fi, _js_add(_js_list_at(lens_total, fi), _js_len(toks)))
-                for t in toks:
-                    c = (tfs._entries.get(t, _JS_UNDEFINED) if type(tfs) is _JsMap and type(t) is str else _js_m_get(tfs, t))
-                    if c is _JS_UNDEFINED:
-                        c = [0, 0, 0]
-                        _js_m_set(tfs, t, c)
-                    _js_put(c, fi, (_js_h13 + 1 if type(_js_h13 := _js_get(c, fi)) is int and -4503599627370496 <= _js_h13 <= 4503599627370496 else _js_add(_js_h13, 1)))
-                fi = _js_num(fi + 1)
-            for term, counts in _js_rows(tfs, 2, (0, 1)):
-                table = _js_list_at(rows, shard_at(term))
-                list_ = (table._entries.get(term, _JS_UNDEFINED) if type(table) is _JsMap and type(term) is str else _js_m_get(table, term))
-                if list_ is _JS_UNDEFINED:
-                    list_ = []
-                    _js_m_set(table, term, list_)
-                _js_m_push(list_, [doc_id, _js_get(counts, 0), _js_get(counts, 1), _js_get(counts, 2)])
-                _js_m_set(df, term, (_js_h14 + 1 if type(_js_h14 := _js_coalesce_value((df._entries.get(term, _JS_UNDEFINED) if type(df) is _JsMap and type(term) is str else _js_m_get(df, term)), 0)) is int and -4503599627370496 <= _js_h14 <= 4503599627370496 else _js_add(_js_h14, 1)))
-            for w in tokens(_js_str(_js_get(d, "name")) + " " + _js_str(_js_get(d, "description"))):
-                table = _js_list_at(words, shard_at(w))
-                list_ = (table._entries.get(w, _JS_UNDEFINED) if type(table) is _JsMap and type(w) is str else _js_m_get(table, w))
-                if list_ is _JS_UNDEFINED:
-                    list_ = []
-                    _js_m_set(table, w, list_)
-                _js_m_push(list_, name)
-            return _JS_UNDEFINED
-        _js_m_forEach(names, _js_fn24)
-        postings = _js_m_map(rows, lambda table, *_: _JsMap(_js_m_map([*table], lambda _js_arg25, *_: (lambda t, r: [t, encode_segments(r)])(*_js_destructure(_js_arg25, 2)))))
-        _js_put(data, "df", df)
-        _js_put(data, "dfRaw", None)
-        _js_put(data, "lens", lens)
-        _js_put(data, "lensRaw", None)
-        _js_put(data, "lensTotal", lens_total)
-        _js_put(data, "avgdl", py_round9(_js_div(total, len(names))) if _js_truthy(len(names)) else 0)
-        prints = {"postings": [], "words": []}
-        for family, tables in [["postings", postings], ["words", words]]:
-            i = 0
-            while i < len(tables):
-                fp = _fingerprint(_js_list_at(tables, i))
-                _js_m_push(_js_get(prints, family), fp)
-                _js_m_set(self.shards, family + ":" + _js_str(i), [fp, _js_list_at(tables, i)])
+        _js_first11 = True
+        while True:
+            if _js_first11:
+                _js_first11 = False
+            else:
                 i = _js_num(i + 1)
-        _js_put(data, "shards", prints)
-        _js_put(data, "fingerprint", _fingerprint(prints))
+            if not (i < SHARDS):
+                break
+            fp = _js_get(_js_get(_js_get(d, "shards"), family), i)
+            if before is not None and (_js_h11 == fp if type(_js_h11 := _js_get(_js_get(before, family), i)) is type(fp) is str else _js_strict_eq(_js_h11, fp)):
+                continue
+            held = _js_m_get(self.shards, _js_str(family) + ":" + _js_str(i))
+            if held is _JS_UNDEFINED or (_js_h12 != fp if type(_js_h12 := _js_get(held, 0)) is type(fp) is str else not _js_strict_eq(_js_h12, fp)):
+                raise _JsError("hotindex: shard " + _js_str(family) + "-" + _js_str(i) + " not held")
+            texts.append([self.shardPath(family, i), dump_index({"fingerprint": fp, "terms": _js_get(held, 1)})])
+    texts.append([self.path, head_text({"version": _js_get(d, "version"), "kind": _js_get(d, "kind"), "source": _js_get(d, "source"), "dir_mtime_ns": _js_get(d, "dir_mtime_ns"), "full_at": _js_get(d, "full_at"), "files": _js_get(d, "files"), "docs": _js_get(d, "docs"), "skipped": _js_get(d, "skipped"), "loose": _js_get(d, "loose"), "df": _js_coalesce(_js_get(d, "dfRaw"), lambda: _js_get(d, "df")), "avgdl": _js_get(d, "avgdl"), "lens": _js_coalesce(_js_get(d, "lensRaw"), lambda: _js_get(d, "lens")), "lens_total": _js_get(d, "lensTotal"), "boost": _js_get(d, "boost"), "cols": _js_get(d, "cols"), "fingerprint": _js_get(d, "fingerprint"), "shards": _js_get(d, "shards")})])
+    _js_caught12 = None
+    try:
+        mkdir_sync(path_dirname(self.path), {"recursive": True})
+        def _js_fn13(*_):
+            def _js_fn14(b=_JS_UNDEFINED, *_):
+                return self.writesName(b)
+            remove_stale_temps(path_dirname(self.path), _js_fn14)
+            for p, text in _js_rows(texts, 2, (0, 1)):
+                tmp = path_join(path_dirname(p), _js_str(path_basename(p)) + "." + _js_str(process_pid()) + ".tmp")
+                _js_caught15 = None
+                try:
+                    write_file_sync(tmp, text, "utf8")
+                    rename_sync(tmp, p)
+                except Exception as _js_error15:
+                    _js_caught15 = _js_catch(_js_error15)
+                if _js_caught15 is not None:
+                    _js_caught16 = None
+                    try:
+                        rm_sync(tmp, {"force": True})
+                    except Exception as _js_error16:
+                        _js_caught16 = _js_catch(_js_error16)
+                    if _js_caught16 is not None:
+                        pass
+                    raise _js_caught15
+            return _JS_UNDEFINED
+        exclusive(self.path, _js_fn13)
+    except Exception as _js_error12:
+        _js_caught12 = _js_catch(_js_error12)
+    if _js_caught12 is not None:
+        if isinstance(_js_get(_js_caught12, "code"), str):
+            self.persisted = False
+            self.headStat = None
+            return _JS_UNDEFINED
+        raise _js_caught12
+    self.persisted = True
+    self.headStat = self.statHead()
+    return _JS_UNDEFINED
+
+
+def _js_method_HotIndex_patch(self, data, stats, force=_JS_UNDEFINED):
+    if force is _JS_UNDEFINED:
+        force = False
+    files = _js_get(data, "files")
+    docs = _js_get(data, "docs")
+    skipped = _js_get(data, "skipped")
+    loose = _JsSet(_js_get(data, "loose"))
+    order = _JsMap(_js_m_map(stats, lambda _js_arg20, i, *_: (lambda n: [n, i])(*_js_destructure(_js_arg20, 1))))
+    now_files = _JsMap(_js_m_map(stats, lambda _js_arg21, *_: (lambda n, m, s: [n, [m, s]])(*_js_destructure(_js_arg21, 3))))
+    redo = _JsSet()
+    for name, now in _js_rows(now_files, 2, (0, 1)):
+        was = (files._entries.get(name, _JS_UNDEFINED) if type(files) is _JsMap and type(name) is str else _js_m_get(files, name))
+        if was is _JS_UNDEFINED or not _js_strict_eq(_js_get(was, 0), _js_get(now, 0)) or not _js_strict_eq(_js_get(was, 1), _js_get(now, 1)):
+            _js_m_add(redo, name)
+    gone = _JsSet([n for n in [*_js_m_keys(files)] if not _js_m_has(now_files, n)])
+    if _js_strict_eq(_js_size(redo), 0) and _js_strict_eq(_js_size(gone), 0) and not _js_truthy(force):
+        return False
+    derived_from = _derived_key(docs)
+    for name in _js_m_keys(now_files):
+        if _js_m_startsWith(_js_coalesce_value((skipped._entries.get(name, _JS_UNDEFINED) if type(skipped) is _JsMap and type(name) is str else _js_m_get(skipped, name)), ""), DUPLICATE):
+            _js_m_add(redo, name)
+    for name, doc in _js_rows(docs, 2, (0, 1)):
+        if _js_m_has(redo, _js_get(doc, "file")) or _js_m_has(gone, _js_get(doc, "file")):
+            _js_m_delete(docs, name)
+    for file in [*redo, *gone]:
+        _js_m_delete(skipped, file)
+        _js_m_delete(loose, file)
+    for file in _js_sort_keyed([*redo], lambda a, *_: _js_m_get(order, a), False, lambda a, b, *_: _js_num(_js_num(_js_m_get(order, a)) - _js_num(_js_m_get(order, b)))):
+        mtime_ns, size = _js_destructure((now_files._entries.get(file, _JS_UNDEFINED) if type(now_files) is _JsMap and type(file) is str else _js_m_get(now_files, file)), 2)
+        parsed = self.parse(py_join(self.dir, file))
+        if isinstance(parsed, str):
+            _js_m_set(skipped, file, parsed)
+            continue
+        if _js_truthy(_js_get(parsed, "loose")):
+            _js_m_add(loose, file)
+        doc = _stamped(parsed, mtime_ns, size)
+        held = _js_m_get(docs, _js_get(doc, "name"))
+        if held is _JS_UNDEFINED:
+            _js_m_set(docs, _js_get(doc, "name"), doc)
+        elif _js_lt((order._entries.get(file, _JS_UNDEFINED) if type(order) is _JsMap and type(file) is str else _js_m_get(order, file)), _js_m_get(order, _js_get(held, "file"))):
+            _js_m_set(docs, _js_get(doc, "name"), doc)
+            _js_m_set(skipped, _js_get(held, "file"), DUPLICATE + " '" + _js_str(_js_get(doc, "name")) + "': " + _js_str(file) + " holds it")
+        else:
+            _js_m_set(skipped, file, DUPLICATE + " '" + _js_str(_js_get(doc, "name")) + "': " + _js_str(_js_get(held, "file")) + " holds it")
+    _js_put(data, "files", now_files)
+    _js_put(data, "loose", _js_m_sort([*loose], cmp_codepoint))
+    if _js_truthy(_js_or(force, lambda: not _js_strict_eq(_derived_key(docs), derived_from))):
+        self.derive(data)
+    _js_put(data, "cols", _columns(docs, data))
+    _js_put(data, "boost", _boost_ints())
+    return True
+
+
+def _js_method_HotIndex_derive(self, data):
+    rows = []
+    words = []
+    i = 0
+    while i < SHARDS:
+        rows.append(_JsMap())
+        words.append(_JsMap())
+        i = _js_num(i + 1)
+    df = _JsMap()
+    at = _JsMap()
+    def shard_at(t):
+        i = _js_m_get(at, t)
+        if i is _JS_UNDEFINED:
+            i = shard_of(t)
+            _js_m_set(at, t, i)
+        return i
+    total = 0
+    lens = _JsMap()
+    lens_total = [0, 0, 0]
+    names = _js_m_sort([*_js_m_keys(_js_get(data, "docs"))], cmp_codepoint)
+    def _js_fn24(name=_JS_UNDEFINED, doc_id=_JS_UNDEFINED, *_):
+        nonlocal total
+        d = _js_m_get(_js_get(data, "docs"), name)
+        text = {"name": _js_get(d, "name"), "description": _js_get(d, "description"), "keywords": _js_m_join(_js_get(d, "keywords"), " ")}
+        tfs = _JsMap()
+        flens = [0, 0, 0]
+        _js_m_set(lens, name, flens)
+        fi = 0
+        while _js_lt(fi, _js_len(FIELD_BOOST)):
+            field = _js_get(_js_get(FIELD_BOOST, fi), 0)
+            boost = _js_get(_js_get(FIELD_BOOST, fi), 1)
+            toks = tokenize_v2(_js_get(text, field))
+            total = _js_add(total, _js_mul(boost, _js_len(toks)))
+            _js_put(flens, fi, _js_len(toks))
+            _js_put(lens_total, fi, _js_add(_js_list_at(lens_total, fi), _js_len(toks)))
+            for t in toks:
+                c = (tfs._entries.get(t, _JS_UNDEFINED) if type(tfs) is _JsMap and type(t) is str else _js_m_get(tfs, t))
+                if c is _JS_UNDEFINED:
+                    c = [0, 0, 0]
+                    _js_m_set(tfs, t, c)
+                _js_put(c, fi, (_js_h13 + 1 if type(_js_h13 := _js_get(c, fi)) is int and -4503599627370496 <= _js_h13 <= 4503599627370496 else _js_add(_js_h13, 1)))
+            fi = _js_num(fi + 1)
+        for term, counts in _js_rows(tfs, 2, (0, 1)):
+            table = _js_list_at(rows, shard_at(term))
+            list_ = (table._entries.get(term, _JS_UNDEFINED) if type(table) is _JsMap and type(term) is str else _js_m_get(table, term))
+            if list_ is _JS_UNDEFINED:
+                list_ = []
+                _js_m_set(table, term, list_)
+            _js_m_push(list_, [doc_id, _js_get(counts, 0), _js_get(counts, 1), _js_get(counts, 2)])
+            _js_m_set(df, term, (_js_h14 + 1 if type(_js_h14 := _js_coalesce_value((df._entries.get(term, _JS_UNDEFINED) if type(df) is _JsMap and type(term) is str else _js_m_get(df, term)), 0)) is int and -4503599627370496 <= _js_h14 <= 4503599627370496 else _js_add(_js_h14, 1)))
+        for w in tokens(_js_str(_js_get(d, "name")) + " " + _js_str(_js_get(d, "description"))):
+            table = _js_list_at(words, shard_at(w))
+            list_ = (table._entries.get(w, _JS_UNDEFINED) if type(table) is _JsMap and type(w) is str else _js_m_get(table, w))
+            if list_ is _JS_UNDEFINED:
+                list_ = []
+                _js_m_set(table, w, list_)
+            _js_m_push(list_, name)
         return _JS_UNDEFINED
+    _js_m_forEach(names, _js_fn24)
+    postings = _js_m_map(rows, lambda table, *_: _JsMap(_js_m_map([*table], lambda _js_arg25, *_: (lambda t, r: [t, encode_segments(r)])(*_js_destructure(_js_arg25, 2)))))
+    _js_put(data, "df", df)
+    _js_put(data, "dfRaw", None)
+    _js_put(data, "lens", lens)
+    _js_put(data, "lensRaw", None)
+    _js_put(data, "lensTotal", lens_total)
+    _js_put(data, "avgdl", py_round9(_js_div(total, len(names))) if _js_truthy(len(names)) else 0)
+    prints = {"postings": [], "words": []}
+    for family, tables in [["postings", postings], ["words", words]]:
+        i = 0
+        while i < len(tables):
+            fp = _fingerprint(_js_list_at(tables, i))
+            _js_m_push(_js_get(prints, family), fp)
+            _js_m_set(self.shards, family + ":" + _js_str(i), [fp, _js_list_at(tables, i)])
+            i = _js_num(i + 1)
+    _js_put(data, "shards", prints)
+    _js_put(data, "fingerprint", _fingerprint(prints))
+    return _JS_UNDEFINED
 
 
 def _columns(docs, data):

@@ -5,6 +5,7 @@
 
 from ._ts2py_runtime import (  # noqa: F401
     _JS_UNDEFINED,
+    _ClassVar,
     _js_add,
     _js_array,
     _js_bigint,
@@ -40,59 +41,62 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_strict_eq,
     _js_truthy,
     _js_typeof,
+    _JsAny,
     _JsBigInt,
+    _mypyc_attr,
 )
 from ._ts2py_adapters import assets_root, BantamError, cmp_codepoint, exists_sync, path_join, process_env, py_repr, read_file_sync
 
 __all__ = ["CURRENCY", "MAX_SAFE_INT", "MICROS_PER_UNIT", "PRICES_ENV", "PRICE_SCHEMA_VERSION", "PriceTableError", "RATE_UNIT", "TOKENS_PER_RATE_UNIT", "TOKEN_CLASSES", "decode_price_json", "format_micros", "load_price_table", "price_table_path", "price_tokens", "validate_price_table"]
 
 
-PRICES_ENV = "BANTAMKIT_PRICES"
+PRICES_ENV: _JsAny = "BANTAMKIT_PRICES"
 
 
-PRICE_SCHEMA_VERSION = 1
+PRICE_SCHEMA_VERSION: _JsAny = 1
 
 
-CURRENCY = "USD"
+CURRENCY: _JsAny = "USD"
 
 
-RATE_UNIT = "micro_usd_per_million_tokens"
+RATE_UNIT: _JsAny = "micro_usd_per_million_tokens"
 
 
-TOKENS_PER_RATE_UNIT = 1000000
+TOKENS_PER_RATE_UNIT: _JsAny = 1000000
 
 
-MICROS_PER_UNIT = 1000000
+MICROS_PER_UNIT: _JsAny = 1000000
 
 
-_MICROS_PER_UNIT_BIG = _JsBigInt(1000000)
+_MICROS_PER_UNIT_BIG: _JsAny = _JsBigInt(1000000)
 
 
-_HALF_BIG = _JsBigInt(500000)
+_HALF_BIG: _JsAny = _JsBigInt(500000)
 
 
-MAX_SAFE_INT = _js_num(9007199254740992 - 1)
+MAX_SAFE_INT: _JsAny = _js_num(9007199254740992 - 1)
 
 
-_MAX_SAFE_INT_BIG = _js_bigint(9007199254740991)
+_MAX_SAFE_INT_BIG: _JsAny = _js_bigint(9007199254740991)
 
 
-TOKEN_CLASSES = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"]
+TOKEN_CLASSES: _JsAny = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"]
 
 
-_CLASSES = _js_list_join(TOKEN_CLASSES, ", ")
+_CLASSES: _JsAny = _js_list_join(TOKEN_CLASSES, ", ")
 
 
-_TABLE_KEYS = ["schema_version", "currency", "unit", "note", "rates"]
+_TABLE_KEYS: _JsAny = ["schema_version", "currency", "unit", "note", "rates"]
 
 
-_RATE_META = ["recorded", "source"]
+_RATE_META: _JsAny = ["recorded", "source"]
 
 
+@_mypyc_attr(native_class=False)
 class PriceTableError(BantamError):
-    _js_name = "PriceTableError"
-    _js_own = frozenset()
-    _js_own_methods = frozenset()
+    _js_name: _ClassVar[str] = "PriceTableError"
+    _js_own: _ClassVar[frozenset[str]] = frozenset()
+    _js_own_methods: _ClassVar[frozenset[str]] = frozenset()
 
 
 def _is_count(value):

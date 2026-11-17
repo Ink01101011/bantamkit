@@ -31,6 +31,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_str_len,
     _js_strict_eq,
     _js_truthy,
+    _JsAny,
     _JsMap,
 )
 from ._ts2py_adapters import has_bantamkit_hooks, native_memory_dir, parse_json, path_join, process_cwd, read_file_sync, readdir_sync, stat_sync, TextDecoder
@@ -248,7 +249,7 @@ def touch_line(home):
 _touch_line__typed = touch_line
 
 
-_STRICT = TextDecoder("utf-8", {"fatal": True, "ignoreBOM": True})
+_STRICT: _JsAny = TextDecoder("utf-8", {"fatal": True, "ignoreBOM": True})
 
 
 def retention_line(home):

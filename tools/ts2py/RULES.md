@@ -1055,3 +1055,51 @@ loop compiles. Mutations, each red (a scratch copy of `tools/ts2py`): the addend
 2^53; the second addend's type test dropped; the first addend's bound dropped; the `===` fast arm
 for any same type; `Map.get` without the key type test; `Map.get` on any receiver with
 `_entries`; the comprehension iterable's `no_walrus` dropped (SyntaxError).
+
+## J90-P7 rules: generated Python that mypyc compiles as it stands (#316 G4)
+
+The runtime and every generated module compile with mypyc (mypy 2.4.1) with no step between ts2py
+and `mypyc`: no file is rewritten, moved or annotated by hand. The adapter module is never
+compiled. Interpreted, each form below is the code ts2py wrote before (`tests/j90p7.rs` holds the
+probe to Node's answer both ways); compiled, each one is what keeps the answer the same.
+
+- **Classes are non-native.** Every class ts2py writes is `@_mypyc_attr(native_class=False)`: its
+  base (`_JsObject`, an Error class) is a Python class with a `__dict__` that `_js_object_get` reads
+  and a `__setattr__` that `Object.freeze` relies on. `_js_name`, `_js_own` and `_js_own_methods`
+  are `_ClassVar`; a getter is `-> object` (mypyc compiles no property without one). In the runtime,
+  `_JsObject`, the Error classes and `_JsMatchArray` (a `list` subclass) are non-native, `_JsMap`
+  allows interpreted subclasses (`_JsReadMap`), the rest are native. `_mypyc_attr` is
+  `mypy_extensions.mypyc_attr` where that is installed and an identity stand-in where not.
+- **A method holding a closure is a module function.** mypyc 2.4.1 cannot compile a method of a
+  non-native class whose body holds a `def` or `lambda` that captures a variable (an internal
+  error, mypyc/mypyc#1205, fixed by python/mypy#22237 after the 2.4.1 release). Such a method is
+  written as `_js_method_<Class>_<name>(self, ...)` after the class, with the method's parameters
+  and body, and the method forwards to it (`lower.rs`, `hoist_closure_methods`). ts2py emits no
+  `super()`, and refuses source names starting with `_js_`.
+- **`instanceof` is `_js_instanceof(x, C)`.** Compiled, `isinstance(x, C)` of a non-native class C
+  tests the exact type (mypyc takes C for a native class and counts no subclass), so an interpreted
+  subclass (`_Core(MemoryStore)`, `_Opaque(PyScalar)`, every adapter class under `_JsObject`) was
+  not an instance. The helper's `isinstance` is the builtin. The runtime's own checks of its
+  non-native classes read `type` variables (`_JS_OBJECT_CLASS`, ...) for the same reason. The
+  helper is `-> bool`: compiled, an unannotated function returning the builtin's answer gives the
+  int 1 or 0 (mypy 2.4.1), which `JSON.stringify` writes as `1`; `tests/j90p7.rs` was red on it.
+- **A module-level variable is `_JsAny`** (a ts2py `_JS_` constant, a hoisted regex, is `_Final`).
+  mypy types an unannotated one by its first value and mypyc then refuses any other type, which JS
+  allows: a shim forwarding `GATE_FLOOR = 1.5` over `1`, or a module `let` that goes from `3` to
+  `1.5`. A typed body's second name (`_f__typed = f`) is left as it is.
+- **A name a shim rebinds is read at call time** (`lib.rs`, `REBOUND`, one row per name with its
+  reason). mypyc binds a module's own functions and the functions and classes it imports; a row's
+  function is decorated `@_js_late` (the identity; mypyc calls a decorated function through the
+  module's globals) and a row's import is bound to an `_JsAny` variable of the same name.
+- **The runtime's constants are `_Final`**, and no lone surrogate is spelled as a literal (mypyc
+  writes literals as UTF-8): `_JS_LEAD_MIN` and its three siblings are `chr()` values.
+- **The adapters declare `BantamError` to a type checker** (`if _typing.TYPE_CHECKING:`): it is
+  built by the module's `__getattr__`, a base mypy cannot see is `Any`, and mypyc builds a class on
+  an `Any` base on `object` alone, silently (a compiled `MemoryValidationError` refused its message).
+- `fromJs` (`_lifted`) moved from the adapters to the runtime as `_js_lifted`, unchanged, so a
+  compiled build compiles it.
+
+Not taken, measured (docs/porting.md, *mypyc*): compiling the adapter module (it needs a concrete
+`BantamError`, a `cmp_codepoint` without a function attribute and a native `_JsReadMap`; built that
+way it segfaulted on the first index build); native generated classes (they would need
+`_js_object_get` and `Object.freeze` rewritten off `__dict__` and `__setattr__`).

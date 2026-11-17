@@ -4457,7 +4457,8 @@ impl<'s> Lowerer<'s> {
                 let value = self.expr(&b.left);
                 match self.class_ref(&b.right) {
                     Some(class) => {
-                        Py::boolean(format!("isinstance({}, {class})", value.code), ATOM)
+                        // J90-P7: through `_js_instanceof`, which mypyc compiles as the builtin.
+                        Py::boolean(format!("_js_instanceof({}, {class})", value.code), ATOM)
                     }
                     None => {
                         self.refuse(b.span, "instanceof anything but a compiled or Error class")
@@ -6421,6 +6422,13 @@ impl<'s> Lowerer<'s> {
     /// initialised in declaration order at the start of `__init__` (after the base's, as JS does
     /// for a derived class), then the constructor body runs.
     fn class_decl(&mut self, c: &Class<'_>, out: &mut Vec<String>) {
+        let start = out.len();
+        self.class_decl_body(c, out);
+        let lines = out.split_off(start);
+        out.extend(hoist_closure_methods(lines));
+    }
+
+    fn class_decl_body(&mut self, c: &Class<'_>, out: &mut Vec<String>) {
         let Some(id) = &c.id else {
             self.refuse(c.span, "anonymous class");
             return;
@@ -6555,10 +6563,23 @@ impl<'s> Lowerer<'s> {
                 format!("frozenset({{{}}})", items.join(", "))
             }
         };
+        // J90-P7: every class ts2py writes is an ordinary Python class under mypyc too (its base,
+        // `_JsObject` or an Error, is one, and `_js_object_get` reads its `__dict__`); the three
+        // reflective lists are class attributes, so they say so.
+        out.push("@_mypyc_attr(native_class=False)".to_string());
         out.push(format!("class {name}({base}):"));
-        out.push(format!("    _js_name = {}", py_str(id.name.as_str())));
-        out.push(format!("    _js_own = {}", set(&own)));
-        out.push(format!("    _js_own_methods = {}", set(&own_methods)));
+        out.push(format!(
+            "    _js_name: _ClassVar[str] = {}",
+            py_str(id.name.as_str())
+        ));
+        out.push(format!(
+            "    _js_own: _ClassVar[frozenset[str]] = {}",
+            set(&own)
+        ));
+        out.push(format!(
+            "    _js_own_methods: _ClassVar[frozenset[str]] = {}",
+            set(&own_methods)
+        ));
 
         // __init__: base, then fields, then the constructor body.
         if !fields.is_empty() || constructor.is_some() || !is_error {
@@ -6636,7 +6657,13 @@ impl<'s> Lowerer<'s> {
             }
             let mut signature = vec!["self".to_string()];
             signature.extend(names.iter().map(|(_, py)| py.clone()));
-            out.push(format!("    def {key}({}):", signature.join(", ")));
+            // J90-P7: mypyc compiles a property only with a return annotation.
+            let returns = if m.kind == MethodDefinitionKind::Get {
+                " -> object"
+            } else {
+                ""
+            };
+            out.push(format!("    def {key}({}){returns}:", signature.join(", ")));
             self.param_defaults(&f.params, 2, out);
             self.hoist_params(&f.params, 2, out);
             self.block(statements, 2, out);
@@ -8281,6 +8308,152 @@ fn is_str_literal(code: &str) -> bool {
         }
     }
     !escaped
+}
+
+/// J90-P7 (#316 G4): mypyc 2.4.1 cannot compile a method of a non-native class whose body holds a
+/// nested function or lambda that captures a variable (an internal error, mypyc/mypyc#1205; fixed
+/// by python/mypy#22237, not in a release). Every class ts2py writes is non-native under mypyc, so a
+/// method holding a `def` or a `lambda` is written as a module-level function
+/// `_js_method_<Class>_<name>` right after the class, and the method forwards to it with the same
+/// parameters: the same body, the same `self`, run in the same order. ts2py emits no `super()`
+/// (whose `__class__` cell would not survive the move), and refuses a TypeScript name with a
+/// `_js_` prefix, so the new name cannot meet one from the source. A class written inside a
+/// function (indented) is left as it is.
+fn hoist_closure_methods(lines: Vec<String>) -> Vec<String> {
+    let Some(at) = lines.iter().position(|l| l.starts_with("class ")) else {
+        return lines;
+    };
+    let class = lines[at]["class ".len()..]
+        .split(['(', ':'])
+        .next()
+        .unwrap_or("")
+        .to_string();
+    // Split the class body into member chunks: each starts at a `    def` (with the decorator line
+    // before it, when there is one).
+    let mut head: Vec<String> = lines[..=at].to_vec();
+    let mut chunks: Vec<Vec<String>> = Vec::new();
+    let mut i = at + 1;
+    while i < lines.len() {
+        let line = &lines[i];
+        let starts = line.starts_with("    def ")
+            || (line.starts_with("    @")
+                && lines.get(i + 1).is_some_and(|n| n.starts_with("    def ")));
+        if starts {
+            let mut chunk = vec![line.clone()];
+            if line.starts_with("    @") {
+                i += 1;
+                chunk.push(lines[i].clone());
+            }
+            i += 1;
+            while i < lines.len() && (lines[i].is_empty() || lines[i].starts_with("        ")) {
+                chunk.push(lines[i].clone());
+                i += 1;
+            }
+            chunks.push(chunk);
+        } else if chunks.is_empty() {
+            head.push(line.clone());
+            i += 1;
+        } else {
+            // Anything else after the first member: keep the class as written.
+            return lines;
+        }
+    }
+    let nested = |chunk: &[String]| {
+        chunk
+            .iter()
+            .skip_while(|l| !l.starts_with("    def "))
+            .skip(1)
+            .any(|l| {
+                let t = l.trim_start();
+                t.starts_with("def ") || has_word(l, "lambda")
+            })
+    };
+    let mut body: Vec<String> = head;
+    let mut after: Vec<String> = Vec::new();
+    for chunk in chunks {
+        if !nested(&chunk) {
+            body.extend(chunk);
+            continue;
+        }
+        let d = chunk
+            .iter()
+            .position(|l| l.starts_with("    def "))
+            .expect("a def");
+        let header = &chunk[d];
+        let key = header["    def ".len()..]
+            .split('(')
+            .next()
+            .unwrap_or("")
+            .to_string();
+        let open = header.find('(').expect("(");
+        let close = header.rfind(')').expect(")");
+        let params = &header[open + 1..close];
+        let tail = &header[close..];
+        let fname = format!("_js_method_{class}_{key}");
+        let forward: Vec<String> = split_params(params)
+            .into_iter()
+            .filter(|p| *p != "*_")
+            .map(|p| p.split('=').next().unwrap_or("").trim().to_string())
+            .collect();
+        // The method: its decorator and header as written, one forwarding line.
+        body.extend(chunk[..=d].iter().cloned());
+        body.push(format!("        return {fname}({})", forward.join(", ")));
+        // The function: the same header under the new name, the body one level out.
+        let trailing: Vec<&String> = chunk[d + 1..].iter().collect();
+        let blank = trailing.iter().rev().take_while(|l| l.is_empty()).count();
+        after.push(String::new());
+        after.push(String::new());
+        let returns = tail.trim_start_matches(')').trim_end_matches(':');
+        after.push(format!("def {fname}({params}){returns}:"));
+        for l in &trailing[..trailing.len() - blank] {
+            after.push(if l.is_empty() {
+                String::new()
+            } else {
+                l[4..].to_string()
+            });
+        }
+        for _ in 0..blank {
+            body.push(String::new());
+        }
+    }
+    // Keep the blank lines that separated members in the class as the source had them.
+    let mut out = body;
+    while out.last().is_some_and(String::is_empty) {
+        out.pop();
+    }
+    out.extend(after);
+    out
+}
+
+/// A parameter list split at its top-level commas.
+fn split_params(params: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut from = 0;
+    for (i, c) in params.char_indices() {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(params[from..i].trim());
+                from = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if !params[from..].trim().is_empty() {
+        out.push(params[from..].trim());
+    }
+    out
+}
+
+/// `word` appears in `line` as a whole identifier.
+fn has_word(line: &str, word: &str) -> bool {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    line.match_indices(word).any(|(at, _)| {
+        !line[..at].chars().next_back().is_some_and(ident)
+            && !line[at + word.len()..].chars().next().is_some_and(ident)
+    })
 }
 
 #[cfg(test)]

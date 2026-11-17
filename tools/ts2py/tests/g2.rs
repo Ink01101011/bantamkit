@@ -89,7 +89,7 @@ fn g2_constructs_answer_like_node() {
     let modules = compile_package(&[("j88_g2_probe.ts", source)]);
     let code = &modules[0].code;
     // The lowerings themselves.
-    assert!(code.contains("SHIFTED = 1048576\n"), "{code}");
+    assert!(code.contains("SHIFTED: _JsAny = 1048576\n"), "{code}");
     assert!(code.contains("_js_json_stringify_with(doc, None, 2)"));
     assert!(code.contains("_js_date_to_iso(ms)"));
     assert!(code.contains("    finally:\n"));
@@ -248,8 +248,8 @@ fn g2_modules_compile_together() {
     assert!(code("eventlog").contains("from .logsegment import LogSegment\n"));
     assert!(code("tokenledger").contains("from .pricing import "));
     assert!(code("logsegment").contains("exclusive(self.path, _js_fn"));
-    assert!(
-        code("logsegment").contains("from .lock import LOCK_POLL_MS, LOCK_STALE_MS, exclusive\n")
-    );
+    assert!(code("logsegment").contains(
+        "from .lock import LOCK_POLL_MS, LOCK_STALE_MS, exclusive as _js_bound_exclusive\n"
+    ));
     assert!(code("tokenledger").contains("class TokenLedgerError(BantamError):\n"));
 }
