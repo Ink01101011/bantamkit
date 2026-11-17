@@ -623,8 +623,10 @@ def test_the_source_writes_nothing_and_reaches_no_network():
                "ssl", "requests", "httpx", "subprocess"}
     assert not (imported & network), imported & network
     # `sys` since job66/#171: `update_command()` reads `sys.executable`. Not a network module.
-    assert imported == {"__future__", "json", "re", "sys", "dataclasses", "pathlib", "typing",
-                        "bantamkit.selfupdate"}
+    # `bantamkit.stdlib312` since J90-P8F: `json.loads` with CPython 3.12's error sentence on every
+    # interpreter. Standard library only (`json`, `os`, `pathlib`, `re`, `stat`, `sys`, `errno`).
+    assert imported == {"__future__", "re", "sys", "dataclasses", "pathlib", "typing",
+                        "bantamkit.selfupdate", "bantamkit.stdlib312"}
 
     called: set[str] = set()
     for node in ast.walk(tree):

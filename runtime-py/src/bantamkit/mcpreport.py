@@ -69,12 +69,13 @@ THE OUTPUT SHAPE IS A CROSS-RUNTIME CONTRACT, specified in `docs/mcpreport.md`.
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from . import stdlib312 as _stdlib312
 
 #: Overrides the platform default for the host-log root. The default is only KNOWN on
 #: macOS (see `default_host_log_root`), so this is what makes the analyst usable at all
@@ -185,7 +186,7 @@ def parse_host_line(line: str) -> HostRecord | None:
     if not text:
         return None
     try:
-        record = json.loads(text)
+        record = _stdlib312.json_loads(text)
     except ValueError:
         return None
     if not isinstance(record, dict):
@@ -343,10 +344,15 @@ def host_log_files(root: Path) -> list[Path]:
         return found
     for slug in slugs:
         ours = slug / HOST_LOG_DIRNAME
-        if not ours.is_dir():
+        if not _stdlib312.path_is_dir(ours):
             continue
         try:
-            found.extend(sorted(p for p in ours.iterdir() if p.suffix == ".jsonl" and p.is_file()))
+            found.extend(
+                sorted(
+                    p for p in ours.iterdir()
+                    if p.suffix == ".jsonl" and _stdlib312.path_is_file(p)
+                )
+            )
         except OSError:
             continue
     return found
@@ -358,7 +364,7 @@ def scan_host_log(root: Path | None, platform: str | None = None) -> HostScan:
     plat = platform or sys.platform
     if root is None:
         return HostScan(root=None, missing="unknown-platform", platform=plat)
-    if not root.is_dir():
+    if not _stdlib312.path_is_dir(root):
         return HostScan(root=root, missing="not-found", platform=plat)
     files = host_log_files(root)
     dirs = len({path.parent for path in files})
@@ -432,7 +438,7 @@ def parse_event_line(line: str) -> Event | None:
     if not text:
         return None
     try:
-        record = json.loads(text)
+        record = _stdlib312.json_loads(text)
     except ValueError:
         return None
     if not isinstance(record, dict):
@@ -455,7 +461,7 @@ def scan_event_log(path: Path | None) -> EventScan:
     if path is None:
         return EventScan(path=None, missing="off")
     parts = [path.with_name(path.name + ".1"), path]
-    if not any(p.is_file() for p in parts):
+    if not any(_stdlib312.path_is_file(p) for p in parts):
         return EventScan(path=path, missing="not-found")
     events: list[Event] = []
     total = unreadable = 0

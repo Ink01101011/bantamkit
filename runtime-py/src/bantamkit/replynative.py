@@ -7,7 +7,6 @@ Spec: docs/superpowers/specs/2026-11-07-reply-native-design.md.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from collections.abc import Collection, Mapping
@@ -15,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bantamkit.assets import AssetNotFound, load_lang
+
+from . import stdlib312 as _stdlib312
 
 NATIVE_ENV = "BANTAMKIT_REPLY_NATIVE"
 LANG_ENV = "BANTAMKIT_REPLY_LANG"
@@ -153,7 +154,7 @@ def status_line(home: Path | str) -> str:
     try:
         if not os.path.lexists(path):
             return "reply-native: off"
-        rec = json.loads(path.read_text(encoding="utf-8"))
+        rec = _stdlib312.json_loads(path.read_text(encoding="utf-8"))
         head = f"reply-native: {rec['mode']}" + (
             f" {rec['lang']}" if rec["mode"] == "fixed" else ""
         )

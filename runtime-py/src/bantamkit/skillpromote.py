@@ -80,6 +80,8 @@ from bantamkit.skillfile import (
 from bantamkit.skillhost import HOST_CLAUDE_CODE, Gathered, select_adapter
 from bantamkit.skillinstall import _int, _iso, _ms, _remove_dir, auto_enabled
 
+from . import stdlib312 as _stdlib312
+
 PROMOTE_USES = 3
 PROMOTE_DAYS = 30
 BUDGET_ENV = "BANTAMKIT_SKILL_BUDGET"
@@ -137,9 +139,9 @@ def _files(root: Path) -> dict[str, bytes]:
             r = f"{rel}{entry}"
             if p.is_symlink():
                 continue
-            if p.is_dir():
+            if _stdlib312.path_is_dir(p):
                 walk(p, r + "/")
-            elif p.is_file():
+            elif _stdlib312.path_is_file(p):
                 out[r] = p.read_bytes()
 
     walk(root, "")
@@ -174,7 +176,7 @@ def _ours(link: Path, source: Path, entry: Mapping[str, Any]) -> bool:
         return _real(link) == _real(source)
     rec = _record(entry)
     return (
-        link.is_dir()
+        _stdlib312.path_is_dir(link)
         and rec is not None
         and rec.get("mode") == MODE_COPY
         and rec.get("link") == str(link)
@@ -195,9 +197,9 @@ def _roots(gathered: Gathered, home: Path, cwd: str | None) -> list[tuple[str, s
     user = home / ".claude" / "skills"
     if cwd is not None:
         project = Path(cwd) / ".claude" / "skills"
-        if _real(project) != _real(user) and project.is_dir():
+        if _real(project) != _real(user) and _stdlib312.path_is_dir(project):
             roots.append(("project", str(project)))
-    if user.is_dir():
+    if _stdlib312.path_is_dir(user):
         roots.append(("user", str(user)))
     return roots
 
@@ -214,7 +216,11 @@ def catalogue_bytes(
             continue
         for entry in sorted(os.listdir(root)):
             p = Path(root, entry)
-            if p.is_symlink() and p.is_dir() and (p / SKILL_FILE).is_file():
+            if (
+                p.is_symlink()
+                and _stdlib312.path_is_dir(p)
+                and _stdlib312.path_is_file(p / SKILL_FILE)
+            ):
                 links.append((f"{label}-link-{entry}", str(p)))
     every = roots + links
     if candidate is not None:
@@ -246,7 +252,7 @@ def promote(
     if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
         return PromoteResult(False, None, f"no skill named {name!r} is installed")
     source = Path(entry["path"])
-    if not (source / SKILL_FILE).is_file():
+    if not _stdlib312.path_is_file(source / SKILL_FILE):
         return PromoteResult(False, None, f"skill {name} has no {SKILL_FILE} at {source}")
     if gathered is None:
         gathered = select_adapter(home).gather(home, cwd, now_ms)
@@ -324,13 +330,13 @@ def refresh_copy(name: str, home: Path | str) -> str | None:
     if rec is None or rec.get("mode") != MODE_COPY or not isinstance(rec.get("link"), str):
         return None
     source = Path(entry["path"])
-    if not (source / SKILL_FILE).is_file():
+    if not _stdlib312.path_is_file(source / SKILL_FILE):
         return None
     link_s = rec["link"]
     link = Path(link_s)
     files = _files(source)
     want = _files_hash(files)
-    have = tree_hash(link) if link.is_dir() and not os.path.islink(link) else None
+    have = tree_hash(link) if _stdlib312.path_is_dir(link) and not os.path.islink(link) else None
     if have is None or have not in (rec.get("tree_sha256"), want):
         return f"left the promoted copy at {link} as it is: it was changed after promotion"
     if have != want:
@@ -371,7 +377,7 @@ def demote(name: str, home: Path | str) -> str:
     elif os.path.lexists(link):
         if (
             rec.get("mode") != MODE_COPY
-            or not link.is_dir()
+            or not _stdlib312.path_is_dir(link)
             or tree_hash(link) != rec.get("tree_sha256")
         ):
             raise PromoteError(changed)

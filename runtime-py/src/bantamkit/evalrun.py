@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import io
 import json
@@ -54,6 +53,9 @@ from bantamkit.structured import (
     structured,
 )
 
+from . import stdlib312 as _stdlib312
+from .stdlib312 import argparse
+
 CONFIGS = ["bare", "structured", "critique", "grounded", "graph", "memory", "lean", "full"]
 
 
@@ -62,7 +64,7 @@ CONFIGS = ["bare", "structured", "critique", "grounded", "graph", "memory", "lea
 
 def _catalog() -> dict:
     path = assets_root() / "evals" / "fixtures" / "catalog.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _stdlib312.json_loads(path.read_text(encoding="utf-8"))
 
 
 def _lookup(field: str):

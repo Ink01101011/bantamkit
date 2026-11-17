@@ -42,6 +42,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from conftest import checkout_only
 
 pytest.importorskip("mcp")
 
@@ -385,6 +386,15 @@ def test_compiled_counts_an_extension_module_the_import_system_would_load(tmp_pa
     ]
 
 
+_CHECKOUT_ONLY = checkout_only(
+    because=(
+        "this node digests the checkout's source and asset tree, which an installed package "
+        "lays out differently (its assets inside it)"
+    ),
+)
+
+
+@_CHECKOUT_ONLY
 def test_the_digests_covered_the_files_that_are_really_there():
     """Vacuity: a digest over zero files is a constant that agrees with every other one."""
     identity = build_identity()
@@ -482,6 +492,7 @@ def test_a_change_no_behavioural_probe_could_see_is_still_a_different_build(pris
     assert mutant["build_id"] != pristine["build_id"]
 
 
+@_CHECKOUT_ONLY
 def test_an_asset_only_change_moves_the_build_id_on_its_own(pristine, tmp_path):
     """The asset half, shown firing alone: same code, different pack, different build.
 
@@ -526,6 +537,7 @@ def test_two_copies_of_one_build_at_two_paths_are_one_build(pristine, tmp_path):
         assert twin[field] == pristine[field], field
 
 
+@_CHECKOUT_ONLY
 def test_one_build_in_two_install_shapes_is_one_build(pristine, tmp_path):
     """The control that FOUND A DEFECT, and it is the reason it is here.
 
@@ -555,6 +567,7 @@ def test_one_build_in_two_install_shapes_is_one_build(pristine, tmp_path):
     assert wheel["build_id"] == pristine["build_id"]
 
 
+@_CHECKOUT_ONLY
 def test_pip_byte_compiling_the_packs_fixtures_is_not_a_different_pack(pristine, tmp_path):
     """The same defect as the test above, one field over, found on the PUBLISHED artifacts.
 

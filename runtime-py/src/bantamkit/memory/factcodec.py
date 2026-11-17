@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from bantamkit import stdlib312 as _stdlib312
 from bantamkit._generated import factfile as _gen
 from bantamkit._generated import pyyaml as _genyaml
 
@@ -145,7 +146,24 @@ def _pyyaml_load(text: str) -> Any:
             return well_formed_frontmatter(text, yaml.load(text, Loader=_CSafeLoader))  # noqa: S506 -- SAFE
         except Exception:  # noqa: BLE001 -- the pure loader decides what a refusal says
             pass
-    return well_formed_frontmatter(text, yaml.safe_load(text))
+    return well_formed_frontmatter(text, safe_load(text))
+
+
+def safe_load(text: str) -> Any:
+    """`yaml.safe_load(text)`, a timestamp's `datetime` range sentence in CPython 3.12's spelling.
+
+    PyYAML builds `date`/`datetime`/`timezone` from a plain timestamp, and the `ValueError` a bad
+    one raises is CPython's own text, which 3.14 rewrote (gh-109798: `month must be in 1..12` ->
+    `month must be in 1..12, not 13`). The port spells 3.12's, and the store quotes the sentence
+    into `malformed fact file <path>: ...`, so it is re-spelled here (`stdlib312`).
+    """
+    try:
+        return yaml.safe_load(text)
+    except ValueError as e:
+        pinned = _stdlib312.pin_datetime_error(e)
+        if pinned is e:
+            raise
+        raise pinned from None
 
 
 def _native_mapping(meta: dict) -> dict:

@@ -19,6 +19,7 @@ import os
 import re
 from typing import Any
 
+from .. import stdlib312 as _stdlib312
 from .repo import Repo, git
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9_-]")  # the ledger file-name rule, `hookadapter._LEDGER_UNSAFE`
@@ -78,7 +79,7 @@ def save_turn(state_dir: str, session: str, snap: dict[str, list[Any]], seq: int
 def load_turn(state_dir: str, session: str) -> tuple[int, dict[str, list[Any]]] | None:
     try:
         with open(_turn_path(state_dir, session), "rb") as f:
-            d = json.loads(f.read().decode("utf-8", errors="replace"))
+            d = _stdlib312.json_loads(f.read().decode("utf-8", errors="replace"))
     except (OSError, ValueError):
         return None
     if not isinstance(d, dict):

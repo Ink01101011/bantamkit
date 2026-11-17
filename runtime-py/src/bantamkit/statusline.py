@@ -59,12 +59,13 @@ processes. Change the rendering there and in both runtimes, or not at all.
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from bantamkit.mcpreport import resolve_event_log_path
+
+from . import stdlib312 as _stdlib312
 
 #: How many of the log's most recent records the line describes.
 #:
@@ -249,7 +250,7 @@ def parse(data: bytes) -> list[tuple[str, str]]:
         if not raw:
             continue
         try:
-            record = json.loads(raw.decode("utf-8"))
+            record = _stdlib312.json_loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             continue
         if not isinstance(record, dict):

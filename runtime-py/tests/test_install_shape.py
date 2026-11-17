@@ -437,6 +437,9 @@ _AS7_ALLOWED = frozenset({
     "lru_cache",
     "metadata",
     "unquote",
+    # J90-P8F: `Path.exists()`/`is_file()`/`resolve()` and `json.loads` as CPython 3.12 answers
+    # them, on every interpreter. `bantamkit/stdlib312.py` imports the standard library alone.
+    "_stdlib312",
 })
 
 

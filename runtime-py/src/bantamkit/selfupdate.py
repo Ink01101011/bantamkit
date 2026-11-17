@@ -70,6 +70,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from . import stdlib312 as _stdlib312
+
 #: The command the operator typed, on BOTH runtimes. Not the distribution name — see the
 #: module docstring: PyPI has `bantamkit`, npm has `bantamkit-mcp`, and only this word is
 #: the same on both, so only this word can appear in a sentence the port copies verbatim.
@@ -269,7 +271,7 @@ def latest_from_index_payload(text: str) -> str:
     level of `npm view --json`; both refusals below are the same two sentences.
     """
     try:
-        payload = json.loads(text)
+        payload = _stdlib312.json_loads(text)
     except ValueError:
         raise UpdateRefused(
             NOT_A_VERSION.format(program=PROGRAM, why=NOT_JSON)
@@ -541,7 +543,7 @@ def record_update(latest: str, now: str | None = None) -> bool:
 
     path = record_path()
     directory = path.parent
-    if not directory.is_dir():
+    if not _stdlib312.path_is_dir(directory):
         return False
     source, existing = load_record(path)
     payload: dict[str, object] = dict(existing) if source == SOURCE_RECORD and existing else {}

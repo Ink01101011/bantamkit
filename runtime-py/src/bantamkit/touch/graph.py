@@ -22,7 +22,6 @@ fails the strong half, as it fails `Memory._pooled`.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from pathlib import Path
 from typing import Any
@@ -30,6 +29,7 @@ from typing import Any
 from bantamkit.storage.hotindex import dumps
 from bantamkit.storage.lock import exclusive
 
+from .. import stdlib312 as _stdlib312
 from .log import TouchLog
 from .refs import FileSet, resolve_ref
 from .repo import Repo, head_print, ls_files, renames
@@ -184,7 +184,7 @@ class TouchGraph:
 
     def _read(self) -> dict[str, Any] | None:
         try:
-            d = json.loads(self.path.read_text(encoding="utf-8"))
+            d = _stdlib312.json_loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
         if not (isinstance(d, dict) and set(d) == _KEYS and _seq(d["version"]) == GRAPH_VERSION):

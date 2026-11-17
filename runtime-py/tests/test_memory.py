@@ -10,6 +10,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 import pytest
+from conftest import checkout_only
 
 import bantamkit
 from bantamkit.memory import (
@@ -3139,6 +3140,14 @@ def test_compact_cli_accepts_reserve_zero_and_refuses_a_negative_one(tmp_path, c
     assert "argument --reserve: must be >= 0" in capsys.readouterr().err
 
 
+_CHECKOUT_ONLY = checkout_only(
+    because=(
+        "this node reads the tool descriptions from the checkout's `<repo>/assets`"
+    ),
+)
+
+
+@_CHECKOUT_ONLY
 def test_the_served_reserve_description_quotes_the_default_the_code_computes(tmp_path):
     """#134: the description's worked example is the store's own arithmetic, re-derived."""
     repo = Path(bantamkit.__file__).parent.parent.parent.parent

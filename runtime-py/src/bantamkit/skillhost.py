@@ -20,7 +20,6 @@ them.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from collections.abc import Collection, Iterator
@@ -30,6 +29,8 @@ from typing import Any
 
 from bantamkit.storage.retention import parse_now
 from bantamkit.storage.tiers import settings_paths
+
+from . import stdlib312 as _stdlib312
 
 HOST_CLAUDE_CODE = "claude-code"
 HOST_NONE = "none"
@@ -54,7 +55,7 @@ def _refuse(name: str) -> Any:
 
 def _loads(text: str) -> Any:
     """`JSON.parse`'s rules: `NaN`/`Infinity` refused, a leading U+FEFF refused."""
-    return json.loads(text, parse_constant=_refuse)
+    return _stdlib312.json_loads(text, parse_constant=_refuse)
 
 
 def _read_json(p: Path) -> Any:
@@ -347,14 +348,16 @@ class ClaudeCodeAdapter:
             if _real(project) != _real(user):
                 candidates.append(("project", project))
         candidates.append(("user", user))
-        roots = tuple((label, str(p)) for label, p in candidates if p.is_dir())
+        roots = tuple((label, str(p)) for label, p in candidates if _stdlib312.path_is_dir(p))
         enabled, sources = _enabled(home, cwd)
         # job73 C15 (#206 Component 7): a typed `/<name>` of a skill bantamkit promoted by
         # symlink names a directory under `.bantamkit/skills` (the walk never follows the link),
         # so those roots' names are known too; the audit reads them as roots (`skillreport`).
         own = [Path(cwd) / ".bantamkit" / "skills"] if cwd is not None else []
         own.append(home / ".bantamkit" / "skills")
-        known = known_skills([p for _, p in roots] + [str(p) for p in own if p.is_dir()])
+        known = known_skills(
+            [p for _, p in roots] + [str(p) for p in own if _stdlib312.path_is_dir(p)]
+        )
         return Gathered(
             HOST_CLAUDE_CODE,
             roots,
@@ -366,4 +369,4 @@ class ClaudeCodeAdapter:
 
 
 def select_adapter(home: Path | str) -> ClaudeCodeAdapter | NullAdapter:
-    return ClaudeCodeAdapter() if (Path(home) / ".claude").is_dir() else NullAdapter()
+    return ClaudeCodeAdapter() if _stdlib312.path_is_dir(Path(home) / ".claude") else NullAdapter()

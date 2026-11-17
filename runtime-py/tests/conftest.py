@@ -1,7 +1,9 @@
 import sys
+from pathlib import Path
 
 import pytest
 
+import bantamkit
 from bantamkit.client import Message, Response, ToolCall, Usage
 from bantamkit.memory.layers import MEMORY_DIR_ENV
 from bantamkit.storage.hotindex import INDEX_DIR_ENV
@@ -168,6 +170,40 @@ def call(name, arguments, id="c1"):
 # applied here names the measurement that proved the scenario impossible.
 
 ON_WINDOWS = sys.platform == "win32"
+
+# ------------------------------------------------------------------ checkout-only nodes
+#
+# J90-P8F (#316 G4). J90-P8 ran this suite against every INSTALLED wheel, with the tree's
+# `runtime-py/src/bantamkit` pointed at the installed package, and 11 nodes failed on every
+# interpreter, 3.11 and 3.12 included, and passed in a checkout. Each asks a question about the
+# CHECKOUT's layout -- the asset pack at `<repo>/assets`, force-included only when a wheel is
+# BUILT; an sdist and a wheel built from this tree; a build id over the checkout's own files --
+# and an installed package answers a different question: it carries `bantamkit/assets` inside
+# it, so a wheel built over it adds the pack twice, and a digest walks 111 files where the
+# checkout has 100. Those nodes are marked `checkout_only`, which skips them from an install
+# with this token in the reason and runs them, unchanged, everywhere else.
+#
+# AN INSTALL is a package directory with its own `bantamkit-*.dist-info` beside it, which a
+# wheel install always writes and a checkout (editable or `PYTHONPATH=runtime-py/src`) never
+# has under `runtime-py/src`.
+# `test_packaging.py::test_checkout_only_skips_do_not_fire_in_a_checkout` requires the
+# condition FALSE whenever the imported package is this tree's own source, so the skip cannot
+# quietly become "always" in the tree that has to run these nodes.
+
+_IMPORTED_PACKAGE = Path(bantamkit.__file__).resolve().parent
+RUNS_FROM_AN_INSTALL = any(_IMPORTED_PACKAGE.parent.glob("bantamkit-*.dist-info"))
+CHECKOUT_ONLY_TOKEN = "CHECKOUT-ONLY"
+
+
+def checkout_only(*, because: str):
+    """`pytest.mark.skipif` for a node about the checkout's layout, run from an installed wheel."""
+    return pytest.mark.skipif(
+        RUNS_FROM_AN_INSTALL,
+        reason=(
+            f"{CHECKOUT_ONLY_TOKEN}: bantamkit is imported from an installed wheel "
+            f"({_IMPORTED_PACKAGE}), and {because}"
+        ),
+    )
 
 WINDOWS_SKIP_TOKEN = "FAILS TO MEASURE on Windows"
 """The needle `test_the_windows_only_skips_do_not_fire_on_this_platform` searches for.

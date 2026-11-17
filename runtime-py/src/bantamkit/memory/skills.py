@@ -43,6 +43,7 @@ from bantamkit.client import BantamError
 from bantamkit.skillinstall import TRIGGERS_ENV, TRIGGERS_KEY
 from bantamkit.skillmine import TRIGGERS_TOP
 
+from .. import stdlib312 as _stdlib312
 from .store import _NOT_ONE_LINE, Fact, Pool, pool_of
 from .usage import os_realpath
 
@@ -178,11 +179,15 @@ class SkillStore:
                     for e in os.scandir(root)
                     if not e.name.startswith(".")
                     and _NOT_A_SKILL_DIR.fullmatch(e.name) is None
-                    and e.is_dir()
+                    and _stdlib312.path_is_dir(e)
                 )
             except (FileNotFoundError, NotADirectoryError):
                 continue  # not there is a root of nothing, silently
-            out += [root / n / SKILL_FILE for n in names if (root / n / SKILL_FILE).is_file()]
+            out += [
+                root / n / SKILL_FILE
+                for n in names
+                if _stdlib312.path_is_file(root / n / SKILL_FILE)
+            ]
         return out
 
     def _read(self, path: Path) -> Fact:

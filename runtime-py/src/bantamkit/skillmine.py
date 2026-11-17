@@ -84,6 +84,8 @@ from bantamkit.memory.retrieval import _nospace, _wordchar
 from bantamkit.replynative import frame
 from bantamkit.touch.log import AGENT_ID
 
+from . import stdlib312 as _stdlib312
+
 SOURCE_SHIFTWORK = "shiftwork"
 SOURCE_SESSION = "session"
 
@@ -172,7 +174,7 @@ def _refuse_constant(name: str) -> Any:
 
 def _load_json(text: str) -> Any:
     """`JSON.parse`'s rules: `NaN`/`Infinity` refused (retention's `_load_json`)."""
-    return json.loads(text, parse_constant=_refuse_constant)
+    return _stdlib312.json_loads(text, parse_constant=_refuse_constant)
 
 
 def _decode(data: bytes) -> str | None:
@@ -1723,7 +1725,7 @@ def _mine_file(
         return entry
     if entry is not None and size > entry["size"] and entry["offset"] <= size:
         offset = entry["offset"]
-        state = json.loads(json.dumps(entry["open_turn"]))
+        state = _stdlib312.json_loads(json.dumps(entry["open_turn"]))
         pieces = list(entry["pieces"])
     else:  # new, shrunk or replaced: read whole
         offset, state, pieces = 0, _fresh_state(), []

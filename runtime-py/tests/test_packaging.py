@@ -47,6 +47,7 @@ from pathlib import Path
 
 import hatchling  # noqa: F401  # loud if the backend is missing; see module docstring
 import pytest
+from conftest import checkout_only
 
 PROJECT = Path(__file__).resolve().parents[1]  # runtime-py/
 REPO = PROJECT.parent
@@ -135,6 +136,31 @@ def test_sdist_carries_the_whole_asset_pack(sdist):
     assert shipped >= expected, f"sdist is short of the asset pack: {_missing(shipped, expected)}"
 
 
+def test_checkout_only_skips_do_not_fire_in_a_checkout():
+    """J90-P8F: `checkout_only` skips only from an installed wheel. Where the package imported is
+    this tree's own `runtime-py/src/bantamkit` (a real directory, not a link into an install),
+    the condition must be False, or the 11 marked nodes would be deleted tests in disguise."""
+    from conftest import RUNS_FROM_AN_INSTALL
+
+    import bantamkit
+
+    src = Path(__file__).resolve().parents[1] / "src" / "bantamkit"
+    imported = Path(bantamkit.__file__).resolve().parent
+    if not src.is_symlink() and imported == src.resolve():
+        assert RUNS_FROM_AN_INSTALL is False
+    else:
+        assert RUNS_FROM_AN_INSTALL is any(imported.parent.glob("bantamkit-*.dist-info"))
+
+
+_CHECKOUT_ONLY = checkout_only(
+    because=(
+        "this node builds an sdist and a wheel from the checkout, which an installed package "
+        "(assets inside it) cannot be built from"
+    ),
+)
+
+
+@_CHECKOUT_ONLY
 def test_wheel_builds_from_the_unpacked_sdist(wheel_from_sdist):
     """Symptom two: `build_wheel` from the unpacked sdist could not run at all."""
     assert wheel_from_sdist.returncode == 0, (
@@ -143,6 +169,7 @@ def test_wheel_builds_from_the_unpacked_sdist(wheel_from_sdist):
     )
 
 
+@_CHECKOUT_ONLY
 def test_wheel_from_sdist_carries_the_whole_asset_pack(wheel_from_sdist):
     """The path asserted is what `assets_root()` looks for at `__file__.parent/assets`,
     i.e. what `docs/install.md` promises as resolution step 2."""
@@ -172,6 +199,7 @@ def test_wheel_from_sdist_carries_the_whole_asset_pack(wheel_from_sdist):
 LICENSE_FIELD = "License-Expression: MIT"
 
 
+@_CHECKOUT_ONLY
 def test_the_wheel_metadata_declares_the_licence(wheel_from_sdist):
     assert wheel_from_sdist.artifact is not None, "no wheel was built"
     with zipfile.ZipFile(wheel_from_sdist.artifact) as zf:
@@ -232,6 +260,7 @@ def _hatch_build_module():
     return module
 
 
+@_CHECKOUT_ONLY
 def test_the_default_wheel_is_the_pure_wheel(wheel_from_sdist):
     assert wheel_from_sdist.artifact is not None, "no wheel was built"
     assert wheel_from_sdist.artifact.name.endswith("-py3-none-any.whl")

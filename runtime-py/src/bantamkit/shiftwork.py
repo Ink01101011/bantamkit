@@ -122,6 +122,8 @@ from bantamkit import experiment, jobbudget, workplan
 from bantamkit.assets import AssetNotFound, load_schema, load_tool_asset
 from bantamkit.contract import schema_error
 
+from . import stdlib312 as _stdlib312
+
 SCHEMA_NAME = "shiftwork-checkpoint"
 TOOL_ASSET = "shiftwork_clock_out"  # the accounting line's shape lives on the tool (F5)
 #: J50-9A: the one sentence for a pack that cannot supply the accounting shape. FIXED —
@@ -194,7 +196,7 @@ def _read_valid(path: Path) -> tuple[dict | None, dict[str, Any] | None]:
         # `result: error`. Same sentence head as the missing file: the bytes could not be read.
         return None, _error(f"checkpoint unreadable: {e}")
     try:
-        document = json.loads(text)
+        document = _stdlib312.json_loads(text)
     except json.JSONDecodeError as e:
         return None, _error(f"checkpoint is not parseable as JSON: {e}")
     problem = schema_error(text, load_schema(SCHEMA_NAME))
@@ -349,7 +351,7 @@ def _briefed(log_path: Path, unit_id: str) -> bool:
     before_last_accounting = False
     for line in text.splitlines():
         try:
-            record = json.loads(line)
+            record = _stdlib312.json_loads(line)
         except ValueError:
             continue
         if not isinstance(record, dict) or record.get("unit") != unit_id:
@@ -862,7 +864,7 @@ def _ledger(log_path: Path) -> list[Any]:
     lines: list[Any] = []
     for line in text.splitlines():
         try:
-            lines.append(json.loads(line))
+            lines.append(_stdlib312.json_loads(line))
         except ValueError:
             continue
     return lines
@@ -1470,7 +1472,7 @@ def _repo_root(path: Path) -> Path:
     """
     start = path.absolute().parent
     for candidate in (start, *start.parents):
-        if (candidate / ".git").exists():
+        if _stdlib312.path_exists(candidate / ".git"):
             return candidate
     return start
 
@@ -1522,7 +1524,7 @@ def _follow_ups_refusal(
     root = _repo_root(path)
     for item in follow_ups:
         brief = item.get("brief_path")
-        if not isinstance(brief, str) or not (root / brief).is_file():
+        if not isinstance(brief, str) or not _stdlib312.path_is_file(root / brief):
             return f"follow-up {item.get('id')} names brief {brief}, which is not a file"
     before = _batch_view(document)
     after = _batch_view(
@@ -1655,7 +1657,7 @@ def _real_target(path: Path) -> Path:
     a link and every other path to the same file sees the clock-out. Only the write side
     resolves: the read, the ledger and every sentence use the path as given."""
     try:
-        return path.resolve()
+        return _stdlib312.path_resolve(path)
     except (OSError, RuntimeError):  # a symlink loop, or a path the OS will not resolve
         return path
 

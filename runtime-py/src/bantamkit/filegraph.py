@@ -12,6 +12,8 @@ from bantamkit.agent import Agent, ToolDef
 from bantamkit.assets import load_skill, load_tool
 from bantamkit.textutil import truncate
 
+from . import stdlib312 as _stdlib312
+
 
 @dataclass
 class FileRead:
@@ -214,5 +216,5 @@ class FileAccessGraph:
         """Restore a saved ledger. Precondition: only resume a ledger together with the
         transcript it was built against — restored entries collapse repeat reads to markers,
         which a model that never saw the original content cannot act on."""
-        for entry in json.loads(Path(path).read_text(encoding="utf-8")):
+        for entry in _stdlib312.json_loads(Path(path).read_text(encoding="utf-8")):
             self.reads[entry["path"]] = FileRead(**entry)

@@ -33,6 +33,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from . import stdlib312 as _stdlib312
+
 SKILL_PROPOSE_NAME = "skill_propose"
 SKILL_PROPOSE_PROMPT_TITLE = "bantamkit skill proposals"
 SKILL_PROPOSE_PROMPT_DESCRIPTION = (
@@ -383,7 +385,7 @@ def _approve_proposal(
             )
         return _install(rec, doc, text, level, home, cwd, now)
     staged = handoff_path(home, cid)
-    if staged.is_file():
+    if _stdlib312.path_is_file(staged):
         try:
             text = staged.read_bytes().decode("utf-8")
         except UnicodeDecodeError:
@@ -478,7 +480,13 @@ def _approve_split(
     except ProposalsError as e:
         return f"could not split {name}: {e}"
     recs = [next((r for r in _records(doc) if r["id"] == cid), None) for cid in into]
-    if own is None or not own.is_dir() or len(into) != 2 or doc is None or None in recs:
+    if (
+        own is None
+        or not _stdlib312.path_is_dir(own)
+        or len(into) != 2
+        or doc is None
+        or None in recs
+    ):
         return (
             f"the split of {name} no longer matches the mined clusters; "
             f"{COMMAND} reject {name} drops it"
@@ -492,7 +500,7 @@ def _approve_split(
         text = _draft_text(rec)
         staged = handoff_path(home, cid)
         drafter = None
-        if text is None and staged.is_file():
+        if text is None and _stdlib312.path_is_file(staged):
             try:
                 text = staged.read_bytes().decode("utf-8")
             except UnicodeDecodeError:
@@ -606,7 +614,7 @@ def _approve_item(name: str, p: Mapping[str, Any], home: str | Path, now: str) -
             except SkillFileError as e:
                 return f"could not remove skill {name}: {e}"
         target = Path(state_entry["path"]) if isinstance(state_entry.get("path"), str) else None
-        if target is not None and target.is_dir():
+        if target is not None and _stdlib312.path_is_dir(target):
             backup_dir(backup_root(home), target, now)
             _remove_dir(target)
 
@@ -704,7 +712,7 @@ def _approve_tune(
     v = v if isinstance(v, dict) else {}
     counts = {k: _tally(v, k) for k in ("false_fires", "injects", "misses")}
     staged = handoff_path(home, TUNE_HANDOFF + name)
-    if staged.is_file():
+    if _stdlib312.path_is_file(staged):
         try:
             answer = staged.read_bytes().decode("utf-8")
         except UnicodeDecodeError:
@@ -796,7 +804,7 @@ def _undo_split(name: str, split: Mapping[str, Any], home: str | Path, now: str)
             if isinstance(e.get("promoted"), dict):
                 demote(half, home)
             target = Path(e["path"])
-            if target.is_dir():
+            if _stdlib312.path_is_dir(target):
                 backup_dir(backup_root(home), target, now)
                 _remove_dir(target)
 

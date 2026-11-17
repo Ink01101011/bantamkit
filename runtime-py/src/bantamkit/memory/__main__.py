@@ -29,7 +29,6 @@ budget, malformed fact, refused restore), 2 argparse usage error.
 
 from __future__ import annotations
 
-import argparse
 import sys
 from pathlib import Path
 
@@ -44,6 +43,8 @@ from bantamkit.memory.store import (
     MemoryStore,
     MemoryValidationError,
 )
+
+from ..stdlib312 import argparse
 
 #: The one place this CLI's own name is spelled, and `runtime-ts` has the same constant
 #: under the same name (`PROG` in `src/memory/cli.ts`) holding `bantamkit-memory`. The

@@ -14,6 +14,8 @@ from bantamkit.contract import render_evidence
 from bantamkit.profile import default as profile_default
 from bantamkit.structured import structured
 
+from . import stdlib312 as _stdlib312
+
 __all__ = [
     "CritiqueExhausted",
     "CritiqueGate",
@@ -99,7 +101,7 @@ class Rubric:
 
 def load_rubric(name: str) -> Rubric:
     path = assets_root() / "rubrics" / f"{name}.yaml"
-    if not path.exists():
+    if not _stdlib312.path_exists(path):
         raise AssetNotFound(f"rubric asset not found: {path}")
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     rubric = Rubric(

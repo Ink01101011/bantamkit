@@ -58,7 +58,6 @@ written before this (no `generated` key) renders as it did.
 
 from __future__ import annotations
 
-import json
 import os
 from collections import Counter
 from pathlib import Path
@@ -69,6 +68,8 @@ from bantamkit.skillhost import HOST_NONE, USAGE_DAYS, Gathered, select_adapter
 from bantamkit.storage.hotindex import dumps
 from bantamkit.storage.lock import exclusive
 from bantamkit.storage.retention import audit_enabled, parse_now
+
+from . import stdlib312 as _stdlib312
 
 STATE_NAME = "skill-audit.json"
 STATE_VERSION = 1
@@ -408,7 +409,7 @@ def read_state(home: Path | str) -> dict[str, Any] | None:
     """The stored record, or None: missing, unreadable, not JSON, `version != 1`, or a shape
     the status line cannot print. A None is recomputed by the next day's run."""
     try:
-        doc = json.loads(
+        doc = _stdlib312.json_loads(
             state_path(home).read_bytes().decode("utf-8"),
             parse_constant=_refuse_constant,
             parse_float=_js_float,

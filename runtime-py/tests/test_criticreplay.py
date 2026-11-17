@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import errno
 import importlib
+import io
 import json
 import os
 import re
@@ -4727,7 +4728,12 @@ def _wide_guard_rig(asset_tree, tmp_path, cells: int) -> dict:
 
 
 _RBP31_SMALL_CELLS = 1
-_RBP31_LARGE_CELLS = 40
+# 40 cells is ~12.8 KB of table, above an 8192-unit crossover. J90-P8F: CPython 3.14 raised
+# `io.DEFAULT_BUFFER_SIZE` from 8 KiB to 128 KiB, so the crossover above moved with it and 40
+# cells stayed inside the process there — the straddle guard below went red, which is what it
+# is for. The large rig scales with the interpreter's buffer instead, one cell (~320 bytes) per
+# 256 bytes of it: 40 on 3.11-3.13 (unchanged) and 512 (~164 KB) on 3.14, above either crossover.
+_RBP31_LARGE_CELLS = max(40, io.DEFAULT_BUFFER_SIZE // 256)
 
 
 def _readonly_stdout_status(argv, tmp_path, label: str) -> tuple[int, str]:

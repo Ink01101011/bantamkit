@@ -229,6 +229,8 @@ filterwarnings = [
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# CPython 3.12.13's argparse, vendored verbatim (J90-P8F, `bantamkit/stdlib312.py`).
+extend-exclude = ["src/bantamkit/_argparse312.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]

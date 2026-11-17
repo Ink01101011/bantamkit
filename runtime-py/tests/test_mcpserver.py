@@ -8,6 +8,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from conftest import checkout_only
 
 pytest.importorskip("mcp")
 
@@ -726,6 +727,14 @@ def _run_cli(argv, cwd):
     )
 
 
+_CHECKOUT_ONLY = checkout_only(
+    because=(
+        "this node expects the checkout's asset root, `<repo>/assets`"
+    ),
+)
+
+
+@_CHECKOUT_ONLY
 def test_assets_root_flag_prints_the_root_and_a_file_count_on_stdout(tmp_path):
     """Two lines, `<root>\\n<count> files\\n`, exit 0, nothing on stderr.
 

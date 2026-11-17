@@ -155,6 +155,8 @@ from xml.etree import ElementTree as ET
 from bantamkit import pdfread
 from bantamkit.client import BantamError
 
+from . import stdlib312 as _stdlib312
+
 NS_S = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 NS_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 NS_R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
@@ -577,9 +579,9 @@ def sniff(path: str | Path) -> Container:
     caller — the extractor and the refusal alike — reads the file the same way.
     """
     path = Path(path)
-    if path.is_dir():
+    if _stdlib312.path_is_dir(path):
         raise DocumentReadError(f"{path} is a directory, not a document")
-    if not path.exists():
+    if not _stdlib312.path_exists(path):
         raise DocumentReadError(f"no such file: {path}")
     named = path.suffix.lower().lstrip(".")
     with path.open("rb") as handle:
@@ -623,7 +625,7 @@ def _unsupported_remedy() -> str:
 
 
 def _open(path: Path) -> zipfile.ZipFile:
-    if not path.exists():
+    if not _stdlib312.path_exists(path):
         raise DocumentReadError(f"no such file: {path}")
     try:
         return zipfile.ZipFile(path)
@@ -771,7 +773,7 @@ def _media_index(zf: zipfile.ZipFile) -> dict[str, int]:
     return {
         info.filename: info.file_size
         for info in zf.infolist()
-        if not info.is_dir() and _MEDIA_MEMBER.search(info.filename)
+        if not _stdlib312.path_is_dir(info) and _MEDIA_MEMBER.search(info.filename)
     }
 
 
@@ -1329,14 +1331,58 @@ def _with_bounded_unescape(name: str):
     """
     method = getattr(html.parser.HTMLParser, name, None)
     code = getattr(method, "__code__", None)
-    if code is None or "unescape" not in code.co_names or code.co_freevars:
+    if code is None or code.co_freevars:
         return None
-    return types.FunctionType(
-        code,
-        {**vars(html.parser), "unescape": lambda text: html.unescape(_cap_charrefs(text))},
-        name,
-        method.__defaults__,
-    )
+    namespace, reaching = _bounded_namespace()
+    if not _code_names(code) & reaching:
+        return None
+    return types.FunctionType(code, namespace, name, method.__defaults__)
+
+
+def _code_names(code: types.CodeType) -> set[str]:
+    """The global names `code` and every code object nested in it (a lambda, a genexp) load."""
+    names = set(code.co_names)
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType):
+            names |= _code_names(const)
+    return names
+
+
+def _bounded_namespace() -> tuple[dict, set[str]]:
+    """`html.parser`'s globals with `unescape` capped, and every module function that reaches it.
+
+    J90-P8F: CPython 3.13.x/3.14.x (the HTML5 attribute-value fix, `_unescape_attrvalue`) moved
+    `parse_starttag`'s call to `unescape` one helper down — `_unescape_attrvalue` ->
+    `_replace_attr_charref` -> `unescape` — so `unescape` left `parse_starttag`'s own names and
+    the binding was refused there (`HTML_UNESCAPE_BOUNDED` False, the whole-markup fallback in
+    use on every 3.13 and 3.14). Rebinding ONE name was never the property; the property is that
+    every path from the method to `unescape` reaches the capped one. So each plain function of
+    the module that reaches `unescape`, directly or through another such function, is rebuilt
+    over this one namespace, and the chain resolves through it. On 3.12 that set is empty and the
+    namespace is exactly the one the single rebinding built.
+    """
+    module = vars(html.parser)
+    plain = {
+        n: f for n, f in module.items()
+        if isinstance(f, types.FunctionType)
+        and f.__module__ == html.parser.__name__
+        and not f.__code__.co_freevars
+    }
+    reaching = {"unescape"}
+    grew = True
+    while grew:
+        grew = False
+        for n, f in plain.items():
+            if n not in reaching and _code_names(f.__code__) & reaching:
+                reaching.add(n)
+                grew = True
+    namespace = {**module, "unescape": lambda text: html.unescape(_cap_charrefs(text))}
+    for n in reaching - {"unescape"}:
+        f = plain[n]
+        rebuilt = types.FunctionType(f.__code__, namespace, n, f.__defaults__)
+        rebuilt.__kwdefaults__ = f.__kwdefaults__
+        namespace[n] = rebuilt
+    return namespace, reaching
 
 
 # The rebindings that could be built on THIS interpreter, and whether both of them could.
@@ -1458,7 +1504,18 @@ def _decoded_body(part: email.message.Message) -> str:
         return ""
     charset = part.get_content_charset() or "utf-8"
     try:
-        return payload.decode(charset, errors="replace")
+        if _stdlib312.codec_module(charset) == "punycode":
+            # J90-P8F: 3.12's punycode decoded every byte past the last `-` (all of them when
+            # there is none) as STRICT ASCII before it looked at `errors`, so non-ASCII there
+            # raised `UnicodeDecodeError` and the label fell back here. 3.13 decodes those as
+            # bytes and lets `errors="replace"` swallow them (`encodings/punycode.py`,
+            # `punycode_decode`): the same archive read as `''`. This is 3.12's check, asked
+            # first, so the label decides HOW and never WHETHER on every interpreter.
+            cut = payload.rfind(b"-")
+            (payload if cut == -1 else payload[cut + 1:]).decode("ascii")
+        # J90-P8F: the label resolves through CPython 3.12's registry (`stdlib312.codec_decode`),
+        # the one `charsets.ts` holds: 3.13/3.14's added aliases are unknown labels here too.
+        return _stdlib312.codec_decode(payload, charset, errors="replace")
     except (LookupError, UnicodeError):
         return payload.decode("utf-8", errors="replace")
 

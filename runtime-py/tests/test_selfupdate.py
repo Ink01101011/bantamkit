@@ -534,6 +534,9 @@ ALLOWED = {
     # `tempfile`/`os`/`datetime` are the temp-file-and-rename this writes through. Named here
     # rather than exempted, so the gate still reddens on anything else that appears.
     "bantamkit.updatecheck",
+    # J90-P8F: CPython 3.12's `Path` predicates and `json.loads` sentence on every interpreter;
+    # `bantamkit/stdlib312.py` imports the standard library alone.
+    "_stdlib312",
     "datetime",
     "os",
     "tempfile",

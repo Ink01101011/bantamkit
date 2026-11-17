@@ -32,6 +32,8 @@ from typing import Any, Literal
 from bantamkit._generated import hotindex as _g
 from bantamkit._generated._ts2py_runtime import _JsError
 
+from .. import stdlib312 as _stdlib312
+
 INDEX_VERSION = _g.INDEX_VERSION
 FULL_REFRESH_EVERY_S = _g.FULL_REFRESH_EVERY_S
 SHARDS = _g.SHARDS
@@ -234,7 +236,7 @@ class HotIndex:
         return self._js.loose
 
     def exists(self) -> bool:
-        return bool(self._js.exists())
+        return bool(_stdlib312.path_exists(self._js))
 
     def head_print(self) -> str:
         return self._js.headPrint()

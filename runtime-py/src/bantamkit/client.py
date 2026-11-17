@@ -9,6 +9,8 @@ from typing import Protocol
 
 import httpx
 
+from . import stdlib312 as _stdlib312
+
 BODY_SNIPPET = 200
 
 
@@ -291,7 +293,7 @@ class OpenAICompatible:
                 if isinstance(raw_args, dict):
                     arguments = raw_args
                 else:
-                    arguments = json.loads(raw_args)
+                    arguments = _stdlib312.json_loads(raw_args)
                 tool_calls.append(ToolCall(id=tc["id"], name=name, arguments=arguments))
             except (json.JSONDecodeError, ValueError) as e:
                 raw = tc["function"]["arguments"]

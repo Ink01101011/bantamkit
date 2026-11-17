@@ -49,6 +49,8 @@ from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 
+from . import stdlib312 as _stdlib312
+
 # The four hosts, in the order they print in `--help`. `claude` first because it is the one
 # with its own installer and therefore the one whose arm is different.
 HOSTS = ("claude", "claude-desktop", "copilot", "cursor")
@@ -130,7 +132,7 @@ def _read_config(path: Path) -> dict:
     parse error names the byte, and replacing it would destroy the only copy of whatever
     they were in the middle of writing.
     """
-    if not path.exists():
+    if not _stdlib312.path_exists(path):
         return {}
     try:
         text = path.read_text(encoding="utf-8")
@@ -139,7 +141,7 @@ def _read_config(path: Path) -> dict:
     if not text.strip():
         return {}
     try:
-        loaded = json.loads(text)
+        loaded = _stdlib312.json_loads(text)
     except json.JSONDecodeError as exc:
         raise InstallError(
             f"{path} is not valid JSON, so this refuses to touch it: {exc.msg} "
@@ -219,7 +221,7 @@ def _write_config(path: Path, data: dict) -> None:
     # The mode of the file being replaced, carried onto its replacement. A host config holds
     # API keys in per-server `env` blocks, and a user who chmod'ed theirs to 0600 had it come
     # back 0644 because a fresh temp file gets the process umask. Measured on both runtimes.
-    mode = target.stat().st_mode & 0o7777 if target.exists() else None
+    mode = target.stat().st_mode & 0o7777 if _stdlib312.path_exists(target) else None
     payload = _dump_host_json(data, _detected_indent(target)) + "\n"
     try:
         tmp.write_text(payload, encoding="utf-8")
@@ -300,7 +302,7 @@ def _backup(path: Path) -> Path | None:
     `shutil.copy2` follows a symlink on the source, so the copy holds the REAL file's bytes
     and sits beside the path the report names.
     """
-    if not path.exists():
+    if not _stdlib312.path_exists(path):
         return None
     backup = _backup_target(path)
     try:
@@ -411,9 +413,13 @@ def this_command() -> tuple[str, list[str]]:
     the module path and naming it would write an entry that only works from one directory.
     """
     argv0 = Path(sys.argv[0]) if sys.argv and sys.argv[0] else None
-    if argv0 is not None and argv0.name.startswith("bantamkit-mcp") and argv0.exists():
-        return str(argv0.resolve()), []
-    return str(Path(sys.executable).resolve()), ["-m", "bantamkit.mcpserver"]
+    if (
+        argv0 is not None
+        and argv0.name.startswith("bantamkit-mcp")
+        and _stdlib312.path_exists(argv0)
+    ):
+        return str(_stdlib312.path_resolve(argv0)), []
+    return str(_stdlib312.path_resolve(Path(sys.executable))), ["-m", "bantamkit.mcpserver"]
 
 
 # ==============================================================================================
@@ -721,7 +727,7 @@ def _hook_plan(path: Path, command: str) -> str:
         f"  events : {_EVENT_NAMES}",
         f"  command: {command}",
     ]
-    if path.exists():
+    if _stdlib312.path_exists(path):
         lines.append(f"  backup : {_backup_target(path)}")
     lines.append(
         "Existing hooks are left byte-for-byte; only bantamkit's own entries are replaced."

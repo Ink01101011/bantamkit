@@ -59,7 +59,6 @@ both routes from one `Rubric` and counts the module calls each one makes.
 
 from __future__ import annotations
 
-import argparse
 import difflib
 import errno
 import hashlib
@@ -80,6 +79,9 @@ from bantamkit.client import BantamError, Message, ModelClient, OpenAICompatible
 from bantamkit.critique import Rubric
 from bantamkit.evalrun import TrackingClient
 from bantamkit.structured import structured
+
+from . import stdlib312 as _stdlib312
+from .stdlib312 import argparse
 
 __all__ = [
     "ARTIFACT_WRITE_EXIT",
@@ -597,7 +599,7 @@ def load_manifest(path: Path | None = None, rubric_name: str | None = None) -> M
             raise PerturbationError("load_manifest needs a path or a rubric name")
         path = default_manifest_path(rubric_name)
     path = Path(path)
-    if not path.is_file():
+    if not _stdlib312.path_is_file(path):
         raise PerturbationError(f"perturbation manifest not found: {path}")
     raw = path.read_text(encoding="utf-8")
     data = yaml.safe_load(raw)
@@ -1226,7 +1228,7 @@ def parse_rubric_arg(arg: str) -> RubricVariant:
         raw = _git_show(ref, path)
     else:
         file = Path(spec)
-        if not file.is_file():
+        if not _stdlib312.path_is_file(file):
             raise PerturbationError(f"rubric not found: {spec}")
         raw = file.read_text(encoding="utf-8")
     return RubricVariant(
@@ -1343,7 +1345,7 @@ def load_cases(
         # not a way this module reports anything. Refusing rather than skipping is
         # deliberate: a silently skipped file is a cell missing from the run.
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = _stdlib312.json_loads(path.read_text(encoding="utf-8"))
         except ValueError as e:
             raise PerturbationError(f"{path.name} is not readable as JSON: {e}") from e
         if not isinstance(data, dict) or "task" not in data or "repeat" not in data:
@@ -1383,7 +1385,7 @@ def load_cases(
 
 def _task_prompt(tasks_dir: Path, name: str) -> str:
     path = Path(tasks_dir) / f"{name}.yaml"
-    if not path.is_file():
+    if not _stdlib312.path_is_file(path):
         raise PerturbationError(f"task asset not found: {path}")
     return yaml.safe_load(path.read_text(encoding="utf-8"))["prompt"]
 

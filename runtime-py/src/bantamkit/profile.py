@@ -7,6 +7,8 @@ import yaml
 from bantamkit.assets import AssetNotFound, assets_root
 from bantamkit.client import BantamError
 
+from . import stdlib312 as _stdlib312
+
 REQUIRED = {
     "agent": ("max_turns", "observation_budget"),
     "structured": ("max_retries",),
@@ -20,7 +22,7 @@ REQUIRED = {
 
 def load_profile(name: str = "default") -> dict:
     path = assets_root() / "profiles" / f"{name}.yaml"
-    if not path.exists():
+    if not _stdlib312.path_exists(path):
         raise AssetNotFound(f"profile asset not found: {path}")
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     for section, keys in REQUIRED.items():

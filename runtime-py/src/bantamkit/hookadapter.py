@@ -77,6 +77,7 @@ from typing import Any
 import yaml
 
 from . import replynative
+from . import stdlib312 as _stdlib312
 from .client import BantamError
 from .memory import retrieval
 from .memory.component import Memory
@@ -1385,7 +1386,7 @@ def _previous_prompt(transcript: str, current: str) -> str:
         prompts: list[str] = []
         for line in raw.decode("utf-8", errors="replace").split("\n"):
             try:
-                r = json.loads(line)
+                r = _stdlib312.json_loads(line)
             except ValueError:
                 continue
             if (
@@ -2208,7 +2209,7 @@ def _prune_usage_events(run: HookRun, file: str) -> None:
         if not line.strip():
             continue
         try:
-            record = json.loads(line)
+            record = _stdlib312.json_loads(line)
         except ValueError:
             kept.append(line)  # keep what we cannot judge
             continue
@@ -2758,7 +2759,7 @@ def _maybe_dream(run: HookRun, payload: dict[str, Any]) -> None:
     ms = int((time.time() - t) * 1000)
     outcome: dict[str, Any] | None
     try:
-        parsed = json.loads(stdout or "")
+        parsed = _stdlib312.json_loads(stdout or "")
         outcome = parsed if isinstance(parsed, dict) else None
     except ValueError:
         outcome = None  # a child that died has no JSON to give
@@ -3015,7 +3016,7 @@ def run_hook(stdin: Any = None) -> None:
         raw = raw.decode("utf-8", "replace")
     payload: dict[str, Any] = {}
     try:
-        parsed = json.loads(raw or "{}")
+        parsed = _stdlib312.json_loads(raw or "{}")
         if isinstance(parsed, dict):
             payload = parsed
     except ValueError:

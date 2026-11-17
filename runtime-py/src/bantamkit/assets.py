@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
 from bantamkit.client import BantamError, Tool
+
+from . import stdlib312 as _stdlib312
 
 
 class AssetNotFound(BantamError):
@@ -18,10 +19,10 @@ def assets_root() -> Path:
     if env:
         return Path(env)
     packaged = Path(__file__).parent / "assets"
-    if packaged.exists():
+    if _stdlib312.path_exists(packaged):
         return packaged
-    repo = Path(__file__).resolve().parents[3] / "assets"
-    if repo.exists():
+    repo = _stdlib312.path_resolve(Path(__file__)).parents[3] / "assets"
+    if _stdlib312.path_exists(repo):
         return repo
     raise AssetNotFound("no assets directory found; set BANTAMKIT_ASSETS")
 
@@ -61,9 +62,9 @@ def load_tool_asset(name: str) -> dict:
     and neither belongs on the agent-facing `Tool`.
     """
     path = _asset_path("tool", name, ".json")
-    if not path.exists():
+    if not _stdlib312.path_exists(path):
         raise AssetNotFound(f"tool asset not found: {path}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _stdlib312.json_loads(path.read_text(encoding="utf-8"))
 
 
 def load_tool(name: str) -> Tool:
@@ -81,14 +82,14 @@ def load_tool(name: str) -> Tool:
 def load_schema(name: str) -> dict:
     """Return a JSON Schema asset (parsed) — e.g. the shift-work checkpoint contract."""
     path = _asset_path("schema", name, ".json")
-    if not path.exists():
+    if not _stdlib312.path_exists(path):
         raise AssetNotFound(f"schema asset not found: {path}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return _stdlib312.json_loads(path.read_text(encoding="utf-8"))
 
 
 def load_skill(name: str) -> str:
     path = _asset_path("skill", name, ".md")
-    if not path.exists():
+    if not _stdlib312.path_exists(path):
         raise AssetNotFound(f"skill asset not found: {path}")
     return path.read_text(encoding="utf-8")
 
@@ -96,6 +97,6 @@ def load_skill(name: str) -> str:
 def load_lang(name: str) -> str:
     """A reply-native directive (`assets/langs/<name>.md`, #292), trailing newline stripped."""
     path = _asset_path("lang", name, ".md")
-    if not path.exists():
+    if not _stdlib312.path_exists(path):
         raise AssetNotFound(f"lang asset not found: {path}")
     return path.read_text(encoding="utf-8").rstrip("\r\n")

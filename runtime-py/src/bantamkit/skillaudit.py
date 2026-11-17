@@ -128,6 +128,8 @@ from pathlib import Path
 
 from bantamkit.client import BantamError
 
+from . import stdlib312 as _stdlib312
+
 # The file a skill IS. Case-sensitive: the host loads this name and so does this reader.
 SKILL_FILE = "SKILL.md"
 
@@ -417,7 +419,7 @@ def _scan_tree(root: Path) -> tuple[list[Path], list[tuple[str, str, str]], froz
             versions.append((rel[0], rel[1], rel[2]))
         for entry in entries:
             try:
-                directory = entry.is_dir()
+                directory = _stdlib312.path_is_dir(entry)
             except OSError:
                 directory = False
             if not directory:
@@ -827,9 +829,9 @@ def _check_root(root: str | Path) -> Path:
         # reaches this function; it is refused here, where the other argument failures are.
         raise SkillAuditError("root must not be empty; name the directory of skills to scan")
     base = Path(root)
-    if not base.exists():
+    if not _stdlib312.path_exists(base):
         raise SkillAuditError(f"no such directory: {root}")
-    if not base.is_dir():
+    if not _stdlib312.path_is_dir(base):
         raise SkillAuditError(f"{root} is a file, not a directory of skills")
     return base
 

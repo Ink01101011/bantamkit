@@ -82,6 +82,8 @@ from bantamkit.skillfile import (
 )
 from bantamkit.storage.retention import parse_now
 
+from . import stdlib312 as _stdlib312
+
 AUTO_ENV = "BANTAMKIT_SKILL_AUTO"
 #: #301: the switch for firing a skill in recall on a trigger phrase (`memory.skills`). Named
 #: here, beside `AUTO_ENV`, and not in `memory/`: `memory.divergence` reads every `BANTAMKIT_*`
@@ -506,7 +508,7 @@ def probation_step(
         except ValueError:
             continue
         target = Path(e["path"]) if isinstance(e.get("path"), str) else None
-        if target is None or not (target / SKILL_FILE).is_file():
+        if target is None or not _stdlib312.path_is_file(target / SKILL_FILE):
             gone.append(name)
             continue
         raw = (target / SKILL_FILE).read_bytes()
@@ -668,9 +670,9 @@ def _dir_files(root: Path) -> dict[str, bytes]:
             p = d / entry
             if p.is_symlink():
                 continue
-            if p.is_dir():
+            if _stdlib312.path_is_dir(p):
                 walk(p, f"{rel}{entry}/")
-            elif p.is_file():
+            elif _stdlib312.path_is_file(p):
                 out[f"{rel}{entry}"] = p.read_bytes()
 
     walk(root, "")

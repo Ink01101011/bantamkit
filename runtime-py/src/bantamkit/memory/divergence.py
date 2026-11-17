@@ -36,8 +36,11 @@ from pathlib import Path
 
 import yaml
 
+from bantamkit.memory.factcodec import safe_load as factcodec_safe_load
 from bantamkit.memory.layers import MEMORY_DIR_ENV, resolve_project_store
 from bantamkit.memory.store import MemoryValidationError, well_formed_frontmatter
+
+from .. import stdlib312 as _stdlib312
 
 # Both stores keep a generated roll-up beside the facts. It is derived from them, so
 # comparing it would report the same drift twice, and it carries no frontmatter, so
@@ -177,7 +180,7 @@ def store_availability(root: str | Path) -> StoreAvailability:
     """
     root = Path(root)
     try:
-        exists = root.exists()
+        exists = _stdlib312.path_exists(root)
     except OSError as e:  # pragma: no cover - a stat that raises needs a hostile fs
         return StoreAvailability(str(root), UNREADABLE, f"cannot stat {root}: {e}")
     if not exists:
@@ -188,7 +191,7 @@ def store_availability(root: str | Path) -> StoreAvailability:
                 f"a symlink at {root} points at nothing -- a store was expected here",
             )
         return StoreAvailability(str(root), ABSENT, f"no directory at {root}")
-    if not root.is_dir():
+    if not _stdlib312.path_is_dir(root):
         return StoreAvailability(
             str(root), UNREADABLE, f"{root} exists but is not a directory"
         )
@@ -348,7 +351,7 @@ def writer_source_files() -> list[Path]:
     remembering to add it. This module is excluded: `NATIVE_ROOT_ENV` is the INSTRUMENT's
     own knob, not the writer's, and registering it against itself would prove nothing.
     """
-    here = Path(__file__).resolve()
+    here = _stdlib312.path_resolve(Path(__file__))
     shims = sorted(p for p in here.parent.glob("*.py") if p.name != here.name)
     # #316 (J89-5b): a module that is a SHIM over a generated one (`from bantamkit._generated
     # import layers as _g`) resolves through that generated body, so the body is scanned too.
@@ -360,7 +363,7 @@ def writer_source_files() -> list[Path]:
         for p in shims
         for stem in _GENERATED_IMPORT_RE.findall(p.read_text(encoding="utf-8"))
     }
-    return shims + sorted(b for b in bodies if b.is_file())
+    return shims + sorted(b for b in bodies if _stdlib312.path_is_file(b))
 
 
 def env_names_in_source(source: str) -> frozenset[str]:
@@ -427,7 +430,7 @@ def resolver_honours_env(name: str, target: str | Path) -> bool:
     previous = os.environ.get(name)
     os.environ[name] = str(target)
     try:
-        return bantamkit_store_root().resolve() == target.resolve()
+        return _stdlib312.path_resolve(bantamkit_store_root()) == _stdlib312.path_resolve(target)
     finally:
         if previous is None:
             os.environ.pop(name, None)
@@ -447,18 +450,18 @@ def _canonical_repo_root(start: str | Path | None = None) -> Path:
     Python keeps the module free of a `git` subprocess, which also keeps it honest on
     a CI runner that has no git on PATH.
     """
-    base = (Path(start) if start is not None else Path.cwd()).resolve()
+    base = _stdlib312.path_resolve(Path(start) if start is not None else Path.cwd())
     for directory in (base, *base.parents):
         marker = directory / ".git"
-        if marker.is_dir():
+        if _stdlib312.path_is_dir(marker):
             return directory
-        if marker.is_file():
+        if _stdlib312.path_is_file(marker):
             text = marker.read_text(encoding="utf-8").strip()
             if not text.startswith("gitdir:"):
                 return directory
             gitdir = Path(text.split(":", 1)[1].strip())
             if not gitdir.is_absolute():
-                gitdir = (directory / gitdir).resolve()
+                gitdir = _stdlib312.path_resolve(directory / gitdir)
             for parent in (gitdir, *gitdir.parents):
                 if parent.name == ".git":
                     return parent.parent
@@ -498,7 +501,7 @@ def bantamkit_store_root(start: str | Path | None = None) -> Path:
     if binding.origin == "pin":
         return binding.path
     anchored = _canonical_repo_root(start) / ".bantamkit" / "memory"
-    if anchored.is_dir():
+    if _stdlib312.path_is_dir(anchored):
         return anchored
     # Same walk the old fallback ran, already done: `binding.path` for a walk binding is
     # what `discover_project_store()` returns, and "designated" is its way of saying the
@@ -570,7 +573,7 @@ def parse_fact(path: str | Path) -> StoredFact:
         )
     try:
         # #212: one lone-surrogate rule for every frontmatter read (`store.well_formed`).
-        meta = well_formed_frontmatter(front, yaml.safe_load(front))
+        meta = well_formed_frontmatter(front, factcodec_safe_load(front))
     except yaml.YAMLError as e:
         raise MemoryValidationError(f"malformed fact file {path}: {e}") from e
     if not isinstance(meta, dict):
@@ -666,7 +669,7 @@ def read_store(root: str | Path) -> tuple[list[StoredFact], list[UnparseableFact
     later `clean=True` mean "the stores agree" when it meant "I read neither".
     """
     root = Path(root)
-    if not root.is_dir():
+    if not _stdlib312.path_is_dir(root):
         raise MemoryValidationError(f"memory store directory does not exist: {root}")
 
     facts: dict[str, StoredFact] = {}

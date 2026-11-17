@@ -59,6 +59,8 @@ from bantamkit.storage.logsegment import (
     rewrite_held,
 )
 
+from .. import stdlib312 as _stdlib312
+
 TOUCH_OPS = {
     "Read": "read",
     "Edit": "edit",
@@ -268,7 +270,7 @@ def current_seq(state_dir: str, session: str) -> int:
     """The session's last ordinal; 0 when there is none or it cannot be read."""
     try:
         with open(_seq_path(state_dir, session), "rb") as f:
-            v = json.loads(f.read().decode("utf-8", errors="replace")).get("seq")
+            v = _stdlib312.json_loads(f.read().decode("utf-8", errors="replace")).get("seq")
     except (OSError, ValueError, AttributeError):
         return 0
     return v if _int(v) and v >= 0 else 0

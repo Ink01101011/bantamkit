@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import hashlib
 import json
@@ -63,6 +62,9 @@ from bantamkit.pricing import PriceTableError
 from bantamkit.statusline import status_line
 from bantamkit.storage import tiers as storage_tiers
 from bantamkit.touch.recallfile import RECALL_NEEDS_QUERY_OR_FILE
+
+from . import stdlib312 as _stdlib312
+from .stdlib312 import argparse
 
 try:
     from mcp.server import MCPServer
@@ -177,7 +179,7 @@ def _code_fingerprint() -> tuple[str, int, Path]:
     located = getattr(bantamkit, "__file__", None)
     if not located:
         raise _Undetermined("bantamkit has no __file__; the running code is not on disk")
-    root = Path(located).resolve().parent
+    root = _stdlib312.path_resolve(Path(located)).parent
     packed_assets = root / "assets"
     files = sorted(
         p
@@ -241,7 +243,7 @@ def _pack_files(root: Path) -> list[Path]:
     return sorted(
         p
         for p in root.rglob("*")
-        if p.is_file() and "__pycache__" not in p.relative_to(root).parts
+        if _stdlib312.path_is_file(p) and "__pycache__" not in p.relative_to(root).parts
     )
 
 
@@ -397,7 +399,7 @@ def _dist_owns(dist: metadata.Distribution, running: Path) -> bool:
     not evidence about the bytes that were imported. Matching on the resolved file is.
     """
     try:
-        located = Path(str(dist.locate_file("bantamkit/__init__.py"))).resolve()
+        located = _stdlib312.path_resolve(Path(str(dist.locate_file("bantamkit/__init__.py"))))
     except (OSError, ValueError):
         return False
     return located == running
@@ -438,7 +440,7 @@ def _derive_install(
     would assert this function's own reasoning back at it, and the entire question is what
     pip actually writes down.
     """
-    running = package_file.resolve()
+    running = _stdlib312.path_resolve(package_file)
     for dist in dists:
         try:
             name = dist.metadata["Name"]
@@ -461,7 +463,7 @@ def _derive_install(
                 )
             continue
         try:
-            direct = json.loads(raw)
+            direct = _stdlib312.json_loads(raw)
         except ValueError:
             continue
         if not isinstance(direct, dict):
@@ -495,7 +497,7 @@ def _derive_install(
 
 def _is_within(child: Path, parent: Path) -> bool:
     """`child` under `parent`, tolerating a `parent` that is a symlink or does not exist."""
-    for candidate in (parent, parent.resolve()):
+    for candidate in (parent, _stdlib312.path_resolve(parent)):
         try:
             if child.is_relative_to(candidate):
                 return True
@@ -612,7 +614,7 @@ def build_identity() -> dict[str, Any]:
         else:
             identity["install_source"] = install.source
             try:
-                identity["install_source_exists"] = Path(install.source).exists()
+                identity["install_source_exists"] = _stdlib312.path_exists(Path(install.source))
             except OSError as exc:
                 identity["install_source_exists"] = _unavailable(
                     f"the recorded origin path could not be checked: {exc}"
@@ -807,7 +809,7 @@ def _asset_pack_condition() -> Condition | None:
             "descriptions have nothing behind them — reinstall the package, or point "
             "BANTAMKIT_ASSETS at a real pack and restart the server.",
         )
-    if not root.is_dir():
+    if not _stdlib312.path_is_dir(root):
         return Condition(
             "asset-pack-missing",
             "the asset pack is gone from where this server resolved it, so skills, "
@@ -915,7 +917,7 @@ def _install_source_condition(install: Install | None) -> Condition | None:
     if install is None or install.source is None:
         return None
     try:
-        if Path(install.source).exists():
+        if _stdlib312.path_exists(Path(install.source)):
             return None
     except OSError:
         return None
@@ -2168,10 +2170,10 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
             # tree. Node's `statSync` arm reproduces exactly that split; there is no
             # `except OSError` here because `repomap.repo_map` raises none — its walk and
             # its reads each already resolve a failure into a counted Omission.
-            if not base.exists():
+            if not _stdlib312.path_exists(base):
                 log.record("repo_map", "refused")
                 return _noted(tool_failed("repo_map", f"no such directory: {root}"))
-            if not base.is_dir():
+            if not _stdlib312.path_is_dir(base):
                 log.record("repo_map", "refused")
                 return _noted(
                     tool_failed("repo_map", f"{root} is a file, not a directory to map")
@@ -2423,7 +2425,7 @@ def build_server(memory: Memory, log: EventLog | None = None) -> Any:
     @server.resource("bantamkit://rubrics/{name}")
     def rubric_resource(name: str) -> str:
         path = assets_root() / "rubrics" / f"{name}.yaml"
-        if not path.is_file():
+        if not _stdlib312.path_is_file(path):
             raise ResourceError(f"unknown rubric asset: {name}")
         return path.read_text(encoding="utf-8")
 
@@ -3146,7 +3148,7 @@ def _run_update() -> None:
     # `checkout`, whose tree IS the thing to update and which J46-11 deliberately left
     # without a `source` because finding a repo root without git would be a guess. The
     # running package directory is not a guess: it is where the code being executed lives.
-    source = install.source or str(_running_package_file().resolve().parent)
+    source = install.source or str(_stdlib312.path_resolve(_running_package_file()).parent)
     try:
         report = selfupdate.update(_version(), selfupdate.Origin(install.shape, source))
     except selfupdate.UpdateRefused as exc:

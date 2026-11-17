@@ -44,16 +44,20 @@ child a handler spawns. A rename inside the cap fails at import or at first use,
 from __future__ import annotations
 
 import asyncio
-import json
+import contextlib
+import os
 import re
 import sys
 import threading
 from collections.abc import AsyncIterator
 from typing import Any
 
+import anyio
 import mcp_types as types
 from mcp.server import stdio as _sdk_stdio
 from mcp.shared.message import SessionMessage
+
+from . import stdlib312 as _stdlib312
 
 # A surrogate code point that survives `json.loads` is lone: a pair becomes one code point.
 _LONE = re.compile("[\ud800-\udfff]")
@@ -100,7 +104,7 @@ def refusal_for(line: str, tools: frozenset[str]) -> types.JSONRPCResponse | Non
     if _ESCAPE.search(line) is None:
         return None
     try:
-        frame = json.loads(line)
+        frame = _stdlib312.json_loads(line)
     except ValueError:
         return None
     if not isinstance(frame, dict) or frame.get("method") != "tools/call" or "id" not in frame:
@@ -160,7 +164,7 @@ def malformed_frame_error(line: str) -> types.JSONRPCError | None:
 
 def _is_strict_json(line: str) -> bool:
     try:
-        json.loads(line, parse_constant=_no_constant)
+        _stdlib312.json_loads(line, parse_constant=_no_constant)
     except ValueError:
         return False
     return True
@@ -277,10 +281,19 @@ async def serve_stdio(server: Any) -> None:
     writer wrapped (`_Writes`)."""
     tools = frozenset(tool.name for tool in await server.list_tools())
     buffer, release = _sdk_stdio._claim_fd(0, sys.stdin, "rb", _sdk_stdio._open_stdin_diversion)
+    out_buffer, out_release = None, None
     try:
         text = _sdk_stdio._UnownedTextWrapper(buffer, encoding="utf-8", errors="replace")
         lines = _Lines(_DaemonLines(text), tools)
-        async with _sdk_stdio.stdio_server(stdin=lines) as (read_stream, write_stream):  # type: ignore[arg-type]
+        # fd 1 is claimed HERE, exactly as `stdio_server()` claims it when handed no stdout, so
+        # the buffer the frames go through is one this function can reach afterwards (#181,
+        # J90-P8F: `_quiet_dead_pipe`).
+        out_buffer, out_release = _sdk_stdio._claim_fd(1, sys.stdout, "wb", _stdout_diversion)
+        stdout = anyio.wrap_file(_sdk_stdio._UnownedTextWrapper(out_buffer, encoding="utf-8"))
+        async with _sdk_stdio.stdio_server(stdin=lines, stdout=stdout) as (  # type: ignore[arg-type]
+            read_stream,
+            write_stream,
+        ):
             lines.write_stream = write_stream
             lowlevel = server._lowlevel_server
             # `experimental: {}` is advertised on purpose; the port declares it too
@@ -290,7 +303,46 @@ async def serve_stdio(server: Any) -> None:
             await lowlevel.run(read_stream, _Writes(write_stream), options)
     except* (BrokenPipeError, ConnectionResetError):
         # The host closed its read end (#181): the session is over, exactly as on stdin EOF.
-        pass
+        _quiet_dead_pipe(out_buffer)
     finally:
+        if out_release is not None:
+            out_release()
         if release is not None:
             release()
+
+
+def _stdout_diversion() -> int:
+    """Where fd 1 points while the wire is served: stderr, else the null device (the SDK's rule)."""
+    try:
+        return os.dup(2)
+    except OSError:
+        return os.open(os.devnull, os.O_WRONLY)
+
+
+def _quiet_dead_pipe(out_buffer: Any) -> None:
+    """Let the frame a closed pipe refused die with the session, silently, on every CPython.
+
+    The write that raised `BrokenPipeError` left its bytes in `out_buffer`, and the interpreter
+    flushes that buffer once more when it finalizes the object, which fails the same way. 3.12
+    ignored a failed `close()` in the `IOBase` finalizer; 3.13 reports it through
+    `sys.unraisablehook` (gh-62948), so the server left with `Exception ignored in:
+    <_io.BufferedWriter name=7>` / `BrokenPipeError: [Errno 32] Broken pipe` on stderr where the
+    port, and 3.12, leave nothing (`--suite wire`, `j66-3`). The pipe is gone and no reader can
+    ever have these bytes, so the descriptor under the buffer is pointed at the null device and
+    the buffer flushed into it: nothing is left for the finalizer to fail on.
+    """
+    if out_buffer is None:
+        return
+    try:
+        fd = out_buffer.fileno()
+        null = os.open(os.devnull, os.O_WRONLY)
+    except (OSError, ValueError):
+        return
+    try:
+        os.dup2(null, fd)
+    except OSError:
+        return
+    finally:
+        os.close(null)
+    with contextlib.suppress(OSError, ValueError):
+        out_buffer.flush()

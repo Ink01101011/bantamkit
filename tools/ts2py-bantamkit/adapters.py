@@ -35,6 +35,55 @@ from __RUNTIME__ import (
     _JsTypeError,
 )
 
+# J90-P8F: the CPython 3.12 answers the Node port reproduces, on 3.13 and 3.14 too
+# (`bantamkit/stdlib312.py` names each change). Looked up on first use, as the other bantamkit
+# names here are. Inside the package it is always there. A module compiled OUTSIDE it (the host
+# crate's tests, `--suite ts2py-codec`) loads the file from wherever `bantamkit` is on the path,
+# without importing the package; with no bantamkit anywhere it gets `_LiveLibrary`, the
+# interpreter's own answers, which is what every adapter asked before J90-P8F.
+_STDLIB312 = None
+
+
+class _LiveLibrary:
+    """The standard library's own answers, under the names `stdlib312` gives its 3.12 pins."""
+
+    path_exists = staticmethod(lambda path: _pathlib.Path(path).exists())
+    path_is_dir = staticmethod(lambda path: _pathlib.Path(path).is_dir())
+    path_is_file = staticmethod(lambda path: _pathlib.Path(path).is_file())
+    path_resolve = staticmethod(lambda path, strict=False: _pathlib.Path(path).resolve(strict))
+    path_suffix = staticmethod(lambda path: _pathlib.PurePath(path).suffix)
+    win_is_absolute = staticmethod(lambda path: _pathlib.PureWindowsPath(path).is_absolute())
+    json_loads = staticmethod(_json.loads)
+    pin_datetime_error = staticmethod(lambda error: error)
+
+
+def _stdlib312_by_path():
+    """`bantamkit/stdlib312.py` from wherever `bantamkit` would be imported from, loaded as a module
+    of its own: the package's `__init__` (and its dependencies) never runs. `None` if not found."""
+    import importlib.machinery
+    import importlib.util
+
+    spec = importlib.machinery.PathFinder.find_spec("bantamkit")
+    for directory in (spec.submodule_search_locations or []) if spec is not None else []:
+        source = _os.path.join(directory, "stdlib312.py")
+        if _os.path.isfile(source):
+            found = importlib.util.spec_from_file_location("_bantamkit_stdlib312", source)
+            module = importlib.util.module_from_spec(found)
+            found.loader.exec_module(module)
+            return module
+    return None
+
+
+def _stdlib312():
+    global _STDLIB312
+    if _STDLIB312 is None:
+        try:
+            from .. import stdlib312 as module
+        except ImportError:
+            module = _stdlib312_by_path() or _LiveLibrary
+        _STDLIB312 = module
+    return _STDLIB312
+
 # J90-P7 (#316 G4): mypyc reads this module (it is never compiled) to know the base of a compiled
 # `class E extends BantamError`. A base it cannot see is `Any`, and mypyc then builds the class on
 # `object` alone, silently; this declaration, which only a type checker reads, names the class
@@ -1059,13 +1108,15 @@ def process_pid():
 
 
 def py_exists(path):
-    """`pyExists` (runtime-ts/src/memory/pyfs.ts): `Path.exists()`, which it ports."""
-    return _pathlib.Path(path).exists()
+    """`pyExists` (runtime-ts/src/memory/pyfs.ts): `Path.exists()`, which it ports — 3.12's, whose
+    EACCES raises (3.14 answers `False`; `stdlib312.path_exists`)."""
+    return _stdlib312().path_exists(_pathlib.Path(path))
 
 
 def py_is_dir(path):
-    """`pyIsDir` (runtime-ts/src/memory/pyfs.ts): `Path.is_dir()`, which it ports."""
-    return _pathlib.Path(path).is_dir()
+    """`pyIsDir` (runtime-ts/src/memory/pyfs.ts): `Path.is_dir()`, which it ports — 3.12's
+    (`stdlib312.path_is_dir`)."""
+    return _stdlib312().path_is_dir(_pathlib.Path(path))
 
 
 @_functools.lru_cache(maxsize=8192)
@@ -1732,8 +1783,9 @@ def py_scandir_probe(directory, *_):
 
 
 def py_suffix(path, *_):
-    """`pySuffix` (pyfs.ts): `PurePath.suffix`."""
-    return _pathlib.PurePath(path).suffix
+    """`pySuffix` (pyfs.ts): `PurePath.suffix` — 3.12's, where `'a.'` has none
+    (`stdlib312.path_suffix`)."""
+    return _stdlib312().path_suffix(path)
 
 
 def py_unlink(path, *_):
@@ -1887,7 +1939,7 @@ def _json_too_deep(text):
     # The opener at `cut` is reached exactly when the text before it is a well-formed prefix that
     # wants a value there: `json.loads` of that prefix stops at its end with `Expecting value`.
     try:
-        _json.loads(text[:cut])
+        _stdlib312().json_loads(text[:cut])
     except _json.JSONDecodeError as error:
         return error.msg == "Expecting value" and error.pos == cut
     except RecursionError:
@@ -1913,7 +1965,7 @@ def parse_json(text, *_):
     if _json_too_deep(text):
         raise _JsRangeError("Maximum call stack size exceeded")
     try:
-        value = _json.loads(text)
+        value = _stdlib312().json_loads(text)
     except RecursionError:
         raise _JsRangeError("Maximum call stack size exceeded") from None
     except ValueError as error:
@@ -2072,8 +2124,9 @@ def _grant_config_load(text):
     except ValueError as e:
         # J89-5d: a scalar PyYAML resolves but cannot construct (an implicit timestamp such as
         # `2001-02-30` or `25:00:00`, an int past CPython's 4,300-digit limit) is refused with
-        # CPython's own reason, as a `yaml.YAMLError` is.
-        error = _GrantConfigUnreadable(str(e))
+        # CPython's own reason, as a `yaml.YAMLError` is -- 3.12's, which the port spells (J90-P8F:
+        # 3.14 rewrote the timestamp sentences, gh-109798; `stdlib312.pin_datetime_error`).
+        error = _GrantConfigUnreadable(str(_stdlib312().pin_datetime_error(e)))
     _GRANT_CONFIG[:] = [(text, value, error)]
     return value, error
 
@@ -2135,13 +2188,14 @@ def parse_config_document(text, *_):
 
 
 def py_is_file(path, *_):
-    """`pyIsFile` (pyfs.ts): `Path.is_file()`, which it ports."""
-    return _pathlib.Path(path).is_file()
+    """`pyIsFile` (pyfs.ts): `Path.is_file()`, which it ports — 3.12's (`stdlib312.path_is_file`)."""
+    return _stdlib312().path_is_file(_pathlib.Path(path))
 
 
 def py_resolve(path, *_):
-    """`pyResolve` (pyfs.ts): `str(Path(path).resolve())`, which it ports (`strict=False`)."""
-    return str(_pathlib.Path(path).resolve())
+    """`pyResolve` (pyfs.ts): `str(Path(path).resolve())`, which it ports (`strict=False`) — 3.12's,
+    whose symlink loop raises `RuntimeError` (`stdlib312.path_resolve`)."""
+    return str(_stdlib312().path_resolve(path))
 
 
 def py_stat_is_dir(path, *_):
@@ -2160,7 +2214,10 @@ def py_expanduser(path, *_):
 
 
 def py_is_absolute(path, *_):
-    """`pyIsAbsolute` (pyfs.ts): `PurePath(path).is_absolute()`."""
+    """`pyIsAbsolute` (pyfs.ts): `PurePath(path).is_absolute()` — 3.12's, where a Windows path is
+    absolute only with a drive AND a root (`stdlib312.win_is_absolute`)."""
+    if _os.name == "nt":
+        return _stdlib312().win_is_absolute(path)
     return _pathlib.PurePath(path).is_absolute()
 
 

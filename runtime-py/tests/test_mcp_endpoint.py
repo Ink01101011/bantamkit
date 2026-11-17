@@ -105,7 +105,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from conftest import ON_WINDOWS, WINDOWS_SKIP_TOKEN
+from conftest import ON_WINDOWS, WINDOWS_SKIP_TOKEN, checkout_only
 
 pytest.importorskip("mcp")
 
@@ -274,6 +274,13 @@ def test_the_command_in_mcp_json_names_a_file_present_in_every_checkout():
     assert os.access(ENDPOINT, os.X_OK), ENDPOINT
 
 
+_CHECKOUT_ONLY = checkout_only(
+    because=(
+        "this node asserts the endpoint names THIS CHECKOUT as its source"
+    ),
+)
+
+
 @pytest.mark.skipif(
     NO_WINDOWS_ENDPOINT,
     reason=(
@@ -288,6 +295,7 @@ def test_the_command_in_mcp_json_names_a_file_present_in_every_checkout():
         "not overlooked."
     ),
 )
+@_CHECKOUT_ONLY
 def test_the_endpoint_as_configured_serves_and_names_this_checkout_as_its_source(tmp_path):
     """Spawn the string `.mcp.json` carries, from the project directory, and interrogate it.
 

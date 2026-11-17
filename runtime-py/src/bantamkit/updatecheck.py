@@ -117,13 +117,13 @@ to be called from `mcpserver.bantamkit_status`. It imports no `mcp` and reaches 
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import bantamkit.stdlib312 as _stdlib312
 from bantamkit.selfupdate import PROGRAM, compare_versions
 
 __all__ = [
@@ -301,7 +301,7 @@ def load_record(path: Path | None = None) -> tuple[str, dict[str, Any] | None]:
         # are `OSError`s. None of them may escape: every failure here is a state.
         return (SOURCE_UNREADABLE, None)
     try:
-        payload = json.loads(text)
+        payload = _stdlib312.json_loads(text)
     except ValueError:
         return (SOURCE_UNREADABLE, None)
     if not isinstance(payload, dict):

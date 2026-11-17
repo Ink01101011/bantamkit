@@ -25,6 +25,8 @@ from bantamkit.assets import AssetNotFound, assets_root
 from bantamkit.client import BantamError, Message
 from bantamkit.textutil import truncate
 
+from . import stdlib312 as _stdlib312
+
 REQUIRED_KEYS = (
     "schema_instruction",
     "schema_retry",
@@ -75,7 +77,7 @@ REQUIRED_KEYS = (
 
 def load_contract(name: str = "default") -> dict:
     path = assets_root() / "contracts" / f"{name}.yaml"
-    if not path.exists():
+    if not _stdlib312.path_exists(path):
         raise AssetNotFound(f"contract asset not found: {path}")
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     missing = [k for k in REQUIRED_KEYS if k not in data]
@@ -142,7 +144,7 @@ def extract_json(text: str) -> dict | list:
         start = start_brace
     else:
         start = min(start_brace, start_bracket)
-    obj, _ = json.JSONDecoder().raw_decode(text[start:])
+    obj, _ = _stdlib312.json_raw_decode(json.JSONDecoder(), text[start:])
     return obj
 
 
@@ -310,14 +312,21 @@ class _PatternRefusal(Exception):
 # search: a catastrophic pattern in a worker thread still stops the event loop that answers
 # `ping` (measured: 0 ticks of the main thread during a 372 ms search). A child can be killed;
 # a running `re.search` cannot be interrupted from another thread on any platform.
+#
+# J90-P8F: the search is CPython 3.12's on every interpreter. The parent sends `alt`, the pattern
+# with each `\\B` made a never-match when the string is empty (3.14 lets `\\B` match there,
+# gh-124130; `stdlib312.re_search`), and the child compiles the pattern AS GIVEN first, so a bad
+# one raises what it always raised. `re.error` is reported as `error` on every interpreter: 3.13
+# renamed the class `PatternError`, which `builtins` does not have.
 _CHILD_SOURCE = """
 import json, re, sys
 for line in sys.stdin.buffer:
-    pattern, text = json.loads(line)
+    pattern, text, alt = json.loads(line)
     try:
-        out = "1" if re.search(pattern, text) else "0"
+        re.compile(pattern)
+        out = "1" if re.search(alt or pattern, text) else "0"
     except Exception as e:
-        out = json.dumps([type(e).__name__, str(e)])
+        out = json.dumps(["error" if isinstance(e, re.error) else type(e).__name__, str(e)])
     sys.stdout.write(out + "\\n")
     sys.stdout.flush()
 """
@@ -364,7 +373,12 @@ class _PatternChild:
                 self._stop()
                 proc = self._start()
             assert proc.stdin is not None
-            proc.stdin.write(json.dumps([pattern, text]).encode("ascii") + b"\n")
+            alt = (
+                _stdlib312.without_nonboundary(pattern)
+                if text == "" and "\\B" in pattern
+                else None
+            )
+            proc.stdin.write(json.dumps([pattern, text, alt]).encode("ascii") + b"\n")
             proc.stdin.flush()
             try:
                 line = self._lines.get(timeout=timeout)
@@ -377,7 +391,7 @@ class _PatternChild:
             answer = line.decode("ascii").strip()
             if answer in ("0", "1"):
                 return answer == "1"
-            kind, message = json.loads(answer)
+            kind, message = _stdlib312.json_loads(answer)
             raise (re.error if kind == "error" else getattr(builtins, kind, RuntimeError))(message)
 
 
@@ -402,7 +416,7 @@ class _BoundedRe:
     def search(self, pattern: object, string: object, flags: int = 0) -> object:
         clock = _PATTERN_CLOCK.get()
         if clock is None or flags or not isinstance(pattern, str) or not isinstance(string, str):
-            return re.search(pattern, string, flags)  # type: ignore[arg-type]
+            return _stdlib312.re_search(pattern, string, flags)
         remaining = PATTERN_BUDGET_MS / 1000 - clock[0]
         if remaining <= 0:
             raise _PatternRefusal(_pattern_budget_sentence(pattern))
@@ -483,7 +497,7 @@ def schema_error(output: str, schema: dict) -> str | None:
     try:
         # #152: a whole-text JSON document of any type first — `"x"`, `1.0` and `null` are
         # JSON texts — and only then the object/array search `extract_json` does.
-        data = json.loads(_unfenced(output))
+        data = _stdlib312.json_loads(_unfenced(output))
     except ValueError:
         try:
             data = extract_json(output)

@@ -14,7 +14,11 @@ fn python() -> String {
 
 fn run_python(script: &str, args: &[&Path]) -> String {
     let python = python();
+    // J90-P8F: the adapters answer CPython 3.12's json and timestamp sentences through
+    // `bantamkit/stdlib312.py`, found on this path WITHOUT importing the package (whose
+    // `__init__` needs its dependencies), so `TS2PY_PYTHON` may be a bare 3.13 or 3.14.
     let run = Command::new(&python)
+        .env("PYTHONPATH", repo_root().join("runtime-py").join("src"))
         .arg("-c")
         .arg(script)
         .args(args)

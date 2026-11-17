@@ -36,6 +36,46 @@ from ._ts2py_runtime import (
     _JsTypeError,
 )
 
+_STDLIB312 = None
+
+
+class _LiveLibrary:
+
+    path_exists = staticmethod(lambda path: _pathlib.Path(path).exists())
+    path_is_dir = staticmethod(lambda path: _pathlib.Path(path).is_dir())
+    path_is_file = staticmethod(lambda path: _pathlib.Path(path).is_file())
+    path_resolve = staticmethod(lambda path, strict=False: _pathlib.Path(path).resolve(strict))
+    path_suffix = staticmethod(lambda path: _pathlib.PurePath(path).suffix)
+    win_is_absolute = staticmethod(lambda path: _pathlib.PureWindowsPath(path).is_absolute())
+    json_loads = staticmethod(_json.loads)
+    pin_datetime_error = staticmethod(lambda error: error)
+
+
+def _stdlib312_by_path():
+    import importlib.machinery
+    import importlib.util
+
+    spec = importlib.machinery.PathFinder.find_spec("bantamkit")
+    for directory in (spec.submodule_search_locations or []) if spec is not None else []:
+        source = _os.path.join(directory, "stdlib312.py")
+        if _os.path.isfile(source):
+            found = importlib.util.spec_from_file_location("_bantamkit_stdlib312", source)
+            module = importlib.util.module_from_spec(found)
+            found.loader.exec_module(module)
+            return module
+    return None
+
+
+def _stdlib312():
+    global _STDLIB312
+    if _STDLIB312 is None:
+        try:
+            from .. import stdlib312 as module
+        except ImportError:
+            module = _stdlib312_by_path() or _LiveLibrary
+        _STDLIB312 = module
+    return _STDLIB312
+
 if _typing.TYPE_CHECKING:
 
     class BantamError(_JsError):
@@ -920,11 +960,11 @@ def process_pid():
 
 
 def py_exists(path):
-    return _pathlib.Path(path).exists()
+    return _stdlib312().path_exists(_pathlib.Path(path))
 
 
 def py_is_dir(path):
-    return _pathlib.Path(path).is_dir()
+    return _stdlib312().path_is_dir(_pathlib.Path(path))
 
 
 @_functools.lru_cache(maxsize=8192)
@@ -1444,7 +1484,7 @@ def py_scandir_probe(directory, *_):
 
 
 def py_suffix(path, *_):
-    return _pathlib.PurePath(path).suffix
+    return _stdlib312().path_suffix(path)
 
 
 def py_unlink(path, *_):
@@ -1564,7 +1604,7 @@ def _json_too_deep(text):
     else:
         return False
     try:
-        _json.loads(text[:cut])
+        _stdlib312().json_loads(text[:cut])
     except _json.JSONDecodeError as error:
         return error.msg == "Expecting value" and error.pos == cut
     except RecursionError:
@@ -1578,7 +1618,7 @@ def parse_json(text, *_):
     if _json_too_deep(text):
         raise _JsRangeError("Maximum call stack size exceeded")
     try:
-        value = _json.loads(text)
+        value = _stdlib312().json_loads(text)
     except RecursionError:
         raise _JsRangeError("Maximum call stack size exceeded") from None
     except ValueError as error:
@@ -1709,7 +1749,7 @@ def _grant_config_load(text):
     except RecursionError:
         error = _GrantConfigUnreadable(_GRANT_TOO_DEEP)
     except ValueError as e:
-        error = _GrantConfigUnreadable(str(e))
+        error = _GrantConfigUnreadable(str(_stdlib312().pin_datetime_error(e)))
     _GRANT_CONFIG[:] = [(text, value, error)]
     return value, error
 
@@ -1761,11 +1801,11 @@ def parse_config_document(text, *_):
 
 
 def py_is_file(path, *_):
-    return _pathlib.Path(path).is_file()
+    return _stdlib312().path_is_file(_pathlib.Path(path))
 
 
 def py_resolve(path, *_):
-    return str(_pathlib.Path(path).resolve())
+    return str(_stdlib312().path_resolve(path))
 
 
 def py_stat_is_dir(path, *_):
@@ -1781,6 +1821,8 @@ def py_expanduser(path, *_):
 
 
 def py_is_absolute(path, *_):
+    if _os.name == "nt":
+        return _stdlib312().win_is_absolute(path)
     return _pathlib.PurePath(path).is_absolute()
 
 

@@ -27,6 +27,8 @@ from dataclasses import dataclass
 
 from bantamkit.storage.logsegment import write_over
 
+from .. import stdlib312 as _stdlib312
+
 GIT_TIMEOUT_MS = 2000
 GIT_PATHEXT_DEFAULT = ".COM;.EXE;.BAT;.CMD"  # Windows' own default when PATHEXT is unset
 GIT_PROBE_TTL_S = 600  # how long a `git --version` answer kept on disk stays good
@@ -162,7 +164,7 @@ def _probe_cached(state_dir: str, key: str) -> bool | None:
         if not abs(time.time() - os.stat(f).st_mtime) < GIT_PROBE_TTL_S:
             return None
         with open(f, "rb") as fh:
-            v = json.loads(fh.read().decode("utf-8", errors="replace"))
+            v = _stdlib312.json_loads(fh.read().decode("utf-8", errors="replace"))
     except (OSError, ValueError):
         return None
     if isinstance(v, dict) and v.get("key") == key and isinstance(v.get("ok"), bool):

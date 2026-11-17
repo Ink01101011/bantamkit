@@ -48,9 +48,12 @@ from typing import Any
 
 import yaml
 
+from bantamkit.memory.factcodec import safe_load as factcodec_safe_load
 from bantamkit.memory.store import well_formed, well_formed_frontmatter
 from bantamkit.storage.lock import exclusive
 from bantamkit.storage.retention import parse_now
+
+from . import stdlib312 as _stdlib312
 
 NAME_MAX = 64
 DESC_MAX = 1024
@@ -121,7 +124,7 @@ def parse_skill(text: str) -> SkillDoc:
     try:
         if any(isinstance(t, _PORT_REFUSES) for t in yaml.scan(front, Loader=yaml.SafeLoader)):
             raise SkillFileError("SKILL.md frontmatter is not a readable mapping")
-        meta = well_formed_frontmatter(front, yaml.safe_load(front))
+        meta = well_formed_frontmatter(front, factcodec_safe_load(front))
     except yaml.YAMLError as e:
         raise SkillFileError("SKILL.md frontmatter is not a readable mapping") from e
     if meta is None:
@@ -423,7 +426,7 @@ def rewrite_dir_atomic(target: Path | str, files: dict[str, bytes]) -> None:
     set aside into another (#250), and on any failure the old directory is back in place.
     """
     target = Path(target)
-    if not target.is_dir() or target.is_symlink():
+    if not _stdlib312.path_is_dir(target) or target.is_symlink():
         raise SkillFileError(f"no skill at {target}")
     tmp = _build(target, files)
     try:
@@ -441,10 +444,10 @@ def _copy_tree(src: Path, dst: str) -> None:
         d = os.path.join(dst, entry)
         if s.is_symlink():
             continue
-        if s.is_dir():
+        if _stdlib312.path_is_dir(s):
             os.mkdir(d)
             _copy_tree(s, d)
-        elif s.is_file():
+        elif _stdlib312.path_is_file(s):
             _write(d, s.read_bytes())
 
 
@@ -534,7 +537,7 @@ def replace_dir_atomic(
     On a failure the old directory is back in place and the backup just taken is removed.
     """
     target = Path(target)
-    if not target.is_dir() or target.is_symlink():
+    if not _stdlib312.path_is_dir(target) or target.is_symlink():
         raise SkillFileError(f"no skill at {target}")
     backup = backup_dir(backup_root, target, now)
     try:
@@ -559,7 +562,7 @@ def _backups(backup_root: Path | str, name: str) -> list[tuple[tuple[str, int], 
     out = []
     for entry in entries:
         m = _BACKUP_NAME.fullmatch(entry)
-        if m is not None and (home / entry).is_dir():
+        if m is not None and _stdlib312.path_is_dir(home / entry):
             out.append(((m.group(1), int(m.group(2) or 1)), entry))
     return sorted(out)
 
@@ -572,7 +575,7 @@ def undo(backup_root: Path | str, name: str, target: Path | str) -> str:
         raise SkillFileError(f"no backup of {name} to undo")
     entry = found[-1][1]
     backup = Path(backup_root) / name / entry
-    if (backup / ABSENT_MARKER).is_file():
+    if _stdlib312.path_is_file(backup / ABSENT_MARKER):
         if os.path.lexists(target):
             old, _ = _set_aside(target)
             shutil.rmtree(old, ignore_errors=True)
@@ -662,7 +665,7 @@ def read_state(home: Path | str) -> dict[str, Any]:
     except FileNotFoundError:
         return _empty_state()
     try:
-        doc = json.loads(raw.decode("utf-8"))
+        doc = _stdlib312.json_loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as e:
         raise SkillFileError(f"{STATE_NAME} is not readable JSON") from e
     version = doc.get("version") if isinstance(doc, dict) else None
