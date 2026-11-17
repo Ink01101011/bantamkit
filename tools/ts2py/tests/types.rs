@@ -217,7 +217,12 @@ fn number_ops_plain_only_on_proven_numbers() {
     has(count, "i = _js_num(i + 1)");
     has(count, "i == n");
     // `j` also takes `step` (`unknown`, cast with `as`): JS's `+` and `<`, through the runtime.
-    has(count, "j = _js_add(j, step)");
+    // J90-P6: in a loop the `+` is the guarded expansion, whose plain `+` runs only for two ints
+    // within 2^52 and whose other arm is the same runtime call.
+    has(
+        count,
+        "j = (j + step if type(j) is int and type(step) is int and -4503599627370496 <= step <= 4503599627370496 and -4503599627370496 <= j <= 4503599627370496 else _js_add(j, step))",
+    );
     has(count, "_js_lt(j, n)");
     // `count(2, '1')` concatenates, as JS does: the cast proved nothing.
     assert_eq!(

@@ -1006,3 +1006,52 @@ int `+` 314-374 us; the hand-written loop, which checks nothing, 173 us; the bod
 check at all 167 us. The check itself (about 45-65 ns a row, a separate pass or fused) is the
 floor, and a per-row fallback that stores an unproven sum into the same Map rules out a Map value
 fact. Not worth a compiler rule for at most 13% of one query.
+
+## J90-P6 rules (#316 G4: guarded inline expansion of hot helpers)
+
+**Where.** `Lowerer::hot` rewrites a lowered expression inside a loop body of a function (a
+`for`, `for-of`, `while` or `do` body, `breaks` holding a loop), never in a comprehension element
+(an inline `.map` / `.filter` / `.every` / `.some` callback) and never at module level. Three
+helpers, each written as a conditional expression whose fast arm is the helper's OWN first branch
+under a guard at least as strict, and whose slow arm is the unchanged call:
+
+| Call | Expansion |
+|---|---|
+| `_js_m_get(m, k)` | `(m._entries.get(k, _JS_UNDEFINED) if type(m) is _JsMap and type(k) is str else _js_m_get(m, k))` (the key test dropped for a string literal) |
+| `_js_strict_eq(a, b)` / `not _js_strict_eq(a, b)` | `(a == b if type(a) is type(b) is str else _js_strict_eq(a, b))` / `!=` and `not` |
+| `_js_add(a, b)` | `(a + b if type(a) is int and type(b) is int and -2**52 <= b <= 2**52 and -2**52 <= a <= 2**52 else _js_add(a, b))` (the type and range test of `b` dropped for an int literal under 16 digits) |
+
+`_js_add`'s own first branch takes two ints within ±2^53 and rounds their sum with `_js_num`; the
+expansion takes addends within ±2^52 only, so their exact sum is within ±2^53 and `_js_num` would
+return it unchanged. No `_js_num` is written.
+
+**Literals.** The first operand is never a literal, and a literal second operand must be of the
+fast arm's own type (a string key for `Map.get`, an int under 16 digits for `+`; never for `===`,
+where a string literal is already `==` and any other could not take the fast arm), so no guard
+tests a literal's type. Every generated module's header adds `UP034` to its `ruff: noqa` line: the
+expansion is parenthesized also where it is a call's sole argument.
+
+**Evaluation order.** Every operand but the first must be a name or a literal (`simple_operand`):
+read again in the slow arm with no code run in between, it gives the same value. The first, when it
+is anything else, is bound by `:=` to a fresh `_js_h<N>` (`type(_js_h1 := ...)`) in the guard's FIRST test, which always
+runs, so it is evaluated once and before the others, as in the call. Where `:=` cannot stand
+(a comprehension's iterable is lowered with `no_walrus` set; a lambda body has `in_callback`), the
+first operand must be simple too, or the call is left as it is. A call whose text is not exactly
+`helper(arg, arg)` (a keyword or starred argument, an unbalanced text) is left as it is.
+
+**Not taken, measured** (docs/porting.md, *Guarded inline expansion*): `_js_get`, `_js_num`,
+`_js_coalesce_value`, `_js_list_at` and comprehension elements. With all seven helpers and
+comprehensions the wheel grew 12.4 KB (cap +4.8 KB) and no path moved more than the three-helper
+form by more than its spread.
+
+Pinned in `tests/j90p6.rs`: `probe()` and `fuzz(3000)` of `tests/fixtures/j90p6_probe.ts` equal to
+what Node v26.13.0 printed (every pair of a 31-value pool through `===`, `!==` and `+`, a Map read
+by every pool value including `true`, `NaN`, `-0`, `2^53`, `'__proto__'`, a running Map sum
+through ints past 2^52); every expansion called from Python with values JS code cannot build (ints
+past 2^53, bools, BigInts, `-0.0`, NaN, a lone surrogate, a `_JsMap` subclass, an object with
+`_entries` that is not a Map, a dict, `None`) equal to the helper, value and type or the same
+exception; the fast arms TAKEN with the helpers patched to raise; a comprehension iterable in a
+loop compiles. Mutations, each red (a scratch copy of `tools/ts2py`): the addend bound 2^52 ->
+2^53; the second addend's type test dropped; the first addend's bound dropped; the `===` fast arm
+for any same type; `Map.get` without the key type test; `Map.get` on any receiver with
+`_entries`; the comprehension iterable's `no_walrus` dropped (SyntaxError).

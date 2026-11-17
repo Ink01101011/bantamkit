@@ -564,6 +564,14 @@ pub struct Lowerer<'s> {
     /// J90-P3: lowering the general loop of a proven copy (the path a failed guard takes): a
     /// counted loop nested in it is lowered once, without a copy of its own.
     in_fallback: usize,
+
+    /// J90-P6: lowering a comprehension's iterable, where an assignment expression is a
+    /// SyntaxError: a guarded inline expansion there binds no temporary (`hot`).
+    no_walrus: usize,
+    /// J90-P6: lowering an inline callback's body (a comprehension element): no expansion.
+    hot_comp: usize,
+    /// J90-P6: the temporaries `hot` has bound, for unique names.
+    hot_tmp: usize,
 }
 
 /// J89-3: what `fast_loop_plan` found in a counted loop's body.
@@ -737,6 +745,9 @@ impl<'s> Lowerer<'s> {
             fast_outer: Vec::new(),
             int_consts: HashMap::new(),
             in_fallback: 0,
+            no_walrus: 0,
+            hot_comp: 0,
+            hot_tmp: 0,
         }
     }
 
@@ -3594,6 +3605,113 @@ impl<'s> Lowerer<'s> {
     // ---------------------------------------------------------------- expressions
 
     fn expr(&mut self, e: &Expression<'_>) -> Py {
+        let value = self.expr_inner(e);
+        self.hot(value)
+    }
+
+    /// J90-P6: guarded inline expansion of a hot helper call (RULES.md, *J90-P6 rules*). Inside a
+    /// loop body, `_js_m_get(m, k)`, `_js_strict_eq(a, b)` and `_js_add(a, b)` are rewritten to a
+    /// conditional expression whose fast arm is the helper's own first branch under an exact-type
+    /// guard at least as strict, and whose slow arm is the unchanged helper call. Operands are
+    /// evaluated once each, in their original order: every operand but the first must be a name
+    /// or a literal (read again in the slow arm, with no code run in between); the first, if it is
+    /// anything else, is bound by `:=` in the guard's first test, which always runs. Where `:=`
+    /// cannot stand (a comprehension's iterable, a lambda), the first operand must be simple too.
+    fn hot(&mut self, value: Py) -> Py {
+        // Measured (docs/porting.md, *Guarded inline expansion*): a comprehension element and the
+        // other helpers (`_js_get`, `_js_num`, `_js_coalesce_value`, `_js_list_at`) moved no
+        // path by more than the run's spread and cost the wheel 1.5x its size budget.
+        if self.scopes.is_empty() || self.hot_comp > 0 || !self.breaks.contains(&BreakTarget::Loop)
+        {
+            return value;
+        }
+        let walrus = self.no_walrus == 0 && self.in_callback == 0;
+        let (negate, call) = match value.code.strip_prefix("not ") {
+            Some(rest) => (true, rest),
+            None => (false, value.code.as_str()),
+        };
+        let Some((helper, args)) = split_call(call) else {
+            return value;
+        };
+        let arity = match helper {
+            "_js_m_get" | "_js_strict_eq" | "_js_add" => 2,
+            _ => return value,
+        };
+        if args.len() != arity || (negate && helper != "_js_strict_eq") {
+            return value;
+        }
+        if args[1..].iter().any(|a| !simple_operand(a)) {
+            return value;
+        }
+        // A literal operand must be of the fast arm's own type (a literal of another type could
+        // never take it), and the first is never a literal: the guard tests no literal's type.
+        let literal = |a: &str| simple_operand(a) && !is_name(a);
+        let second = &args[1];
+        let literal_ok = match helper {
+            "_js_m_get" => !literal(second) || is_str_literal(second),
+            "_js_strict_eq" => !literal(second),
+            _ => {
+                !literal(second)
+                    || (is_int_literal(second) && second.trim_start_matches('-').len() < 16)
+            }
+        };
+        let first = args[0].clone();
+        if literal(&first) || !literal_ok {
+            return value;
+        }
+        // `type(t := x)`: an assignment expression may stand alone as a call's argument.
+        let (bind, name) = if simple_operand(&first) {
+            (first.clone(), first.clone())
+        } else if walrus {
+            self.hot_tmp += 1;
+            let t = format!("_js_h{}", self.hot_tmp);
+            (format!("{t} := {first}"), t)
+        } else {
+            return value;
+        };
+        // An addend the fast arm accepts lies within half the safe range (`_JS_SAFE_MAX / 2`), so
+        // the exact sum of two is itself a double's exact int and `_js_num` would return it as is.
+        const HALF: &str = "4503599627370496";
+        let a = &name;
+        let code = match helper {
+            "_js_m_get" => {
+                let k = &args[1];
+                let key_test = if is_str_literal(k) {
+                    String::new()
+                } else {
+                    format!(" and type({k}) is str")
+                };
+                format!(
+                    "({a}._entries.get({k}, _JS_UNDEFINED) if type({bind}) is _JsMap{key_test} else _js_m_get({a}, {k}))"
+                )
+            }
+            "_js_strict_eq" => {
+                let b = &args[1];
+                let (op, not) = if negate { ("!=", "not ") } else { ("==", "") };
+                format!(
+                    "({a} {op} {b} if type({bind}) is type({b}) is str else {not}_js_strict_eq({a}, {b}))"
+                )
+            }
+            _ => {
+                let b = &args[1];
+                let b_test = if is_int_literal(b) && b.trim_start_matches('-').len() < 16 {
+                    String::new()
+                } else {
+                    format!(" and type({b}) is int and -{HALF} <= {b} <= {HALF}")
+                };
+                format!(
+                    "({a} + {b} if type({bind}) is int{b_test} and -{HALF} <= {a} <= {HALF} else _js_add({a}, {b}))"
+                )
+            }
+        };
+        Py {
+            code,
+            prec: ATOM,
+            ..value
+        }
+    }
+
+    fn expr_inner(&mut self, e: &Expression<'_>) -> Py {
         match e {
             Expression::BooleanLiteral(b) => Py {
                 pure: true,
@@ -5268,13 +5386,18 @@ impl<'s> Lowerer<'s> {
                         c.arguments[0].as_expression().map(strip)
                     && self.inlinable_callback(arrow)
                 {
+                    // J90-P6: the comprehension's iterable, where `:=` is a SyntaxError.
+                    self.no_walrus += 1;
                     let receiver = self.expr(&m.object);
+                    self.no_walrus -= 1;
                     let items = if receiver.is_list {
                         receiver.at(OR + 1)
                     } else {
                         format!("_js_array({}, {})", py_str(method), receiver.code)
                     };
+                    self.hot_comp += 1;
                     let (param, value) = self.inline_callback(arrow);
+                    self.hot_comp -= 1;
                     // A comprehension's element may be a conditional expression; its `if` clause
                     // may not.
                     let test = |v: &Py, prec: u8| {
@@ -8038,6 +8161,126 @@ fn regex_class(chars: &[char], open: usize, out: &mut String) -> Result<usize, S
     }
     out.push(']');
     Ok(i)
+}
+
+/// J90-P6: `name(arg, ...)` spanning all of `code`: the name and the top-level arguments, split at
+/// commas outside brackets and string literals. `None` for anything else (a call followed by more
+/// code, a keyword argument, a starred argument, an unbalanced text).
+fn split_call(code: &str) -> Option<(&str, Vec<String>)> {
+    let open = code.find('(')?;
+    let name = &code[..open];
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    let inner = code[open + 1..].strip_suffix(')')?;
+    let mut args = Vec::new();
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut start = 0;
+    for (i, c) in inner.char_indices() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' => quote = Some(c),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth < 0 {
+                    return None;
+                }
+            }
+            ',' if depth == 0 => {
+                args.push(inner[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 || quote.is_some() {
+        return None;
+    }
+    let last = inner[start..].trim();
+    if !last.is_empty() {
+        args.push(last.to_string());
+    }
+    if args
+        .iter()
+        .any(|a| a.is_empty() || a.starts_with('*') || is_keyword_arg(a))
+    {
+        return None;
+    }
+    Some((name, args))
+}
+
+/// `name=value` at the top level of an argument (not `==`, `<=`, `>=`, `!=`, `:=`).
+fn is_keyword_arg(arg: &str) -> bool {
+    let head: String = arg
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    !head.is_empty() && arg[head.len()..].starts_with('=') && !arg[head.len()..].starts_with("==")
+}
+
+/// J90-P6: an operand `hot` may read twice: a Python name (never a keyword other than the three
+/// constants), an int or float literal, or a plain double-quoted string literal. Reading one runs
+/// no code, so a second read gives the same value.
+fn simple_operand(code: &str) -> bool {
+    matches!(code, "True" | "False" | "None")
+        || is_name(code)
+        || is_int_literal(code)
+        || is_float_literal(code)
+        || is_str_literal(code)
+}
+
+/// A Python name, never a keyword.
+fn is_name(code: &str) -> bool {
+    let mut chars = code.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !is_py_keyword(code)
+}
+
+fn is_int_literal(code: &str) -> bool {
+    let digits = code.strip_prefix('-').unwrap_or(code);
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+}
+
+fn is_float_literal(code: &str) -> bool {
+    let body = code.strip_prefix('-').unwrap_or(code);
+    !body.is_empty()
+        && body.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && body
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | 'e' | 'E' | '+' | '-'))
+}
+
+/// A `py_str` literal: `"`, then no unescaped `"` until the closing one.
+fn is_str_literal(code: &str) -> bool {
+    let Some(body) = code.strip_prefix('"').and_then(|b| b.strip_suffix('"')) else {
+        return false;
+    };
+    let mut escaped = false;
+    for c in body.chars() {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            return false;
+        }
+    }
+    !escaped
 }
 
 #[cfg(test)]

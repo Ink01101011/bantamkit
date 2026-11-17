@@ -2890,6 +2890,69 @@ What the hand-written code skipped on these paths is J90-P4's list: JSON ints pa
 compared exactly where JS rounds, rows trusted without a shape check, a short row read by
 unpacking where JS reads `undefined`.
 
+### Guarded inline expansion, interpreter versions, and a mypyc spike (#316 G4, J90-P6)
+
+**What moved (`tools/ts2py/RULES.md`, *J90-P6 rules*).** Inside a loop body, `m.get(k)`, `a === b`
+/ `a !== b` and `a + b` are written inline: the helper's own first branch under an exact-type
+guard, the unchanged helper call otherwise; an operand that is not a name or a literal is bound
+once by `:=` in the guard's first test. No TypeScript changed, so Node's answers and timings are
+unchanged. Seven helpers were measured; four (`_js_get`, `_js_num`, `_js_coalesce_value`,
+`_js_list_at`) and comprehension elements moved no path past the three-helper form's spread and
+put the wheel 12.4 KB over 794b63a6 (cap +4.8 KB); the three cost +3.1 KB.
+
+| path (n = 9 interleaved, median ms [min..max], CPython 3.12.13) | 9c6bc181 (hand) | 794b63a6 | J90-P6 | J90-P6 + mypyc runtime | J90-P6 + mypyc runtime, coldindex, hotindex | Node |
+|---|---|---|---|---|---|---|
+| hot index build | 410.4 [404.8..416.6] | 484.8 [480.5..500.2] | 481.4 [476.8..510.9] | 447.3 | 431.2 [429.4..440.8] | 261.6 |
+| held query x20 | 5.6 [5.4..5.6] | 8.9 [8.4..9.2] | 8.8 [8.3..9.7] | 6.9 | 6.4 [5.5..7.6] | 3.1 |
+| full refresh | 17.4 [16.2..17.9] | 26.2 [25.5..27.6] | 26.3 [25.5..28.5] | 24.2 | 24.5 [23.5..64.2] | 36.0 |
+| cold build | 85.6 [83.8..87.0] | 89.5 [89.1..91.6] | 86.8 [86.5..90.6] | 65.3 | 62.1 [60.2..63.3] | 30.8 |
+| cold query x20 | 36.3 [35.6..38.9] | 57.7 [57.2..58.9] | 53.6 [53.1..55.5] | 50.5 | 31.2 [30.9..32.2] | 20.8 |
+| compaction with `keep` | 51.3 [50.4..52.9] | 59.1 [57.4..60.8] | 57.1 [56.1..58.8] | 46.7 | 42.6 [41.9..44.1] | 28.4 |
+| first `memory_save` | 32.1 [31.3..34.4] | 39.8 [38.9..41.3] | 39.1 [38.3..39.7] | 33.2 | 33.1 [31.6..35.5] | 27.2 |
+
+The expansion's own share (cProfile, 794b63a6 -> J90-P6): the cold query's `_js_m_get` calls
+118,120 -> 18,300, `_js_strict_eq` 66,520 -> 40, `_js_add` 33,240 -> 0, total tottime 177.0 -> 153.3
+ms; the hot build's `_js_m_get` 145,995 -> 54,047, `_js_add` 70,470 -> 19,100. Every path is still
+slower than the hand-written module in pure Python. Size: wheel 962,958 -> 965,687 bytes (cap
+967,773); `_generated/*.py` 740,763 -> 759,495 bytes raw, 145,351 -> 147,999 gzip -9. The committed
+form (literal operands left alone, `type(t := x)`) re-measured against the form in the table, n =
+9 on 3.12: every path within the other's spread (cold query 55.1 against 55.6, hot build 491.0
+against 493.6).
+
+**The gap is the same on every supported interpreter** (same table, other CPythons; median ms,
+hand / 794b63a6 / J90-P6): cold query 3.11 33.8 / 57.7 / 53.2, 3.13 32.9 / 59.4 / 55.0, 3.14 33.2
+/ 53.9 / 50.8; hot build 3.11 414.9 / 497.0 / 495.8, 3.13 435.6 / 523.6 / 518.7, 3.14 417.0 /
+489.2 / 487.1; held query 3.11 5.4 / 8.6 / 9.2, 3.13 5.6 / 9.8 / 9.5, 3.14 5.7 / 8.9 / 9.1. 3.13 is
+the slowest of the four on every Python column; no version closes the gap (PEP 659's specializing
+interpreter speeds the helper calls and the hand-written code alike).
+
+**Whole-loop guard (measured, not built).** One C-speed guard over all rows of the cold query's
+loop and an unchecked body (`micro_loop.py`, 3.12): 394 us against 751 generated as 794b63a6
+lowered it, about 510 with the per-op expansion, and 178 hand-written; the guard alone is 228 us,
+more than the body. On 3.14 the Python-level guard (487) beats the C-level one (508).
+
+**mypyc (measured, nothing shipped).** mypy 2.4.1, CPython 3.12.13, macOS arm64
+(`cp312-darwin` only; no other platform tag was built). The runtime compiles after: the classes
+interpreted code subclasses or that multiply inherit `Exception` (`_JsObject`, the `Error`
+hierarchy, `_JsMatchArray`) moved to an uncompiled sibling (compiled `isinstance()` did not see an
+interpreted subclass of a non-native class); every other class `allow_interpreted_subclasses`;
+surrogate literals as `chr()`; `-> bool` / `-> str` on `__bool__` and a property; `var-annotated`
+and `override` silenced. `coldindex` and `hotindex` compile too with `-> object` on each property
+and `ClassVar` on each `_js_*` class attribute. Compiling all 22 generated modules did not run:
+a compiled class under the interpreted `Error` hierarchy segfaulted assigning `self.message`, and
+with those classes non-native a hand-written `MemoryValidationError` refused its arguments.
+`.so` bytes (raw / zip -9): runtime only -g1 1,755,648 / 472,034, -g0 1,342,608 / 399,501, -g0 +
+`strip -x` 1,068,080 / 355,429; runtime + coldindex + hotindex 3,302,568 / 807,485, 2,598,056 /
+682,958, 1,964,872 / 603,403; all modules 13,654,104 / 3,028,770, 10,900,120 / 2,551,492, 8,357,064 /
+2,240,987 — against a 962,958-byte pure wheel. The pure-Python fallback needs no code: a platform
+wheel would carry the `.so` beside each `.py`, and CPython's path finder tries extension modules
+before source (verified: `bantamkit._generated.store.__file__` is the `.so`). What shipping it would
+need from ts2py: `-> object` on each property it emits, `ClassVar` on each `_js_*` class attribute
+(a native class turns a class attribute into a per-instance slot, which `_js_class_names` read as a
+descriptor), the class split above, and `mypy_extensions` at run time for the `mypyc_attr`
+decorators (or a guarded import). No value annotations: every gain above is untyped code compiled
+to C calls; typed parameters were not tried.
+
 ## Concurrency
 
 Measured, not assumed: 12 pipelined saves all land in order; a recall behind a save **sees**
