@@ -372,3 +372,25 @@ test('a persist removes its own stale temps and no other index\'s (J90-3F)', () 
   assert.ok(['patched', 'rebuilt'].includes(hi.refresh('full')) && hi.docs().has('b'));
   assert.deepEqual(fs.readdirSync(d).filter((n) => n.endsWith('.tmp')).sort(), ['0000000000000000.json.34.tmp', `${head}.33.tmp`]);
 });
+
+test('a head replaced with the same mtime and size is reloaded (J90-P4)', () => {
+  // the held-head check is `${mtimeNs}:${size}:${ino}`; the generated Python read `ino` off an
+  // adapter Stats that did not carry it, so such a head stayed held there (red on efda7291)
+  const t = tmp();
+  fact(path.join(t, 's'), 'a', 'first fact AAAA');
+  const hi = hiOf(t);
+  const head = hi.path;
+  const T0 = 1_700_000_000; // whole seconds: utimes sets them exactly
+  fs.utimesSync(head, T0, T0);
+  hi.refresh('fast');
+  assert.equal(hi.doc('a').description, 'first fact AAAA');
+  const st = fs.statSync(head, { bigint: true });
+  const swap = path.join(path.dirname(head), 'swap');
+  fs.writeFileSync(swap, fs.readFileSync(head, 'latin1').replace('AAAA', 'BBBB'), 'latin1');
+  fs.utimesSync(swap, T0, T0);
+  fs.renameSync(swap, head);
+  const now = fs.statSync(head, { bigint: true });
+  assert.ok(now.mtimeNs === st.mtimeNs && now.size === st.size && now.ino !== st.ino);
+  hi.refresh('fast');
+  assert.equal(hi.doc('a').description, 'first fact BBBB');
+});

@@ -925,3 +925,34 @@ TS refactors (Node's answers unchanged; `npm test` and every Node side of the su
   spelled out.
 - index.ts: `coldFs` re-exported from `coldfs.ts`.
 
+
+## J90-P4 rules (#316 G4: the last speed gap, and one adapter divergence)
+
+**A divergence found and fixed: `Stats.ino`.** `hotindex.ts` keys its held head on
+`${st.mtimeNs}:${st.size}:${st.ino}`. Neither adapter `Stats` nor `BigIntStats` carried `ino`, and a
+read of a member an adapter object does not list answers `undefined`, so the generated Python keyed
+the head on mtime and size alone: a head renamed over by one of the same mtime and size stayed held
+on Python and was reloaded on Node (and on the hand-written 9c6bc181, which used `st_ino`). Both
+classes now carry it, Node's way: the BigInt form `st_ino` exactly, the number form `_js_num(st_ino)`
+(a double, as libuv's `ino` is one past 2^53). Red before the fix: `tests/j90p4.rs`
+`stats_carry_node_s_ino` (Python printed `undefined:undefined:undefined:undefined`),
+`runtime-py/tests/test_storage_hotindex.py` and its Node twin
+`a head replaced with the same mtime and size is reloaded` (Python answered the old description on
+efda7291). No other `fs.Stats` member is read by compiled code (`grep` of runtime-ts/src).
+
+| Change | Why it is the same answer | Measurement |
+|---|---|---|
+| `shardOf` memoized (hotindex.ts: a module `Map`, replaced by an empty one at 4,096 terms) | a pure function of the term | lookup of six terms 13.2 -> 9.6 us (Python), the hash alone 4.0 -> 0.4 us |
+| `removeStaleTemps` drops every name but `*.tmp` before the sort (lock.ts) | `tempBase` answers `null` for any other name, so the same names are visited in the same order | the sweep of a 462-file index directory x14: 3.6 -> 2.4 ms |
+| `statListing` states a native `*.md` once (`mdPaths`; a non-file skipped off that stat) where `listing` stated it for `isFile` and `statListing` again | the same `statSync` (symlinks followed) answers both questions | x14 sources: 6.2 -> 4.4 ms |
+| `readdir_sync` (adapter): an all-ASCII listing returned as `os.listdir(str)` gives it | an ASCII byte is itself under UTF-8 with `replace` and under the filesystem encoding | — |
+| `Stats` / `BigIntStats` fields set through `__dict__.update` (adapter) | the instance is not frozen while it is made, so `__setattr__`'s test has nothing to refuse | the constructor's share of `stat_sync` (2.0 us) |
+| `_js_int_to_radix` base 10 is `str(int)` below 10^4000 (runtime) | the loop's digits; CPython's digit cap is far above | a BigInt mtime's `toString()` |
+| `_js_m_endsWith` two ASCII `str`s first; `_JsSet` of a list of `str`s at once (runtime) | each the branch below's answer for exactly those types | — |
+
+Measured and NOT taken: lowering a fresh local `Map`'s `get` / `set` inline
+(`m._entries.get(k, _JS_UNDEFINED) if type(k) is str else ...`) in the cold query's row loop moved
+20 queries' time 2.30 -> 2.23 ms (3%) in a hand-edited copy, and a faster `_lifted` (map/zip
+instead of comprehensions) did not move the 14 heads' 2.7 ms at all: the keys are terms and names
+read from JSON (unproven), so no Map fact or typed method body reaches the per-row helpers that are
+the gap. See docs/porting.md (*J90-P4*) for the floor.

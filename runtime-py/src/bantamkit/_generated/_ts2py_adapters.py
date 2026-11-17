@@ -518,14 +518,17 @@ def _node_path(path, what):
 class Stats(_JsObject):
 
     _js_name = "Stats"
-    _js_own = frozenset({"size", "mtimeMs", "isDirectory", "isFile", "isSymbolicLink"})
+    _js_own = frozenset({"size", "mtimeMs", "ino", "isDirectory", "isFile", "isSymbolicLink"})
     _js_own_methods = frozenset({"isDirectory", "isFile", "isSymbolicLink"})
 
     def __init__(self, st, *_):
-        object.__setattr__(self, "_js_st", st)
-        self.size = st.st_size
         ns = st.st_mtime_ns
-        self.mtimeMs = (ns // 1_000_000_000) * 1e3 + (ns % 1_000_000_000) / 1e6
+        self.__dict__.update(
+            _js_st=st,
+            size=st.st_size,
+            mtimeMs=(ns // 1_000_000_000) * 1e3 + (ns % 1_000_000_000) / 1e6,
+            ino=_js_num(st.st_ino),
+        )
 
     def isDirectory(self, *_):
         return _stat.S_ISDIR(self._js_st.st_mode)
@@ -547,13 +550,18 @@ class Stats(_JsObject):
 class BigIntStats(Stats):
 
     _js_name = "BigIntStats"
-    _js_own = frozenset({"size", "mtimeMs", "mtimeNs", "isDirectory", "isFile", "isSymbolicLink"})
+    _js_own = frozenset(
+        {"size", "mtimeMs", "mtimeNs", "ino", "isDirectory", "isFile", "isSymbolicLink"}
+    )
 
     def __init__(self, st, *_):
-        object.__setattr__(self, "_js_st", st)
-        self.size = _JsBigInt(st.st_size)
-        self.mtimeNs = _JsBigInt(st.st_mtime_ns)
-        self.mtimeMs = _JsBigInt(st.st_mtime_ns // 1_000_000)
+        self.__dict__.update(
+            _js_st=st,
+            size=_JsBigInt(st.st_size),
+            mtimeNs=_JsBigInt(st.st_mtime_ns),
+            mtimeMs=_JsBigInt(st.st_mtime_ns // 1_000_000),
+            ino=_JsBigInt(st.st_ino),
+        )
 
 
 def stat_sync(path, *rest):
@@ -588,6 +596,9 @@ def readdir_sync(path, *rest):
     if rest:
         raise TypeError("ts2py: fs.readdirSync options are outside the subset")
     path = _node_path(path, "fs.readdirSync")
+    names = _os.listdir(path)
+    if "".join(names).isascii():
+        return names
     if _os.name == "nt":
         return [
             "".join("\ufffd" if 0xD800 <= ord(c) <= 0xDFFF else c for c in name)

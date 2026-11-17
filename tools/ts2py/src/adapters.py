@@ -578,18 +578,24 @@ def _node_path(path, what):
 
 class Stats(_JsObject):
     """`fs.Stats` from `statSync`/`lstatSync`/`fstatSync`: `size`, `mtimeMs` (libuv's seconds and
-    nanoseconds as Node combines them, `sec * 1e3 + nsec / 1e6`), and the type tests. On Windows a
+    nanoseconds as Node combines them, `sec * 1e3 + nsec / 1e6`), `ino` (J90-P4: libuv's `st_ino`
+    as a double, which the hot index's held-head check reads), and the type tests. On Windows a
     junction is a symbolic link to `lstat`, as libuv reports one."""
 
     _js_name = "Stats"
-    _js_own = frozenset({"size", "mtimeMs", "isDirectory", "isFile", "isSymbolicLink"})
+    _js_own = frozenset({"size", "mtimeMs", "ino", "isDirectory", "isFile", "isSymbolicLink"})
     _js_own_methods = frozenset({"isDirectory", "isFile", "isSymbolicLink"})
 
     def __init__(self, st, *_):
-        object.__setattr__(self, "_js_st", st)
-        self.size = st.st_size
         ns = st.st_mtime_ns
-        self.mtimeMs = (ns // 1_000_000_000) * 1e3 + (ns % 1_000_000_000) / 1e6
+        # J90-P4: the fields set at once (the instance is not frozen yet, so `__setattr__`'s test
+        # has nothing to refuse).
+        self.__dict__.update(
+            _js_st=st,
+            size=st.st_size,
+            mtimeMs=(ns // 1_000_000_000) * 1e3 + (ns % 1_000_000_000) / 1e6,
+            ino=_js_num(st.st_ino),
+        )
 
     def isDirectory(self, *_):
         return _stat.S_ISDIR(self._js_st.st_mode)
@@ -611,16 +617,22 @@ class Stats(_JsObject):
 class BigIntStats(Stats):
     """`fs.Stats` from `statSync(path, {bigint: true})` (J89-4a): `size`, `mtimeMs` and `mtimeNs`
     as BigInts (`mtimeNs` is libuv's `sec * 1e9 + nsec` exactly, which `st_mtime_ns` is;
-    `mtimeMs` that floored to milliseconds), and the same type tests."""
+    `mtimeMs` that floored to milliseconds; J90-P4: `ino`, `st_ino` exactly), and the same type
+    tests."""
 
     _js_name = "BigIntStats"
-    _js_own = frozenset({"size", "mtimeMs", "mtimeNs", "isDirectory", "isFile", "isSymbolicLink"})
+    _js_own = frozenset(
+        {"size", "mtimeMs", "mtimeNs", "ino", "isDirectory", "isFile", "isSymbolicLink"}
+    )
 
     def __init__(self, st, *_):
-        object.__setattr__(self, "_js_st", st)
-        self.size = _JsBigInt(st.st_size)
-        self.mtimeNs = _JsBigInt(st.st_mtime_ns)
-        self.mtimeMs = _JsBigInt(st.st_mtime_ns // 1_000_000)
+        self.__dict__.update(
+            _js_st=st,
+            size=_JsBigInt(st.st_size),
+            mtimeNs=_JsBigInt(st.st_mtime_ns),
+            mtimeMs=_JsBigInt(st.st_mtime_ns // 1_000_000),
+            ino=_JsBigInt(st.st_ino),
+        )
 
 
 def stat_sync(path, *rest):
@@ -663,6 +675,12 @@ def readdir_sync(path, *rest):
     if rest:
         raise TypeError("ts2py: fs.readdirSync options are outside the subset")
     path = _node_path(path, "fs.readdirSync")
+    # J90-P4: a listing of ASCII names only is the same list whichever way it is decoded (an
+    # ASCII byte is itself under UTF-8 with "replace" and under the filesystem encoding), so it is
+    # returned as `os.listdir` gives it; any other is listed again and decoded below.
+    names = _os.listdir(path)
+    if "".join(names).isascii():
+        return names
     if _os.name == "nt":
         # A NAME comes back as Node reports it: every lone surrogate U+FFFD (only a path handed
         # IN keeps what Python's `os` can encode, J88-RF F4b).

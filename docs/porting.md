@@ -2784,6 +2784,56 @@ and_is_refused` and its Node twin (red on 743b54b9's Node: `archive did not veri
   times a recall, about 3 us). The cold index is read only for `include_archived` and retention
   runs detached: carried with J90-2's index paths to #317.
 
+### The last speed gap and what the hand-written Python got wrong (#316 G4, J90-P4)
+
+**The 207 bytes.** J90-P3's real-data run had Python's `logs: usage/*` total 207 bytes under Node's
+after retention (4,963,736 against 4,963,943). It is the ruled `gzipSync` row above, not a new
+difference: of the 108 segments retention rotated, 94 differ in compressed size (CPython's level 9,
+XFL 2, against Node's level 6, XFL 0), every one equal decompressed, and the 94 differences sum to
+exactly 207. Python's and Node's status lines read over the SAME bytes (a copy of Node's bed for
+each) are equal, the usage total included.
+
+**A difference found and fixed: the held head's inode.** `hotindex.ts` keys its held head on
+`${mtimeNs}:${size}:${ino}`; the adapter `Stats` carried no `ino`, so the generated Python read
+`undefined` there and kept a head renamed over by one of the same mtime and size, where Node and
+the hand-written 9c6bc181 reloaded it. Fixed in the adapter (`tools/ts2py/RULES.md`, *J90-P4
+rules*), red on efda7291 in `test_storage_hotindex.py` and its Node twin.
+
+**Speed** (n = 9 interleaved fresh processes, medians in ms; 9c6bc181 hand-written, efda7291, this
+tree; the same machine and inputs as J90-P3):
+
+| path | Python 9c6bc181 | Python efda7291 | Python J90-P4 | Node efda7291 | Node J90-P4 |
+|---|---|---|---|---|---|
+| hot index build (14 sources) | 402.6 | 500.8 | 495.8 | 262.9 | 260.8 |
+| held query x20 | 6.6 | 10.3 | 9.2 | 4.1 | 2.8 |
+| full refresh | 15.7 | 30.4 | 26.4 | 38.0 | 34.8 |
+| cold build | 84.7 | 102.8 | 93.5 | 37.1 | 31.4 |
+| cold query x20 | 35.9 | 57.3 | 57.6 | 21.0 | 20.7 |
+| compaction with `keep` | 51.3 | 67.3 | 63.4 | 30.5 | 28.6 |
+| first `memory_save` | 31.8 | 42.7 | 41.2 | 27.6 | 27.2 |
+| retention run | 1,236 | 1,222 | 1,222 | 207 | 203 |
+| tier lines x5 | 1,419 | 741 | 744 | 243 | 244 |
+| #204 bar p50 | 8.07 | 8.53 | 8.39 | 2.66 | 2.66 |
+
+Seven Python paths are still slower than the hand-written module. The floor is the same on each:
+the time is in per-value JS-semantics helpers (`_js_get`, `_js_m_get`, `_js_strict_eq`, `_js_add`,
+`_js_rows`) applied to values read from JSON, which prove nothing, so neither a typed method body
+nor a Map fact reaches them (lowering a fresh Map's `get` / `set` inline in the cold query's row
+loop measured 3%). What the hand-written Python did there instead is skip the semantics:
+
+- it summed and compared JSON integers as Python ints: a cold query whose term frequencies pass
+  2^53 answered `18014398509481986` where Node (and the generated module) answer
+  `18014398509481984` (two rows of `9007199254740993`; measured on 9c6bc181, this tree's generated module
+  and Node);
+- its row check (`_is_rows`: `isinstance(r[3], int) and not isinstance(r[3], bool)`) admits every
+  int past the doubles, which JS's `Number.isInteger` admits too but then rounds;
+- it read the cold rows as trusted shapes (`for name, seg, _field, tf in table.get(t, ())`,
+  `owners.get(name) == seg`, a `Counter`), where the TypeScript reads a short row's missing items
+  as `undefined` and compares with `===`.
+
+Each is an answer the generated module gives as Node does and the hand-written one did not; the
+speed it bought is the gap above.
+
 ## Concurrency
 
 Measured, not assumed: 12 pipelined saves all land in order; a recall behind a save **sees**

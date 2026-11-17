@@ -287,8 +287,19 @@ export function sha16(p: string): string {
  * as itself there; no indexed term holds one, so the term is absent either way.
  */
 export function shardOf(term: string): number {
-  return parseInt(createHash('sha256').update(term, 'utf8').digest('hex').slice(0, 8), 16) % SHARDS;
+  // Memoized (#316 G4, J90-P4): a held index answers the same few query terms on every recall,
+  // and the hash is most of a lookup's cost in the generated Python. A pure function of the
+  // term, so the memo changes no answer; it is emptied at SHARD_MEMO_MAX terms.
+  const got = SHARD_MEMO.get(term);
+  if (got !== undefined) return got;
+  const i = parseInt(createHash('sha256').update(term, 'utf8').digest('hex').slice(0, 8), 16) % SHARDS;
+  if (SHARD_MEMO.size >= SHARD_MEMO_MAX) SHARD_MEMO = new Map();
+  SHARD_MEMO.set(term, i);
+  return i;
 }
+
+const SHARD_MEMO_MAX = 4096;
+let SHARD_MEMO = new Map<string, number>();
 
 function fingerprint(value: unknown): string {
   return createHash('sha256').update(dumpIndex(value), 'utf8').digest('hex').slice(0, 16);
@@ -971,6 +982,11 @@ export class HotIndex {
   /** The files this source holds, in the order the source's own reader lists them. */
   private listing(): string[] {
     if (this.kind === 'facts') return this.store().factPaths();
+    return this.mdPaths().filter((p) => isFile(p));
+  }
+
+  /** A native directory's `*.md` paths but `MEMORY.md`, in code-point order, files or not. */
+  private mdPaths(): string[] {
     let names: string[];
     try {
       names = fs.readdirSync(this.dir);
@@ -979,20 +995,24 @@ export class HotIndex {
       throw e;
     }
     return names
-      .filter((n) => n.endsWith('.md') && n !== 'MEMORY.md' && isFile(pyJoin(this.dir, n)))
+      .filter((n) => n.endsWith('.md') && n !== 'MEMORY.md')
       .sort(cmpCodepoint)
       .map((n) => pyJoin(this.dir, n));
   }
 
   private statListing(): Array<[string, string, number]> {
     const out: Array<[string, string, number]> = [];
-    for (const p of this.listing()) {
+    // `listing`'s files, each stated once (#316 G4, J90-P4): a native path is kept when its one
+    // stat finds a file, where `listing` stats it for `isFile` and again here for its print.
+    const native = this.kind !== 'facts';
+    for (const p of native ? this.mdPaths() : this.listing()) {
       let st: fs.BigIntStats;
       try {
         st = fs.statSync(p, { bigint: true });
       } catch {
         continue; // gone between the listing and the stat: it is not there
       }
+      if (native && !st.isFile()) continue;
       out.push([path.basename(p), st.mtimeNs.toString(), Number(st.size)]);
     }
     return out;

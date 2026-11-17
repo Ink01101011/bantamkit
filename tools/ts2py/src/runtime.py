@@ -804,6 +804,11 @@ class _JsSet:
 
     def __init__(self, items=None):
         self._items = {}
+        # J90-P4: a list of `str`s (each its own `_js_key`) at once: the loop's dict, a repeated
+        # string keeping its first position (its value an equal string).
+        if type(items) is list and set(map(type, items)) <= _JS_STR_ONLY:
+            self._items = dict(zip(items, items, strict=True))
+            return
         if items is not None:
             for item in items:
                 self.add(item)
@@ -1939,9 +1944,16 @@ def _js_parse_int(text, radix=_JS_UNDEFINED):
 _JS_HEX_DIGITS = "0123456789abcdefABCDEF"
 
 
+_JS_STR_INT_CAP = 10**4000
+
+
 def _js_int_to_radix(value, radix):
     if value == 0:
         return "0"
+    # J90-P4: base 10 is `str` (the loop's digits for exactly these ints; below the digit cap
+    # CPython puts on `str(int)`, which JS does not have).
+    if radix == 10 and -_JS_STR_INT_CAP < value < _JS_STR_INT_CAP:
+        return str(value)
     negative = value < 0
     value = abs(value)
     out = []
@@ -2783,6 +2795,9 @@ def _js_m_subarray(receiver, start=_JS_UNDEFINED, end=_JS_UNDEFINED):
 
 def _js_m_endsWith(receiver, suffix):
     """`s.endsWith(suffix)`, by UTF-16 code unit (as `_js_m_startsWith`)."""
+    # J90-P4: two ASCII `str`s, the branch below's answer for exactly them, ahead of its calls.
+    if type(receiver) is str and type(suffix) is str and receiver.isascii() and suffix.isascii():
+        return receiver.endswith(suffix)
     if isinstance(receiver, str):
         suffix = _js_str(suffix)
         if receiver.isascii() and suffix.isascii():

@@ -127,7 +127,10 @@ export function removeStaleTemps(dir: string, owns: (base: string) => boolean, s
     return [];
   }
   const removed: string[] = [];
-  for (const name of [...names].sort(cmpCodepoint)) {
+  // Only a `.tmp` name can be a temp (`tempBase`), so the rest are dropped before the sort: the
+  // same names in the same order, without a call per index file (#316 G4, J90-P4: an index
+  // directory holds 33 files per source, every persist sweeps it).
+  for (const name of names.filter((n) => n.endsWith('.tmp')).sort(cmpCodepoint)) {
     const base = tempBase(name);
     if (base === null || !owns(base)) continue;
     const p = path.join(dir, name);

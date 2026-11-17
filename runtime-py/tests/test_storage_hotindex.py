@@ -327,3 +327,24 @@ def test_a_persist_removes_its_own_stale_temps_and_no_other_index_s(tmp_path):
         "0000000000000000.json.34.tmp",
         f"{head}.33.tmp",
     ]
+
+
+def test_a_head_replaced_with_the_same_mtime_and_size_is_reloaded(tmp_path):
+    """J90-P4: the held-head check is the head's (mtime_ns, size, inode), as Node's
+    `${mtimeNs}:${size}:${ino}`. The generated module read `ino` off an adapter `Stats` that did
+    not carry it (`undefined`), so a head renamed over by one of the same mtime and size stayed
+    held on Python and was reloaded on Node (red on efda7291)."""
+    _fact(tmp_path / "s", "a", "first fact AAAA")
+    hi = _hi(tmp_path)
+    assert hi.doc("a")["description"] == "first fact AAAA"
+    head = hi.path
+    raw, st = head.read_bytes(), os.stat(head)
+    swap = head.with_name("swap")
+    swap.write_bytes(raw.replace(b"AAAA", b"BBBB"))
+    os.utime(swap, ns=(st.st_atime_ns, st.st_mtime_ns))
+    os.replace(swap, head)
+    now = os.stat(head)
+    assert (now.st_mtime_ns, now.st_size) == (st.st_mtime_ns, st.st_size)
+    assert now.st_ino != st.st_ino
+    hi.refresh("fast")
+    assert hi.doc("a")["description"] == "first fact BBBB"
