@@ -16,6 +16,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib import metadata
+from importlib.machinery import EXTENSION_SUFFIXES
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Annotated, Any, NoReturn, TextIO
 from urllib.parse import unquote
@@ -190,6 +192,34 @@ def _code_fingerprint() -> tuple[str, int, Path]:
         return _tree_digest(root, files), len(files), root
     except OSError as exc:
         raise _Undetermined(f"unreadable source under {root}: {exc}") from None
+
+
+def _compiled_build() -> str:
+    """Which build of the generated modules this interpreter runs, as `<kind> (<counts>)`.
+
+    #316 G4 (J90-P8): one release ships a mypyc-compiled wheel per platform and Python and a
+    pure `py3-none-any` wheel everywhere else, built from the same `.py` files -- so
+    `code_digest` and `build_id`, which fingerprint those files, are the same for both, by
+    design. This field is what tells them apart. Each module of `bantamkit._generated` is
+    asked where it was (or would be) loaded from; one loaded from an extension module is
+    compiled. `mypyc (23 compiled, 1 interpreted)` is the platform wheel (the adapter module
+    is never compiled); `none (0 compiled, 24 interpreted)` is the pure wheel or a checkout.
+    The Node runtime answers the same field `not applicable (...)`.
+    """
+    package = "bantamkit._generated"
+    spec = find_spec(package)
+    locations = list(spec.submodule_search_locations or []) if spec else []
+    names = sorted(
+        {p.stem for where in locations for p in Path(where).glob("*.py") if p.stem != "__init__"}
+    )
+    compiled = 0
+    for name in names:
+        module = find_spec(f"{package}.{name}")
+        origin = (module.origin or "") if module else ""
+        if origin.endswith(tuple(EXTENSION_SUFFIXES)):
+            compiled += 1
+    kind = "mypyc" if compiled else "none"
+    return f"{kind} ({compiled} compiled, {len(names) - compiled} interpreted)"
 
 
 def _pack_files(root: Path) -> list[Path]:
@@ -605,6 +635,7 @@ def build_identity() -> dict[str, Any]:
     )
     identity["python_version"] = platform.python_version()
     identity["python_implementation"] = platform.python_implementation()
+    identity["compiled"] = _compiled_build()
     try:
         # The SDK's OWN version, from the only source there is for a third-party dist.
         # This is NOT a rollback of RB-P45: bantamkit's version still comes from

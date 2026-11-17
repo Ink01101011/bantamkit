@@ -82,6 +82,68 @@ with the committed files. Each Python module keeps its public API through a hand
 beside it; see [Architecture → Generated modules](architecture.md#generated-modules-where-they-sit)
 and [Porting → Generated modules](porting.md).
 
+## Compiled wheels and the pure fallback
+
+Since #316 G4 (J90-P8), `pip install bantamkit` picks one of two builds of the
+same code, by the platform tag pip matches (PEP 425: the most specific compatible tag wins):
+
+| platform | CPython | wheel |
+|---|---|---|
+| macOS 11+ on Apple silicon | 3.11, 3.12, 3.13, 3.14 | `cp3XX-cp3XX-macosx_11_0_arm64`, mypyc-compiled |
+| Linux, glibc 2.17+, x86_64 and aarch64 | 3.11, 3.12, 3.13, 3.14 | `cp3XX-cp3XX-manylinux2014_<arch>.manylinux_2_17_<arch>.manylinux_2_28_<arch>`, mypyc-compiled (built in the `manylinux_2_28` image; auditwheel measured it needs nothing past glibc 2.17) |
+| everything else: **Windows** (#336), musl Linux, macOS on Intel, any other interpreter | any >= 3.11 | `py3-none-any`, pure Python |
+
+The compiled wheel carries the same `.py` files as the pure one and, beside 23 of them
+(`bantamkit/_generated/_ts2py_runtime` and the 22 modules compiled from the TypeScript), an
+extension module built by mypyc 2.4.1 (`-O3`, debug level 0, `strip -x`); `_ts2py_adapters` stays
+interpreted. Python imports the extension when one matches the interpreter and the `.py` file
+otherwise, so there is no switch to set. Both builds answer every call identically — that is
+gated by the conformance suites run against each — and only speed differs: measured on macOS
+arm64 in J90-P7/P7B (`docs/porting.md`), the compiled build is at or below the hand-written
+Python of 9c6bc181 on every measured path, 3.11–3.14.
+
+**Which one am I running?** `build_identity` (an MCP tool) answers `compiled`:
+`mypyc (23 compiled, 1 interpreted)` for a platform wheel, `none (0 compiled, 24 interpreted)`
+for the pure wheel or a checkout. The Node server answers the same field
+`not applicable (the Node runtime runs JavaScript; it has no compiled build)`. `build_id` is the
+same for both Python builds of one release, because they are the same source; this field is
+what tells them apart. From a shell:
+
+```bash
+<env>/bin/python -c "import bantamkit.mcpserver as m; print(m.build_identity()['compiled'])"
+```
+
+Windows gets the pure wheel. It is expected to install and import as before, but no Windows
+machine ran it for this change; compiled Windows wheels are #336.
+
+### Building the wheels locally
+
+`tools/release/publish.sh` builds the whole set (phase 2); to build it by hand, from a clean
+checkout on an Apple-silicon Mac with **Docker running** and `uv` available:
+
+```bash
+.venv/bin/python -m build --sdist --no-isolation --outdir out runtime-py
+tools/release/build-wheels.sh --sdist out/bantamkit-<version>.tar.gz --out out             # both
+tools/release/build-wheels.sh --sdist out/bantamkit-<version>.tar.gz --out out --only macos
+tools/release/smoke-wheel.sh out/bantamkit-<version>-cp312-cp312-macosx_11_0_arm64.whl     # install + run one
+```
+
+- **macOS** wheels build on this Mac with python-build-standalone interpreters that `uv`
+  downloads into `.release/cache/pythons` (set `UV=/path/to/uv` if `uv` on PATH is a shim
+  with no version). cibuildwheel is not used here: outside CI it refuses to install the
+  python.org builds it needs.
+- **Linux** wheels build in cibuildwheel 4.3.5's `manylinux_2_28` images under local Docker:
+  aarch64 natively on Apple silicon, x86_64 under emulation, which is most of the time.
+  GitHub Actions is not used.
+- Every wheel is built **from the sdist** with `BANTAMKIT_MYPYC=1`, which turns on the compile
+  in `runtime-py/hatch_build.py` (isolated builds fetch `mypy==2.4.1` and `setuptools`). Without
+  that variable the build is the pure wheel, byte for byte what it was before the hook existed;
+  `pip install -e` never compiles.
+
+Prior art: black ships the same shape (mypyc platform wheels plus a pure wheel), built with
+hatch-mypyc and cibuildwheel; this repository uses its own hook instead because hatch-mypyc
+compiles in the source tree and moves `pyproject.toml` aside while it runs.
+
 ## Pinned install from a tag
 
 To use the library without a clone, install straight from a release tag. The

@@ -72,13 +72,13 @@ checked before the first upload is checked before the first upload:
 
 | phase | what it does |
 |---|---|
-| 0 preflight | version sites agree, tree clean, toolchain present, PyPI credential present, **and both registries asked what they already carry** |
+| 0 preflight | version sites agree, tree clean, toolchain present (including **`uv` and a running Docker**, for the platform wheels), PyPI credential present, **and both registries asked what they already carry** |
 | 1 test | the four gates, in two lanes: pytest in the background beside ruff → npm test → conformance `--all`. Every gate reports even when one fails; 0 failures is the bar. Measured 2026-10-30 on one commit (macOS arm64): median 1036 s one after another, 682 s in two lanes |
-| 2 build | both artifacts, into a **clean directory named for the version** |
-| 3 prepublish | `npx-cold-start.mjs`, `twine check`, and the asset pack inside each artifact **hashed** against `assets/` |
+| 2 build | every artifact, into a **clean directory named for the version**: the npm tarball, the sdist and the pure wheel, then the mypyc platform wheels **from that sdist** in two lanes at once (`tools/release/build-wheels.sh`: macOS arm64 on this Mac, manylinux x86_64 + aarch64 in Docker) |
+| 3 prepublish | `npx-cold-start.mjs`, `twine check` on every Python file, the asset pack inside each artifact **hashed** against `assets/`, and **every wheel installed into a clean venv on its own platform and run** (`tools/release/smoke-wheel.sh`: the `compiled` field must name the build the tag promises, then the roster over stdio; Linux wheels inside their manylinux image) |
 | 4 npm | `npm publish --access public` (plus `--tag beta` for a prerelease, see below), output streamed live |
-| 5 PyPI | `twine upload`, **by exact filename**, right after npm (a real npm publish failure in phase 4 still stops it) |
-| 6 verify both | two lanes **at the same time** (#293), each with its own log and budget: npm — `registry.npmjs.org` directly, then the **published** tarball driven over stdio; PyPI — the per-version endpoint, sha256 against the local build, then an install with the `[mcp]` extra driven over stdio. Each registry is reported on its own line; the phase takes as long as the slower lane |
+| 5 PyPI | `twine upload` of the whole set (sdist, pure wheel, 12 platform wheels), **each by exact filename**, right after npm (a real npm publish failure in phase 4 still stops it) |
+| 6 verify both | two lanes **at the same time** (#293), each with its own log and budget: npm — `registry.npmjs.org` directly, then the **published** tarball driven over stdio; PyPI — the per-version endpoint, sha256 of every file against the local build, then an install with the `[mcp]` extra driven over stdio, which on this Mac must have picked the compiled wheel (`compiled` = `mypyc (...)`). Each registry is reported on its own line; the phase takes as long as the slower lane |
 | 7 summary | what shipped, and what is still yours to do (tag, GitHub release) |
 
 Five properties are worth knowing before you trust it:
@@ -112,6 +112,24 @@ description and an input schema no commit carries — silently. And both publish
 **driven over real stdio** (`tools/release/roster-probe.mjs`) and compared against `MCP_TOOLS`,
 because every local gate rebuilds before it looks, and the artifact that reaches a user is the
 one nothing was asking.
+
+### The PyPI set: compiled platform wheels and the pure fallback (#316 G4)
+
+PyPI carries, per release, the sdist, the pure `py3-none-any` wheel, and a mypyc-compiled wheel
+for each CPython 3.11–3.14 on `macosx_11_0_arm64` and on Linux x86_64 and aarch64 (built in the
+`manylinux_2_28` images; auditwheel tags them `manylinux2014` / `manylinux_2_17` /
+`manylinux_2_28`) — 14 files. pip prefers the most specific tag that matches, so those
+platforms get the compiled build and everything else (Windows, #336; musl; macOS x86_64; any
+other interpreter) gets the pure wheel, with no switch at import time. Both builds are the same
+`.py` files and answer identically; `build_identity`'s `compiled` field says which one is
+running. [Install → Compiled wheels](install.md#compiled-wheels-and-the-pure-fallback) has the
+matrix, the sizes and how to build it by hand.
+
+The wheels are built **from the sdist**, never from the checkout, with `BANTAMKIT_MYPYC=1`
+(`runtime-py/hatch_build.py`). macOS uses python-build-standalone interpreters through `uv`,
+because cibuildwheel run outside CI refuses to install the python.org builds it wants
+(`sudo installer`). Linux uses cibuildwheel's manylinux images in local Docker: aarch64 runs
+natively on Apple silicon, x86_64 under emulation. GitHub Actions is not used.
 
 ### Prereleases: one version, two spellings, and `--tag beta`
 

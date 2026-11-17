@@ -2738,6 +2738,39 @@ export async function run(ctx) {
     // reports PEP 440 and the port semver, so the reference's answer is mapped with
     // `publish.sh`'s mapping first. `pep440ToSemver` passes a STABLE version through unchanged,
     // so a stable tree is still compared byte for byte; `suites/version.mjs` pins both arms.
+    /**
+     * `compiled` (#316 G4, J90-P8): which build of the generated modules is running. The
+     * Python release ships a mypyc platform wheel and a pure wheel from the same `.py` files,
+     * so `build_id` is one value for both and this field is what tells them apart; Node has no
+     * compiled build and answers the same field in the same shape. The VALUES differ by what
+     * each runtime is, inside the `identity` session this suite already rules un-comparable as
+     * a whole; what both must agree on is the shape, and that is compared here unruled. Each
+     * side is then held to its own allowed values, because two sides that both dropped the
+     * field, or both answered `{unavailable}`, would agree on any shape test.
+     */
+    const COMPILED_SHAPE = /^[a-z][a-z ]* \(.+\)$/;
+    const compiledShape = (id) =>
+      `${typeof id.compiled} ${COMPILED_SHAPE.test(String(id.compiled))} ` +
+      `listed-unavailable=${(id.unavailable ?? []).includes('compiled')}`;
+    cases.push({
+      name: 'build_identity: both answer compiled as one `<kind> (<detail>)` string',
+      kind: 'string',
+      expected: compiledShape(py),
+      actual: compiledShape(nd),
+    });
+    cases.push({
+      name: 'build_identity: compiled names a build the reference can be — the reference',
+      kind: 'string',
+      expected: 'true',
+      actual: `${/^(none|mypyc) \(\d+ compiled, \d+ interpreted\)$/.test(String(py.compiled))}`,
+    });
+    cases.push({
+      name: 'build_identity: compiled says not applicable — the port',
+      kind: 'string',
+      expected: 'not applicable (the Node runtime runs JavaScript; it has no compiled build)',
+      actual: String(nd.compiled),
+    });
+    notes.push(`identity: compiled — reference ${JSON.stringify(py.compiled)}, port ${JSON.stringify(nd.compiled)}`);
     cases.push({
       name: 'build_identity: version agrees',
       kind: 'string',

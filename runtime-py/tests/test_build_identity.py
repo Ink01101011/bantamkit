@@ -79,6 +79,7 @@ FIELDS = {
     "interpreter",
     "python_version",
     "python_implementation",
+    "compiled",
     "mcp_sdk_version",
     "unavailable",
 }
@@ -321,6 +322,67 @@ def test_git_commit_is_a_stated_refusal_and_never_reads_as_a_value():
     assert "unavailable" in identity["git_commit"]
     assert identity["git_commit"]["unavailable"].strip()
     assert "git_commit" in identity["unavailable"]
+
+
+def _generated_stems() -> list[str]:
+    generated = Path(bantamkit.__file__).resolve().parent / "_generated"
+    return sorted(p.stem for p in generated.glob("*.py") if p.stem != "__init__")
+
+
+def test_compiled_names_the_build_the_modules_were_loaded_from():
+    """#316 G4 (J90-P8): `compiled` says which wheel is running, counted from the imports.
+
+    The mypyc platform wheel and the pure wheel carry the same `.py` files, so `build_id`
+    is one value for both; this field is what tells them apart. Recounted here by IMPORTING
+    every generated module and reading the file each one came from, so the node holds on the
+    pure checkout (`none`) and against an installed platform wheel (`mypyc`) alike.
+    """
+    import importlib
+    from importlib.machinery import EXTENSION_SUFFIXES
+
+    stems = _generated_stems()
+    loaded = [importlib.import_module(f"bantamkit._generated.{stem}") for stem in stems]
+    compiled = sum(1 for m in loaded if m.__file__.endswith(tuple(EXTENSION_SUFFIXES)))
+    kind = "mypyc" if compiled else "none"
+    expected = f"{kind} ({compiled} compiled, {len(stems) - compiled} interpreted)"
+    assert build_identity()["compiled"] == expected
+    assert "compiled" not in build_identity()["unavailable"]
+
+
+def test_compiled_counts_an_extension_module_the_import_system_would_load(tmp_path):
+    """The count reads the import system's own answer, not a file listing of `.py` files.
+
+    A copy of the package (extensions left out, so it is the pure build) gains ONE empty
+    extension-module file beside a generated module nothing has imported yet; the import
+    system now resolves that module to the extension, and `compiled` must count exactly it.
+    """
+    copy = tmp_path / "bantamkit"
+    shutil.copytree(
+        Path(bantamkit.__file__).resolve().parent,
+        copy,
+        ignore=shutil.ignore_patterns("__pycache__", "*.so", "*.pyd"),
+    )
+    probe = (
+        "import importlib, importlib.machinery, pathlib, sys\n"
+        "import bantamkit.mcpserver as m\n"
+        "gen = pathlib.Path(m.find_spec('bantamkit._generated').submodule_search_locations[0])\n"
+        "free = [p.stem for p in sorted(gen.glob('*.py')) if p.stem != '__init__'\n"
+        "        and 'bantamkit._generated.' + p.stem not in sys.modules]\n"
+        "print(m._compiled_build())\n"
+        "(gen / (free[0] + importlib.machinery.EXTENSION_SUFFIXES[0])).write_bytes(b'')\n"
+        "importlib.invalidate_caches()\n"
+        "print(m._compiled_build())\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(tmp_path)}
+    out = subprocess.run(
+        [sys.executable, "-c", probe], env=env, capture_output=True, text=True, check=True,
+        encoding="utf-8",
+    ).stdout.splitlines()
+    total = len(_generated_stems())
+    assert out == [
+        f"none (0 compiled, {total} interpreted)",
+        f"mypyc (1 compiled, {total - 1} interpreted)",
+    ]
 
 
 def test_the_digests_covered_the_files_that_are_really_there():

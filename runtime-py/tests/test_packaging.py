@@ -36,6 +36,8 @@ here without a guard. A missing backend is a loud error, not a quiet skip.
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import subprocess
 import sys
 import tarfile
@@ -72,9 +74,12 @@ def _build(cwd: Path, target: str, outdir: Path) -> Build:
     """
     outdir.mkdir(parents=True, exist_ok=True)
     code = f"import hatchling.build as b; print(b.build_{target}({str(outdir)!r}))"
+    # The DEFAULT build, always: an inherited BANTAMKIT_MYPYC=1 would turn every wheel here
+    # into a compiled one (#316 G4), which is the release pipeline's to build, not this bar's.
+    env = {k: v for k, v in os.environ.items() if k != "BANTAMKIT_MYPYC"}
     proc = subprocess.run(
         [sys.executable, "-c", code], cwd=cwd, capture_output=True, text=True, check=False,
-        encoding="utf-8",
+        encoding="utf-8", env=env,
     )
     if proc.returncode != 0:
         return Build(proc.returncode, proc.stderr, None)
@@ -212,3 +217,59 @@ def test_a_build_without_the_pack_fails_rather_than_shipping_short(tmp_path):
     assert built.returncode != 0, "a build with no asset pack must fail, not succeed short"
     assert "asset pack not found" in built.stderr
     assert not list((tmp_path / "out").glob("*.tar.gz")), "failed build left an artifact"
+
+
+# #316 G4 (J90-P8). The compile switch in hatch_build.py. The compiled build itself is built,
+# installed and run by tools/release/build-wheels.sh and smoke-wheel.sh (it needs mypy and
+# 40 s per interpreter); what is pinned here is that the DEFAULT stays the pure wheel and
+# that a mistyped switch is a refusal, not a quiet pure build.
+
+
+def _hatch_build_module():
+    spec = importlib.util.spec_from_file_location("_bk_hatch_build", PROJECT / "hatch_build.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_default_wheel_is_the_pure_wheel(wheel_from_sdist):
+    assert wheel_from_sdist.artifact is not None, "no wheel was built"
+    assert wheel_from_sdist.artifact.name.endswith("-py3-none-any.whl")
+    with zipfile.ZipFile(wheel_from_sdist.artifact) as zf:
+        name = next(n for n in zf.namelist() if n.endswith(".dist-info/WHEEL"))
+        wheel = zf.read(name).decode("utf-8").splitlines()
+    assert "Root-Is-Purelib: true" in wheel
+    assert "Tag: py3-none-any" in wheel
+
+
+@pytest.mark.parametrize(
+    ("value", "compiles"), [(None, False), ("", False), ("0", False), ("1", True)]
+)
+def test_the_compile_switch_reads_one_and_only_one_value(monkeypatch, value, compiles):
+    hb = _hatch_build_module()
+    if value is None:
+        monkeypatch.delenv("BANTAMKIT_MYPYC", raising=False)
+    else:
+        monkeypatch.setenv("BANTAMKIT_MYPYC", value)
+    assert hb.compile_enabled() is compiles
+
+
+@pytest.mark.parametrize("value", ["true", "yes", "2", " 1"])
+def test_a_mistyped_compile_switch_is_refused(monkeypatch, value):
+    hb = _hatch_build_module()
+    monkeypatch.setenv("BANTAMKIT_MYPYC", value)
+    with pytest.raises(ValueError, match="BANTAMKIT_MYPYC must be 1"):
+        hb.compile_enabled()
+
+
+def test_the_compile_set_is_j90_p7s():
+    """The runtime and every generated module but the package marker and the adapters."""
+    hb = _hatch_build_module()
+    paths = hb.compile_set(PROJECT / "src")
+    generated = PROJECT / "src" / "bantamkit" / "_generated"
+    stems = {p.stem for p in generated.glob("*.py")}
+    assert {"__init__", "_ts2py_adapters", "_ts2py_runtime"} <= stems
+    assert paths == sorted(
+        f"bantamkit/_generated/{s}.py" for s in stems - {"__init__", "_ts2py_adapters"}
+    )
+    assert "bantamkit/_generated/_ts2py_runtime.py" in paths

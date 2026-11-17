@@ -62,6 +62,15 @@
 #               artifacts, not one of them the version being released. Nothing here ever
 #               globs; every artifact is named in full.
 #
+# THE PyPI SET (#316 G4, J90-P8). PyPI gets the sdist, the pure `py3-none-any` wheel, and a
+# mypyc-compiled platform wheel per CPython 3.11-3.14 for macOS arm64 and manylinux x86_64 +
+# aarch64, built by tools/release/build-wheels.sh from that same sdist -- macOS on this Mac, Linux
+# in local Docker. pip picks the platform wheel where one matches and the pure wheel everywhere
+# else (Windows, #336). Every wheel is asset-checked, twine-checked, and installed and driven over
+# stdio in a clean venv on its own platform (tools/release/smoke-wheel.sh) before anything is
+# uploaded. So a release now needs Docker running and `uv` (or UV=/path/to/uv); preflight
+# refuses without either.
+#
 # WHAT IT DOES NOT DO: it does not tag, it does not create a GitHub release, and it does not
 # write release notes. Those are decisions, and the summary at the end says so.
 
@@ -362,6 +371,23 @@ need_cmd "npm" npm
 need_cmd "git" git
 need_cmd "curl" curl
 
+# The platform wheels (#316 G4): uv provides the macOS interpreters, Docker the manylinux images.
+# Both are asked to RUN, not just found: a mise shim with no version set is on PATH and fails.
+UV_BIN="${UV:-uv}"
+if "$UV_BIN" --version >/dev/null 2>&1; then
+  ok "uv: $("$UV_BIN" --version)"
+else
+  problem "uv is not runnable as '$UV_BIN'; set UV=/path/to/uv (it provides the macOS wheel interpreters)."
+fi
+export UV="$UV_BIN"
+DOCKER_BIN="$(command -v docker || true)"
+if [ -z "$DOCKER_BIN" ] && [ -x /usr/local/bin/docker ]; then DOCKER_BIN=/usr/local/bin/docker; export PATH="/usr/local/bin:$PATH"; fi
+if [ -n "$DOCKER_BIN" ] && "$DOCKER_BIN" info >/dev/null 2>&1; then
+  ok "docker: $DOCKER_BIN (running)"
+else
+  problem "Docker is not running (or not on PATH); the manylinux wheels are built and tested in its images."
+fi
+
 if [ -x "$VENV_PY" ]; then
   ok "repo venv python: $VENV_PY"
 else
@@ -555,7 +581,7 @@ fi
 # artifacts are all older releases. A pipeline that globbed any of that would upload the wrong
 # version under a green check.
 
-phase "phase 2/7  build -- both artifacts, into a clean directory named for $VERSION"
+phase "phase 2/7  build -- every artifact, into a clean directory named for $VERSION"
 
 if [ -z "$OUT_DIR" ]; then OUT_DIR="$REPO/.release/$VERSION"; fi
 rm -rf "$OUT_DIR"
@@ -571,8 +597,24 @@ say "  --- python -m build (wheel + sdist)"
 TGZ="$OUT_DIR/npm/bantamkit-mcp-$NPM_VERSION.tgz"
 WHEEL="$OUT_DIR/pypi/bantamkit-$VERSION-py3-none-any.whl"
 SDIST="$OUT_DIR/pypi/bantamkit-$VERSION.tar.gz"
+[ -f "$SDIST" ] || die "the build did not produce $SDIST, which every platform wheel is built from."
 
-for artifact in "$TGZ" "$WHEEL" "$SDIST"; do
+# The platform wheels, from THAT sdist, in two lanes at once: macOS on this Mac, Linux in Docker.
+# Their names come from build-wheels.sh's own matrix, so every one is still named in full.
+PLATFORM_WHEELS=()
+while IFS= read -r name; do PLATFORM_WHEELS+=("$OUT_DIR/pypi/$name"); done \
+  < <(bash "$SCRIPT_DIR/build-wheels.sh" --list "$VERSION")
+build_macos_wheels() { bash "$SCRIPT_DIR/build-wheels.sh" --sdist "$SDIST" --out "$OUT_DIR/pypi" --only macos; }
+build_linux_wheels() { bash "$SCRIPT_DIR/build-wheels.sh" --sdist "$SDIST" --out "$OUT_DIR/pypi" --only linux; }
+say "  --- the compiled platform wheels (tools/release/build-wheels.sh), macOS and Linux at once"
+run_lanes "macOS arm64 wheels" build_macos_wheels "$SCRATCH/lane-wheels-macos.log" \
+          "manylinux wheels (Docker)" build_linux_wheels "$SCRATCH/lane-wheels-linux.log"
+if [ -n "$LANES_FAILED" ]; then
+  die "the platform wheels did not build: $LANES_FAILED (its lane log is printed above)."
+fi
+PYPI_ARTIFACTS=("$SDIST" "$WHEEL" "${PLATFORM_WHEELS[@]}")
+
+for artifact in "$TGZ" "${PYPI_ARTIFACTS[@]}"; do
   if [ ! -f "$artifact" ]; then
     die "the build did not produce $artifact.
          Every upload below names its file in full, so a missing one is a stop, not a glob."
@@ -580,9 +622,11 @@ for artifact in "$TGZ" "$WHEEL" "$SDIST"; do
   ok "built $(basename "$artifact")  ($(wc -c < "$artifact" | tr -d ' ') bytes)"
 done
 
-# A directory holding anything BUT those three files is a directory that accumulated, and
+# A directory holding anything BUT those files is a directory that accumulated, and
 # accumulation is the defect. Refuse rather than pick.
-EXTRAS="$(find "$OUT_DIR" -type f ! -path "$TGZ" ! -path "$WHEEL" ! -path "$SDIST" | head -20 || true)"
+EXPECTED_LIST="$SCRATCH/expected-artifacts"
+printf '%s\n' "$TGZ" "${PYPI_ARTIFACTS[@]}" | sort >"$EXPECTED_LIST"
+EXTRAS="$(find "$OUT_DIR" -type f | sort | comm -23 - "$EXPECTED_LIST" | head -20 || true)"
 if [ -n "$EXTRAS" ]; then
   die "unexpected files in $OUT_DIR:
 $(printf '%s' "$EXTRAS" | sed 's/^/           /')"
@@ -606,15 +650,42 @@ ok "npx cold start: 0 failed checks"
 say "  --- asset pack inside each artifact, byte for byte against $REPO/assets"
 "$VENV_PY" "$SCRIPT_DIR/check-asset-pack.py" "$TGZ" "package/assets" "$REPO/assets" \
   --also "package/LICENSE=LICENSE" || die "the npm tarball's asset pack disagrees with the checkout."
-"$VENV_PY" "$SCRIPT_DIR/check-asset-pack.py" "$WHEEL" "bantamkit/assets" "$REPO/assets" \
-  || die "the wheel's asset pack disagrees with the checkout."
+for wheel in "$WHEEL" "${PLATFORM_WHEELS[@]}"; do
+  "$VENV_PY" "$SCRIPT_DIR/check-asset-pack.py" "$wheel" "bantamkit/assets" "$REPO/assets" \
+    || die "$(basename "$wheel")'s asset pack disagrees with the checkout."
+done
 "$VENV_PY" "$SCRIPT_DIR/check-asset-pack.py" "$SDIST" "bantamkit-$VERSION/_assets" "$REPO/assets" \
   || die "the sdist's asset pack disagrees with the checkout."
 
 say "  --- twine check, by exact filename"
-"$TWINE" check "$WHEEL" "$SDIST" || die "twine check failed."
+"$TWINE" check "${PYPI_ARTIFACTS[@]}" || die "twine check failed."
 note "twine check validates METADATA, not currency: it reports PASSED on a stale wheel. The"
 note "byte-for-byte check above is what makes currency a measured property here."
+
+# Every wheel, installed into a clean venv on its own platform and run: the pure wheel and the
+# macOS wheels here, the manylinux wheels in the image they were built in. Two lanes at once.
+say "  --- every wheel installed and run in a clean venv (tools/release/smoke-wheel.sh)"
+smoke_host_wheels() {
+  local w
+  for w in "$WHEEL" "${PLATFORM_WHEELS[@]}"; do
+    case "$w" in *manylinux*) continue ;; esac
+    say "  --- $(basename "$w")"
+    bash "$SCRIPT_DIR/smoke-wheel.sh" "$w" || die "$(basename "$w") did not install and run."
+  done
+}
+smoke_docker_wheels() {
+  local w
+  for w in "${PLATFORM_WHEELS[@]}"; do
+    case "$w" in *manylinux*) ;; *) continue ;; esac
+    say "  --- $(basename "$w")"
+    bash "$SCRIPT_DIR/smoke-wheel.sh" "$w" || die "$(basename "$w") did not install and run."
+  done
+}
+run_lanes "wheels on this Mac" smoke_host_wheels "$SCRATCH/lane-smoke-host.log" \
+          "manylinux wheels in Docker" smoke_docker_wheels "$SCRATCH/lane-smoke-docker.log"
+if [ -n "$LANES_FAILED" ]; then
+  die "a wheel did not install and run: $LANES_FAILED (its lane log is printed above). Nothing has been published."
+fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   phase "--dry-run: stopping before the first publish"
@@ -631,7 +702,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
   if [ "$PYPI_ALREADY" = "yes" ]; then
     say "  would do PyPI : SKIP, PyPI already carries bantamkit==$VERSION"
   else
-    say "  would do PyPI : upload bantamkit==$VERSION"
+    say "  would do PyPI : upload bantamkit==$VERSION, ${#PYPI_ARTIFACTS[@]} files:"
+    for artifact in "${PYPI_ARTIFACTS[@]}"; do say "                  $(basename "$artifact")"; done
   fi
   say "  rerun without --dry-run to publish."
   exit 0
@@ -657,7 +729,7 @@ if [ "$NPM_ALREADY" = "no" ] || [ "$PYPI_ALREADY" = "no" ]; then
     if [ "$PYPI_ALREADY" = "yes" ]; then
       printf '  PyPI : skip (already published)\n'
     else
-      printf '  PyPI : upload bantamkit==%s\n' "$VERSION"
+      printf '  PyPI : upload bantamkit==%s (%s files)\n' "$VERSION" "${#PYPI_ARTIFACTS[@]}"
     fi
     printf 'Type the version to confirm: '
     read -r CONFIRM
@@ -741,8 +813,7 @@ if [ "$PYPI_ALREADY" = "yes" ]; then
   note "SKIPPED: PyPI already carries bantamkit==$VERSION."
 else
   say "  twine upload, BY EXACT FILENAME -- never a glob:"
-  say "    $WHEEL"
-  say "    $SDIST"
+  for artifact in "${PYPI_ARTIFACTS[@]}"; do say "    $artifact"; done
   say ""
   # TWINE_NON_INTERACTIVE turns the one thing this script cannot survive -- a password prompt
   # reached AFTER npm has published, from a context that may have no one watching -- into an
@@ -750,7 +821,7 @@ else
   # is the belt to that braces, for the cases preflight cannot see (a `password =` line with
   # nothing after it, a token revoked between phase 0 and phase 5). Measured: twine 7.0.0
   # reads it; older twine simply ignores an environment variable it does not know.
-  TWINE_NON_INTERACTIVE=1 "$TWINE" upload "$WHEEL" "$SDIST" \
+  TWINE_NON_INTERACTIVE=1 "$TWINE" upload "${PYPI_ARTIFACTS[@]}" \
     || die "twine upload failed (its output is above). npm is published and PyPI is not.
          Rerunning this script skips npm and retries PyPI."
   ok "twine upload returned 0"
@@ -828,7 +899,7 @@ ok "pypi.org carries bantamkit==$VERSION"
 say "  --- sha256 of what PyPI serves vs what was built here"
 curl -sS --max-time 60 "https://pypi.org/pypi/bantamkit/$VERSION/json" -o "$SCRATCH/pypi.json" \
   || die "could not read PyPI's per-version JSON."
-"$VENV_PY" - "$SCRATCH/pypi.json" "$WHEEL" "$SDIST" <<'PY' || die "PyPI is serving different bytes from the ones built here."
+"$VENV_PY" - "$SCRATCH/pypi.json" "${PYPI_ARTIFACTS[@]}" <<'PY' || die "PyPI is serving different bytes from the ones built here."
 import hashlib
 import json
 import sys
@@ -881,6 +952,13 @@ fi
 node "$SCRIPT_DIR/roster-probe.mjs" --label "PyPI bantamkit[mcp]==$VERSION" \
   -- "$SCRATCH/pyvenv/bin/bantamkit-mcp" \
   || die "the PUBLISHED PyPI artifact does not advertise what MCP_TOOLS declares."
+# This venv is the repo venv's interpreter (CPython on macOS arm64), so pip must have chosen the
+# compiled platform wheel over the pure one; the field says which one it actually installed.
+COMPILED_FIELD="$(cd "$SCRATCH" && "$SCRATCH/pyvenv/bin/python" -I -c 'import bantamkit.mcpserver as m; print(m.build_identity()["compiled"])')"
+case "$COMPILED_FIELD" in
+  "mypyc ("*) ok "pip installed the compiled wheel here: compiled = $COMPILED_FIELD" ;;
+  *) die "pip installed bantamkit==$VERSION here and it reports compiled = '$COMPILED_FIELD', not the platform wheel." ;;
+esac
 }
 
 phase "phase 6/7  verify npm and PyPI -- concurrently, each decided by its registry, then by running it"
@@ -905,8 +983,8 @@ say ""
 say "  npm   https://www.npmjs.com/package/bantamkit-mcp/v/$NPM_VERSION"
 say "        verified by installing the published tarball and listing its tools over stdio"
 say "  PyPI  https://pypi.org/project/bantamkit/$VERSION/"
-say "        verified by sha256 against the local build, then by installing the [mcp] extra"
-say "        and listing its tools over stdio"
+say "        ${#PYPI_ARTIFACTS[@]} files verified by sha256 against the local build, then by installing"
+say "        the [mcp] extra (the compiled wheel, on this Mac) and listing its tools over stdio"
 say ""
 say "  artifacts kept at: $OUT_DIR"
 say ""

@@ -722,6 +722,16 @@ const GIT_COMMIT_REFUSAL =
   'would be a value that is sometimes a lie; `code_digest` is derived from the ' +
   'bytes themselves and cannot be.';
 
+/**
+ * #316 G4 (J90-P8). The Python runtime ships a mypyc-compiled wheel and a pure one built from
+ * the same `.py` files, so its `code_digest` and `build_id` cannot tell them apart and its
+ * `compiled` field does: `mypyc (23 compiled, 1 interpreted)` or `none (0 compiled, 24
+ * interpreted)`. This runtime answers the same field in the same `<kind> (<detail>)` shape,
+ * as a string rather than an `{unavailable}` object: nothing failed to be derived here, there
+ * is no compiled build of a JavaScript package to report.
+ */
+const COMPILED_NOT_APPLICABLE = 'not applicable (the Node runtime runs JavaScript; it has no compiled build)';
+
 const CROSS_RUNTIME =
   'assets_digest is comparable across runtimes: the asset pack is language-agnostic and ' +
   'both endpoints digest the same files, in sorted(Path) order, with the same per-file ' +
@@ -803,6 +813,7 @@ export function buildIdentity(version: string, sdkVersion: string | { unavailabl
   identity.set('interpreter', process.execPath || unavailable('process.execPath is empty; this process cannot name its own binary'));
   identity.set('node_version', process.versions.node);
   identity.set('v8_version', process.versions.v8);
+  identity.set('compiled', COMPILED_NOT_APPLICABLE);
   identity.set('mcp_sdk_version', sdkVersion);
 
   const inputNames = ['runtime', 'server_name', 'version', 'code_digest', 'assets_digest'] as const;

@@ -891,6 +891,8 @@ test('build_identity names its runtime and refuses to be compared across lineage
   assert.equal(typeof id.mcp_sdk_version, 'string');
   assert.match(id.mcp_sdk_version, /^\d+\.\d+\.\d+/);
   assert.ok(!('python_version' in id), 'a Node build must not claim a python_version');
+  // #316 G4 (J90-P8): the field the Python side uses to say which wheel it runs, answered.
+  assert.equal(id.compiled, 'not applicable (the Node runtime runs JavaScript; it has no compiled build)');
   assert.match(id.cross_runtime, /assets_digest is comparable across runtimes/);
   assert.match(id.cross_runtime, /build_id .*NOT/s);
 
