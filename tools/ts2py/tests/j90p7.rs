@@ -32,7 +32,7 @@ fn compiled() -> ts2py::Compiled {
         runtime_module: Some("._ts2py_runtime".to_string()),
         ..ts2py::Options::default()
     };
-    ts2py::compile_modules(&[("runtime-ts/src/j90p7_probe.ts", source)], &options)
+    ts2py::compile_modules(&[("src/j90p7_probe.ts", source)], &options)
         .unwrap_or_else(|lines| panic!("refused:\n{}", lines.join("\n")))
         .remove(0)
 }
@@ -43,12 +43,7 @@ fn package(dir: &Path, module: &ts2py::Compiled) {
     std::fs::write(package.join("__init__.py"), "").unwrap();
     std::fs::write(
         package.join("_ts2py_runtime.py"),
-        ts2py::shipped(ts2py::RUNTIME),
-    )
-    .unwrap();
-    std::fs::write(
-        package.join("_ts2py_adapters.py"),
-        ts2py::shipped(&ts2py::adapters_module("._ts2py_runtime")),
+        ts2py::shipped(ts2py::RUNTIME, ts2py::host::DEFAULT_SHIPPED_NOTE),
     )
     .unwrap();
     std::fs::write(package.join("j90p7_probe.py"), &module.code).unwrap();

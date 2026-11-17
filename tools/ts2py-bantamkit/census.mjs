@@ -5,7 +5,7 @@
 // dependency groups. Committed by J86-6 (J86-R finding 5b) from the J86-3 scratch scripts, unchanged
 // in what they count.
 //
-//   node tools/ts2py/census.mjs [--src <runtime-ts/src>] [--json <out.json>]
+//   node tools/ts2py-bantamkit/census.mjs [--src <runtime-ts/src>] [--json <out.json>]
 //
 // It parses with the TypeScript compiler API (`ts.createSourceFile`, no type checker), loaded from
 // `runtime-ts/node_modules` (`cd runtime-ts && npm ci`). The builtin names come from the RUNNING

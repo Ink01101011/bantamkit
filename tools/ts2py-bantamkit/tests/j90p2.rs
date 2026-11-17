@@ -48,7 +48,7 @@ fn package(dir: &Path, modules: &[ts2py::Compiled]) {
     std::fs::write(package.join("_ts2py_runtime.py"), ts2py::RUNTIME).unwrap();
     std::fs::write(
         package.join("_ts2py_adapters.py"),
-        ts2py::adapters_module("._ts2py_runtime"),
+        ts2py_bantamkit::adapters_module("._ts2py_runtime"),
     )
     .unwrap();
     for module in modules {
@@ -63,7 +63,7 @@ fn package(dir: &Path, modules: &[ts2py::Compiled]) {
 fn options() -> ts2py::Options {
     ts2py::Options {
         runtime_module: Some("._ts2py_runtime".to_string()),
-        ..ts2py::Options::default()
+        ..ts2py_bantamkit::options()
     }
 }
 
@@ -206,7 +206,7 @@ fn j90p2_runtime_fast_paths_answer_as_the_general_paths() {
     std::fs::write(dir.join("rt.py"), ts2py::RUNTIME).unwrap();
     std::fs::write(
         dir.join("ad.py"),
-        ts2py::adapters_module("rt").replace("from .rt import", "from rt import"),
+        ts2py_bantamkit::adapters_module("rt").replace("from .rt import", "from rt import"),
     )
     .unwrap();
     let out = run_python(FAST_PATH_FUZZ, &[dir.to_str().unwrap(), "3000"]);

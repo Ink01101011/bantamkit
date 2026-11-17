@@ -46,7 +46,7 @@ fn package(dir: &Path, modules: &[ts2py::Compiled]) {
     std::fs::write(package.join("_ts2py_runtime.py"), ts2py::RUNTIME).unwrap();
     std::fs::write(
         package.join("_ts2py_adapters.py"),
-        ts2py::adapters_module("._ts2py_runtime"),
+        ts2py_bantamkit::adapters_module("._ts2py_runtime"),
     )
     .unwrap();
     for module in modules {
@@ -61,7 +61,7 @@ fn package(dir: &Path, modules: &[ts2py::Compiled]) {
 fn options() -> ts2py::Options {
     ts2py::Options {
         runtime_module: Some("._ts2py_runtime".to_string()),
-        ..ts2py::Options::default()
+        ..ts2py_bantamkit::options()
     }
 }
 

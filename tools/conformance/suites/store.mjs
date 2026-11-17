@@ -2468,7 +2468,7 @@ async function runIn(ctx, home) {
     // D3-D5. A store ROOT the OS cannot be handed as the caller spelled it, RULED by J89-1F
     // (docs/porting.md, the `G3 as Node` rows and the G2 target-specific I/O row). The two `G3 as
     // Node` rulings went STALE by design when store.ts was generated (#316 G3 U2, J89-4b: the
-    // store's file calls take the G2 path policy, `_store_path` in tools/ts2py/src/adapters.py),
+    // store's file calls take the G2 path policy, `_store_path` in tools/ts2py-bantamkit/adapters.py),
     // and are now agreeing cases with a literal for each side:
     // - A NUL: both refuse and write nothing, with the store's could-not-be-created sentence
     //   (`MemoryValidationError`): python's mkdir raises the OSError `asPyOSError` makes of Node's

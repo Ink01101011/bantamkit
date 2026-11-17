@@ -179,7 +179,7 @@ helper changed.
 
 ## J87-3 rules (#316 G1: `pricing`, `jobbudget`)
 
-Census estimate for G1 (`node tools/ts2py/census.mjs`, `docs/roadmap-1.0.0.md`, #315): 5 new
+Census estimate for G1 (`node tools/ts2py-bantamkit/census.mjs`, `docs/roadmap-1.0.0.md`, #315): 5 new
 syntax kinds, 5 new builtin calls, 3 Node adapters, 9-11 rules. Rerun on the sources J87-3
 compiled (`jobbudget.ts` grew in J87-1F): 560 lines, 5 kinds, 6 calls, 3 adapters, 10-12 rules.
 Actual: **11 new rules, 6 extended, the rest reused unchanged; 9 adapter rows** (the census counts
@@ -218,7 +218,7 @@ helper changed. Generated: `pricing.py` 340 lines, `jobbudget.py` 179 (519, agai
 
 ## J88-2 rules (#316 G2: `eventlog`, `tokenledger`, `storage/logsegment`)
 
-Census estimate for the three modules (J88-1, `node tools/ts2py/census.mjs` restricted to them):
+Census estimate for the three modules (J88-1, `node tools/ts2py-bantamkit/census.mjs` restricted to them):
 1,208 lines, 2 new syntax kinds, 11 new builtin calls, 22 Node adapters, 11-14 rules. Actual:
 **16 new rules, 9 extended; 37 new adapter rows, 3 extended.** The census undercounts for the
 reason J87-3 gave (an import of an uncompiled `src` module, here `pyfs`, `store` and `lock`, reads
@@ -267,7 +267,7 @@ byte for byte unchanged but for the `# ruff: noqa` header, which gains E741 (a T
 
 ## J89-2 rules (#316 G3 U1: `memory/usage`; `memory/retrieval` lowered, then kept hand-written)
 
-Census (J89-1, `node tools/ts2py/census.mjs` over the two modules): retrieval 5 new kinds and 13
+Census (J89-1, `node tools/ts2py-bantamkit/census.mjs` over the two modules): retrieval 5 new kinds and 13
 calls, usage 5 calls, among them `>>`, postfix `++`/`--`, `.charCodeAt`, `.match`, `.normalize`,
 `Math.round`, `Math.log1p`, `Object.is`, `Float64Array`, `DataView`. Actual: **8 new rules, 3
 extended, 1 compiler defect fixed, 6 exact runtime fast paths; 5 new adapter rows** (usage's).

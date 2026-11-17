@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use oxc_ast::ast::*;
 use oxc_span::{GetSpan, Span};
 
-use crate::adapters::{self, AdapterKind};
+use crate::adapters::{AdapterKind, AdapterTable, Contract};
 use crate::pyfmt::{is_py_keyword, py_name, py_number, py_str, py_str_utf16};
 use crate::types::{self, Assume, Fact, Key, MODULE, Observed, TypeDecls};
 
@@ -409,7 +409,7 @@ pub struct ModuleExports {
 /// Everything about the other modules of a multi-module compile a module needs (J86).
 #[derive(Clone, Default)]
 pub struct ModuleCtx {
-    /// This module's path, as printed (`runtime-ts/src/memory/factfile.ts`).
+    /// This module's path, as printed (`src/memory/factfile.ts`).
     pub path: String,
     /// Every compiled module, by its normalised `.ts` path.
     pub modules: HashMap<String, ModuleExports>,
@@ -417,6 +417,8 @@ pub struct ModuleCtx {
     pub class_methods: HashSet<String>,
     /// Where the hand-written adapters are imported from (`._ts2py_adapters`).
     pub adapter_module: String,
+    /// #337: the host's adapter rows (`host.rs`).
+    pub adapters: std::sync::Arc<AdapterTable>,
     /// J90-2: the compiled modules this one imports that import it back, directly or not (an
     /// import cycle, as `hotindex.ts` and `memory/store.ts` are). Their names are imported at
     /// the END of the Python module (`late_imports`), when every name of this one is bound.
@@ -452,6 +454,11 @@ pub struct Lowerer<'s> {
     error_classes: HashSet<String>,
     /// J87-3: source names of adapter functions, which may be passed as a `.sort` comparator.
     adapter_fns: HashSet<String>,
+    /// J90-P2 (#337): source names of adapter functions whose row promises
+    /// `Contract::CompareCodepoints`.
+    codepoint_fns: HashSet<String>,
+    /// J90-P6 (#337): source names bound to Node's `createHash` (`node:crypto`).
+    hash_fns: HashSet<String>,
     /// J87-3: the enclosing `catch (e)` bindings, innermost last: (source name, the temporary
     /// holding what was caught). The only use accepted is rethrowing it (`throw e`).
     catch_params: Vec<(String, String)>,
@@ -694,6 +701,8 @@ impl<'s> Lowerer<'s> {
             globals: HashMap::new(),
             error_classes: HashSet::new(),
             adapter_fns: HashSet::new(),
+            codepoint_fns: HashSet::new(),
+            hash_fns: HashSet::new(),
             catch_params: Vec::new(),
             exports: Vec::new(),
             scopes: Vec::new(),
@@ -3792,14 +3801,15 @@ impl<'s> Lowerer<'s> {
                 }
                 if self.is_process_env(&m.object) {
                     let key = py_str(m.property.name.as_str());
-                    return self.process_env_read(key);
+                    return self.process_env_read(key, m.span);
                 }
                 // J90-3: a constant of a namespace-imported Node module (`path.sep`): its adapter
                 // row, read by name. Anything else of the namespace stays refused below.
                 if let Expression::Identifier(id) = strip(&m.object)
                     && !self.is_scoped(id.name.as_str())
                     && let Some(module) = self.namespaces.get(id.name.as_str()).cloned()
-                    && let Some(adapter) = adapters::import(&module, m.property.name.as_str())
+                    && let Some(adapter) =
+                        self.ctx.adapters.import(&module, m.property.name.as_str())
                     && adapter.kind == AdapterKind::Constant
                 {
                     self.imports
@@ -3830,8 +3840,9 @@ impl<'s> Lowerer<'s> {
                     && matches!(strip(&m.object), Expression::Identifier(p) if p.name == "process")
                     && !self.is_local("process")
                 {
-                    let adapter =
-                        adapters::global("process.env.all").expect("declared in adapters.rs");
+                    let Some(adapter) = self.ctx.adapters.global("process.env.all") else {
+                        return self.refuse(m.span, "process.env as a value: no declared adapter");
+                    };
                     self.imports
                         .entry(self.ctx.adapter_module.clone())
                         .or_default()
@@ -3844,7 +3855,9 @@ impl<'s> Lowerer<'s> {
                     && m.property.name == "pid"
                     && !self.is_local("process")
                 {
-                    let adapter = adapters::global("process.pid").expect("declared in adapters.rs");
+                    let Some(adapter) = self.ctx.adapters.global("process.pid") else {
+                        return self.refuse(m.span, "process.pid: no declared adapter");
+                    };
                     self.imports
                         .entry(self.ctx.adapter_module.clone())
                         .or_default()
@@ -3921,7 +3934,7 @@ impl<'s> Lowerer<'s> {
                 // J87-3: `process.env[name]`, through the adapter.
                 if self.is_process_env(&m.object) {
                     let key = self.expr(&m.expression);
-                    return self.process_env_read(key.code);
+                    return self.process_env_read(key.code, m.span);
                 }
                 // J89-3: an element of a Float64Array: a float, or `undefined` for a key that is
                 // not a valid index (`_js_ta_get`); in the proven copy of a counted loop, at the
@@ -4154,8 +4167,10 @@ impl<'s> Lowerer<'s> {
 
     /// J87-3: a read of the process environment (`adapters.rs`, `process.env`): a string, or
     /// `undefined` when the variable is unset.
-    fn process_env_read(&mut self, key: String) -> Py {
-        let adapter = adapters::global("process.env").expect("declared in adapters.rs");
+    fn process_env_read(&mut self, key: String, span: Span) -> Py {
+        let Some(adapter) = self.ctx.adapters.global("process.env") else {
+            return self.refuse(span, "process.env read: no declared adapter");
+        };
         self.imports
             .entry(self.ctx.adapter_module.clone())
             .or_default()
@@ -5724,12 +5739,7 @@ impl<'s> Lowerer<'s> {
         let Expression::Identifier(f) = strip(&create.callee) else {
             return None;
         };
-        let adapter = self.adapter_fns.contains(f.name.as_str())
-            && !self.is_scoped(f.name.as_str())
-            && self
-                .globals
-                .get(f.name.as_str())
-                .is_some_and(|py| py == "create_hash");
+        let adapter = self.hash_fns.contains(f.name.as_str()) && !self.is_scoped(f.name.as_str());
         if !adapter || create.optional || create.arguments.len() != 1 {
             return None;
         }
@@ -5738,8 +5748,8 @@ impl<'s> Lowerer<'s> {
     }
 
     /// J90-P2: `(a, b) => c1 || c2 || ... || cn`, each `ci` a key difference `k(a) - k(b)` /
-    /// `k(b) - k(a)` or a code-point comparison `cmpCodepoint(k(a), k(b))` /
-    /// `cmpCodepoint(k(b), k(a))` (the adapter, not a local), every `k` pure as for
+    /// `k(b) - k(a)` or a code-point comparison `cmp(k(a), k(b))` / `cmp(k(b), k(a))` (`cmp` an
+    /// adapter whose row promises `compare-codepoints`, not a local), every `k` pure as for
     /// `keyed_comparator`: the arrow and per part its `k(a)`, whether it is descending and whether
     /// it is a code-point part. Only a chain of two or more parts, or one code-point part (one
     /// difference alone is `keyed_comparator`'s).
@@ -5779,8 +5789,7 @@ impl<'s> Lowerer<'s> {
         }
         let mut parts = Vec::new();
         chain(arrow.body.as_expression()?, &mut parts);
-        let codepoint =
-            !self.is_scoped("cmpCodepoint") && self.adapter_fns.contains("cmpCodepoint");
+        let codepoint = |name: &str| self.codepoint_fns.contains(name) && !self.is_scoped(name);
         let mut keys = Vec::new();
         for part in parts {
             let (l, r, cp) = match part {
@@ -5788,10 +5797,9 @@ impl<'s> Lowerer<'s> {
                     (&d.left, &d.right, false)
                 }
                 Expression::CallExpression(c)
-                    if codepoint
-                        && !c.optional
+                    if !c.optional
                         && c.arguments.len() == 2
-                        && matches!(strip(&c.callee), Expression::Identifier(id) if id.name == "cmpCodepoint") =>
+                        && matches!(strip(&c.callee), Expression::Identifier(id) if codepoint(id.name.as_str())) =>
                 {
                     (
                         c.arguments[0].as_expression()?,
@@ -5892,7 +5900,7 @@ impl<'s> Lowerer<'s> {
         let adapter = match self.namespaces.get(object) {
             Some(module) => {
                 let module = module.clone();
-                match adapters::import(&module, method) {
+                match self.ctx.adapters.import(&module, method) {
                     Some(a) if a.kind == AdapterKind::Function => Some(a),
                     _ => {
                         let construct = format!("{module} function {method}: no declared adapter");
@@ -5900,7 +5908,10 @@ impl<'s> Lowerer<'s> {
                     }
                 }
             }
-            None => adapters::global(&format!("{object}.{method}"))
+            None => self
+                .ctx
+                .adapters
+                .global(&format!("{object}.{method}"))
                 .filter(|a| a.kind == AdapterKind::Function),
         };
         if let Some(adapter) = adapter {
@@ -6075,7 +6086,7 @@ impl<'s> Lowerer<'s> {
                     )
                 }
                 "RegExp" => return self.dynamic_regex(n),
-                _ => match adapters::global(name) {
+                _ => match self.ctx.adapters.global(name) {
                     Some(adapter) if matches!(adapter.kind, AdapterKind::Class(_)) => {
                         self.imports
                             .entry(self.ctx.adapter_module.clone())
@@ -6240,7 +6251,7 @@ impl<'s> Lowerer<'s> {
             }
             match resolved
                 .as_deref()
-                .and_then(|path| adapters::import(path, local))
+                .and_then(|path| self.ctx.adapters.import(path, local))
             {
                 Some(adapter) => {
                     let py = adapter.py_name.to_string();
@@ -6261,6 +6272,12 @@ impl<'s> Lowerer<'s> {
                         }
                         AdapterKind::Function => {
                             self.adapter_fns.insert(local.to_string());
+                            if adapter.contract == Some(Contract::CompareCodepoints) {
+                                self.codepoint_fns.insert(local.to_string());
+                            }
+                            if adapter.is(Some("node:crypto"), "createHash") {
+                                self.hash_fns.insert(local.to_string());
+                            }
                         }
                         AdapterKind::Constant => {}
                         // J89-4a: its methods dispatch in this module only.
@@ -6373,7 +6390,7 @@ impl<'s> Lowerer<'s> {
                 py
             } else if let Some(adapter) = resolved
                 .as_deref()
-                .and_then(|path| adapters::import(path, local))
+                .and_then(|path| self.ctx.adapters.import(path, local))
             {
                 let py = adapter.py_name.to_string();
                 self.imports
@@ -6440,8 +6457,8 @@ impl<'s> Lowerer<'s> {
         if c.r#abstract {
             self.refuse(c.span, "abstract class");
         }
-        // J87-3: `extends` an Error class visible here (an adapter `ErrorClass` such as
-        // `BantamError`, or one declared above) as well as `Error` itself.
+        // J87-3: `extends` an Error class visible here (an adapter `ErrorClass` such as a host's
+        // `AppError`, or one declared above) as well as `Error` itself.
         let error_base: Option<String> = match &c.heritage {
             None => None,
             Some(h) => match strip(&h.expression) {
@@ -7222,7 +7239,7 @@ fn property_key_name(key: &PropertyKey<'_>) -> Option<String> {
 }
 
 /// A relative import specifier resolved against the importing module's path, `.js` read as the
-/// `.ts` it is compiled from (`runtime-ts/src/memory/pyyaml.ts`). None for a bare specifier.
+/// `.ts` it is compiled from (`src/memory/pyyaml.ts`). None for a bare specifier.
 /// J90-2: the compiled modules of the call `program` imports a value from (a type-only import
 /// binds nothing at run time and is no edge of an import cycle).
 pub fn compiled_imports(

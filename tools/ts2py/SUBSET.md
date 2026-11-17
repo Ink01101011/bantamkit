@@ -559,7 +559,7 @@ runtime's own attributes do), and on an Error subclass a member named `args`, `w
 ## Modules and the adapter seam (J86)
 
 J88-2: `import * as fs from 'node:fs'` (a namespace import of a `node:` builtin) is accepted, and
-`fs.name(...)` is that module's adapter row (`adapters.rs`); a name with no row is refused at
+`fs.name(...)` is that module's adapter row (the host's table); a name with no row is refused at
 compile time, and a namespace import of anything else stays refused. An adapter may be a
 constant (`LOCK_STALE_MS`), read by name. An adapter function may be called with `...xs` of an
 array proven a list.
@@ -584,11 +584,13 @@ array proven a list.
 - J90-3: a CONSTANT of a namespace-imported Node module (`path.sep` under `import * as path from
   'node:path'`) is its adapter row of kind `Constant`, read by name; any other member read of the
   namespace stays refused.
-- Any other import resolves only through the table in `src/adapters.rs`: a row names the
-  TypeScript module (or a Node global such as `TextDecoder`), the name, the Python name in
-  `src/adapters.py` (`--emit-adapters <file>` writes it, importing the runtime from
-  `--runtime-module`), and the reason the hand-written Python is the same function. Every row and
-  its measurement is in `RULES.md`, Adapters.
+- Any other import resolves only through the HOST's adapter table (#337): the `[[adapter]]` rows
+  of the file `--config` names (`src/host.rs`; the compiler declares no row of its own). A row
+  names the TypeScript module (or a Node global such as `TextDecoder`), the name, the Python name
+  in the host's `adapter_source` (`--emit-adapters <file>` writes it, importing the runtime from
+  `--runtime-module`), and the reason the hand-written Python is the same function; a row with no
+  reason is refused when the file is read. bantamkit's rows and their measurements:
+  `tools/ts2py-bantamkit/ts2py.toml` and `RULES.md`, Adapters.
 - J87-3: a Node builtin module (`import { join } from 'node:path'`) is looked up in the same table
   under its specifier (`node:fs`, `node:path`); `process.env` is a global row.
 - An import with no compiled module and no row is a compile error naming it:

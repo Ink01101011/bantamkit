@@ -53,7 +53,7 @@ fn package(dir: &Path, modules: &[ts2py::Compiled]) {
     std::fs::write(package.join("_ts2py_runtime.py"), ts2py::RUNTIME).unwrap();
     std::fs::write(
         package.join("_ts2py_adapters.py"),
-        ts2py::adapters_module("._ts2py_runtime"),
+        ts2py_bantamkit::adapters_module("._ts2py_runtime"),
     )
     .unwrap();
     for module in modules {
@@ -68,7 +68,7 @@ fn package(dir: &Path, modules: &[ts2py::Compiled]) {
 fn compile_package(sources: &[(&str, &str)]) -> Vec<ts2py::Compiled> {
     let options = ts2py::Options {
         runtime_module: Some("._ts2py_runtime".to_string()),
-        ..ts2py::Options::default()
+        ..ts2py_bantamkit::options()
     };
     ts2py::compile_modules(sources, &options)
         .unwrap_or_else(|lines| panic!("refused:\n{}", lines.join("\n")))
@@ -212,7 +212,7 @@ fn g3_modules_compile_together() {
 fn g3_a_module_let_is_not_importable() {
     let options = ts2py::Options {
         runtime_module: Some("._ts2py_runtime".to_string()),
-        ..ts2py::Options::default()
+        ..ts2py_bantamkit::options()
     };
     let lines = match ts2py::compile_modules(
         &[

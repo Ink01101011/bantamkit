@@ -91,7 +91,8 @@ function ts2py(args, out) {
   const cargo = findCargo();
   const r = spawnSync(
     cargo,
-    ['run', '--release', '--quiet', '--manifest-path', join(repoRoot, 'tools', 'ts2py', 'Cargo.toml'), '--', ...args],
+    // #337: the compiler holds no bantamkit name; bantamkit's adapters and header names are its host file.
+    ['run', '--release', '--quiet', '--manifest-path', join(repoRoot, 'tools', 'ts2py', 'Cargo.toml'), '--', ...args, '--config', join(repoRoot, 'tools', 'ts2py-bantamkit', 'ts2py.toml')],
     { cwd: repoRoot, encoding: 'utf8', timeout: 900_000, maxBuffer: 64 * 1024 * 1024 },
   );
   if (r.error) throw new Error(`ts2py: could not run ${cargo}: ${r.error.message} (set TS2PY_CARGO)`);
@@ -145,7 +146,7 @@ const G1_SOURCES = [
   'runtime-ts/src/storage/tiers.ts',
   'runtime-ts/src/storage/index.ts',
 ];
-const CARGO_RUN = 'cargo run --release --manifest-path tools/ts2py/Cargo.toml --';
+const CARGO_RUN = 'cargo run --release --manifest-path tools/ts2py/Cargo.toml -- --config tools/ts2py-bantamkit/ts2py.toml';
 const REGENERATE =
   'regenerate from the repository root:\n' +
   `  ${CARGO_RUN} ${SOURCE} -o ${COMMITTED}/workplan.py --runtime-module ._ts2py_runtime\n` +

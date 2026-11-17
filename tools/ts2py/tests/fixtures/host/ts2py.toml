@@ -1,0 +1,24 @@
+# A host file for the compiler's own tests (tests/host.rs): two adapters, one rebound name.
+generator = "ts2py (test host)"
+shipped_note = "# Shipped form: see tests/fixtures/host/adapters.py."
+adapter_source = "adapters.py"
+
+[[rebound]]
+module = "src/app.ts"
+name = "make"
+why = "the test rebinds `make` and expects the generated module to read it at call time."
+
+[[adapter]]
+module = "src/helpers.ts"
+name = "twice"
+py_name = "twice"
+kind = "function"
+why = "Python is the reference: `twice` is `2 * n`, the same in both."
+
+[[adapter]]
+module = "src/helpers.ts"
+name = "cmpCp"
+py_name = "cmp_cp"
+kind = "function"
+contract = "compare-codepoints"
+why = "Python is the reference: strings compare by code point in Python, -1, 0 or 1."

@@ -32,7 +32,7 @@ fn compile_workplan(options: &ts2py::Options) -> String {
 
 #[test]
 fn compiles_with_the_legacy_public_names() {
-    let module = compile_workplan(&ts2py::Options::default());
+    let module = compile_workplan(&ts2py_bantamkit::options());
     assert!(module.contains("\n__all__ = [\"plan\", \"touches_refusal\"]\n"));
     assert!(module.contains("\ndef plan(input):\n"));
     assert!(module.contains("\ndef touches_refusal(node_id, touches):\n"));
@@ -48,7 +48,7 @@ fn header_names_the_source_and_its_sha256() {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let module = compile_workplan(&ts2py::Options::default());
+    let module = compile_workplan(&ts2py_bantamkit::options());
     let mut lines = module.lines();
     assert_eq!(
         lines.next().unwrap(),
@@ -59,8 +59,8 @@ fn header_names_the_source_and_its_sha256() {
 
 #[test]
 fn deterministic_across_runs_and_working_directories() {
-    let a = compile_workplan(&ts2py::Options::default());
-    let b = compile_workplan(&ts2py::Options::default());
+    let a = compile_workplan(&ts2py_bantamkit::options());
+    let b = compile_workplan(&ts2py_bantamkit::options());
     assert_eq!(a, b);
 
     // Through the CLI from two different directories: the header path is repo-relative.
@@ -71,8 +71,10 @@ fn deterministic_across_runs_and_working_directories() {
     for (i, cwd) in [repo(), repo().join("tools/ts2py")].iter().enumerate() {
         let out = dir.join(format!("w{i}.py"));
         let rel = pathdiff(&input, cwd);
-        let status = Command::new(env!("CARGO_BIN_EXE_ts2py"))
+        let status = Command::new(env!("CARGO_BIN_EXE_ts2py-host-cli"))
             .current_dir(cwd)
+            .arg("--config")
+            .arg(ts2py_bantamkit::CONFIG)
             .arg(&rel)
             .arg("-o")
             .arg(&out)
@@ -102,7 +104,7 @@ fn pathdiff(target: &Path, base: &Path) -> PathBuf {
 fn runtime_module_mode_imports_only_what_it_uses() {
     let options = ts2py::Options {
         runtime_module: Some("._ts2py_runtime".to_string()),
-        ..ts2py::Options::default()
+        ..ts2py_bantamkit::options()
     };
     let module = compile_workplan(&options);
     assert!(module.contains("from ._ts2py_runtime import (  # noqa: F401\n"));
@@ -122,7 +124,7 @@ fn runtime_module_mode_imports_only_what_it_uses() {
 /// refusal. `TS2PY_PYTHON` picks the interpreter; default `python3`.
 #[test]
 fn generated_module_runs_under_python() {
-    let module = compile_workplan(&ts2py::Options::default());
+    let module = compile_workplan(&ts2py_bantamkit::options());
     let dir = std::env::temp_dir().join(format!("ts2py-run-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("workplan_gen.py");

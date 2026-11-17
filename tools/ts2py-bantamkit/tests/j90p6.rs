@@ -51,7 +51,7 @@ fn package(dir: &Path, modules: &[ts2py::Compiled]) {
     std::fs::write(package.join("_ts2py_runtime.py"), ts2py::RUNTIME).unwrap();
     std::fs::write(
         package.join("_ts2py_adapters.py"),
-        ts2py::adapters_module("._ts2py_runtime"),
+        ts2py_bantamkit::adapters_module("._ts2py_runtime"),
     )
     .unwrap();
     for module in modules {
@@ -67,7 +67,7 @@ fn compiled() -> Vec<ts2py::Compiled> {
     let source = include_str!("fixtures/j90p6_probe.ts");
     let options = ts2py::Options {
         runtime_module: Some("._ts2py_runtime".to_string()),
-        ..ts2py::Options::default()
+        ..ts2py_bantamkit::options()
     };
     ts2py::compile_modules(&[("runtime-ts/src/j90p6_probe.ts", source)], &options)
         .unwrap_or_else(|lines| panic!("refused:\n{}", lines.join("\n")))

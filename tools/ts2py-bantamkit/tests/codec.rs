@@ -52,7 +52,7 @@ fn repo_root() -> PathBuf {
 #[test]
 fn j86_semantics_match_node() {
     let source = include_str!("fixtures/j86_probe.ts");
-    let module = ts2py::compile(source, "j86_probe.ts", &ts2py::Options::default())
+    let module = ts2py::compile(source, "j86_probe.ts", &ts2py_bantamkit::options())
         .unwrap_or_else(|lines| panic!("probe refused:\n{}", lines.join("\n")));
     let dir = scratch("j86-probe");
     let path = dir.join("probe.py");
@@ -115,7 +115,7 @@ fn codec_compiles_and_round_trips_like_node() {
         .collect();
     let options = ts2py::Options {
         runtime_module: Some("._ts2py_runtime".to_string()),
-        ..ts2py::Options::default()
+        ..ts2py_bantamkit::options()
     };
     let modules = ts2py::compile_modules(&pairs, &options)
         .unwrap_or_else(|lines| panic!("codec refused:\n{}", lines.join("\n")));
@@ -126,7 +126,7 @@ fn codec_compiles_and_round_trips_like_node() {
     std::fs::write(package.join("_ts2py_runtime.py"), ts2py::RUNTIME).unwrap();
     std::fs::write(
         package.join("_ts2py_adapters.py"),
-        ts2py::adapters_module("._ts2py_runtime"),
+        ts2py_bantamkit::adapters_module("._ts2py_runtime"),
     )
     .unwrap();
     for module in &modules {
@@ -199,7 +199,7 @@ fn imports_resolve_through_compiled_modules_or_adapters_only() {
         ],
         &ts2py::Options {
             runtime_module: Some("._ts2py_runtime".to_string()),
-            ..ts2py::Options::default()
+            ..ts2py_bantamkit::options()
         },
     )
     .unwrap_or_else(|lines| panic!("refused:\n{}", lines.join("\n")));
@@ -214,7 +214,7 @@ fn imports_resolve_through_compiled_modules_or_adapters_only() {
     let lines = ts2py::compile(
         "import { PyRuntimeError } from './pyfs.js';\nimport { x } from 'node:fs';\nexport const y = PyRuntimeError;\n",
         "runtime-ts/src/memory/c.ts",
-        &ts2py::Options::default(),
+        &ts2py_bantamkit::options(),
     )
     .unwrap_err();
     assert_eq!(
@@ -278,7 +278,7 @@ fn j86_refusals() {
         ),
     ];
     for (source, expected) in cases {
-        let lines = ts2py::compile(source, "t.ts", &ts2py::Options::default())
+        let lines = ts2py::compile(source, "t.ts", &ts2py_bantamkit::options())
             .err()
             .unwrap_or_else(|| panic!("expected a refusal for:\n{source}"));
         assert!(
@@ -294,7 +294,7 @@ fn j86_refusals() {
 #[test]
 fn bigint_differences_compose_like_node() {
     let source = "export function big(a: bigint, b: bigint): string {\n  const d = a - b;\n  const e = b - a;\n  return JSON.stringify([String(d + e), d < e, d > e, d <= e, (a - b) >= 3, (a - b) === 3, String(-(a - b))]);\n}\n";
-    let module = ts2py::compile(source, "big.ts", &ts2py::Options::default())
+    let module = ts2py::compile(source, "big.ts", &ts2py_bantamkit::options())
         .unwrap_or_else(|lines| panic!("refused:\n{}", lines.join("\n")));
     let dir = scratch("j86-big");
     let path = dir.join("big.py");

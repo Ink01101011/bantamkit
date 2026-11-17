@@ -52,7 +52,7 @@ fn scratch(name: &str) -> PathBuf {
     std::fs::write(dir.join("pkg").join("_ts2py_runtime.py"), ts2py::RUNTIME).unwrap();
     std::fs::write(
         dir.join("pkg").join("_ts2py_adapters.py"),
-        ts2py::adapters_module("._ts2py_runtime"),
+        ts2py_bantamkit::adapters_module("._ts2py_runtime"),
     )
     .unwrap();
     dir

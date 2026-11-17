@@ -4,76 +4,34 @@
 //! compile-time refusal with a source location, never a best-effort translation.
 
 pub mod adapters;
+pub mod cli;
+pub mod host;
 pub mod lower;
 pub mod pyfmt;
 pub mod types;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
 use oxc_span::{SourceType, Span};
 use sha2::{Digest, Sha256};
 
-/// The runtime support module, pure stdlib. Inlined into the output unless `runtime_module` names
-/// a module to import it from (`--emit-runtime` writes this text to that module's file).
-pub const RUNTIME: &str = include_str!("runtime.py");
+pub use host::{Host, Rebound};
 
-/// The hand-written adapters (J86, `adapters.rs`). `__RUNTIME__` stands for the runtime module.
-pub const ADAPTERS: &str = include_str!("adapters.py");
+/// The runtime support module, pure stdlib (`python/ts2py/runtime.py`). Inlined into the output
+/// unless `runtime_module` names a module to import it from (`--emit-runtime` writes this text to
+/// that module's file).
+pub const RUNTIME: &str = include_str!("../python/ts2py/runtime.py");
 
-/// The adapter module's text, importing the runtime from `runtime_module`.
-pub fn adapters_module(runtime_module: &str) -> String {
-    ADAPTERS.replace("__RUNTIME__", runtime_module)
-}
-
-/// J90-P7 (#316 G4): a module-level name of a generated module that hand-written Python rebinds
-/// (`_g.MemoryStore = _Core`) or a test patches. Interpreted, every global is read at call time;
-/// mypyc binds a module's own functions and the functions and classes it imports to their
-/// definitions, so a rebinding would not reach compiled code. Each row is read at call time there
-/// too: a function the module defines is decorated (`@_js_late`, the identity: mypyc calls a
-/// decorated function through the module's globals), an imported one becomes an `Any` variable.
-/// Constants need no row: mypyc reads a module-level variable that is not `Final` from the globals.
-pub struct Rebound {
-    pub module: &'static str,
-    pub name: &'static str,
-    pub why: &'static str,
-}
-
-pub const REBOUND: &[Rebound] = &[
-    Rebound {
-        module: "memory/component.ts",
-        name: "MemoryStore",
-        why: "memory/component.py builds every store layer through `_g.MemoryStore = _Core`.",
-    },
-    Rebound {
-        module: "memory/component.ts",
-        name: "UsageLedger",
-        why: "memory/component.py builds the usage ledger through `_g.UsageLedger = _ledger`.",
-    },
-    Rebound {
-        module: "memory/component.ts",
-        name: "profile_store",
-        why: "memory/component.py rebinds `_g.profile_store` when a caller sets `_profile_store`.",
-    },
-    Rebound {
-        module: "storage/logsegment.ts",
-        name: "exclusive",
-        why: "tests/test_storage_log.py patches the log segment's `exclusive` with a spy.",
-    },
-];
-
-/// The line `shipped` writes after a support module's leading comment block.
-pub const SHIPPED_NOTE: &str =
-    "# Shipped form (J90-P2): its comments and docstrings are in tools/ts2py/src/.";
-
-/// J90-P2: the form of a support module `--emit-runtime` / `--emit-adapters` write (and the package
-/// ships): its leading comment block and `SHIPPED_NOTE`, then every line but the full-line
-/// comments and the docstring of each function or class whose body goes on after it. Nothing
-/// inside a triple-quoted string is touched, so the code is the source's statement for statement
-/// (`tests/shipped.rs` holds the two to one `ast.dump`, docstrings aside), and only the documentation
-/// stays behind in the source. `runtime-py/tests/test_ts2py_fresh.py` spells the same rule.
-pub fn shipped(text: &str) -> String {
+/// J90-P2: the form of a support module `--emit-runtime` / `--emit-adapters` write (and a host
+/// ships): its leading comment block and `note` (the host's `shipped_note`), then every line but
+/// the full-line comments and the docstring of each function or class whose body goes on after
+/// it. Nothing inside a triple-quoted string is touched, so the code is the source's statement for
+/// statement (`tests/shipped.rs` holds the two to one `ast.dump`, docstrings aside), and only the
+/// documentation stays behind in the source.
+pub fn shipped(text: &str, note: &str) -> String {
     let lines: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<&str> = Vec::new();
     let mut i = 0;
@@ -81,7 +39,7 @@ pub fn shipped(text: &str) -> String {
         out.push(lines[i]);
         i += 1;
     }
-    out.push(SHIPPED_NOTE);
+    out.push(note);
     let quotes = |l: &str| l.matches("\"\"\"").count();
     let indent = |l: &str| l.len() - l.trim_start().len();
     let header = |l: &str| {
@@ -149,12 +107,14 @@ pub fn shipped(text: &str) -> String {
     out.join("\n")
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Options {
     /// Import the runtime helpers from this module (e.g. `._ts2py_runtime`) instead of inlining them.
     pub runtime_module: Option<String>,
     /// J86: import adapters from this module (default `._ts2py_adapters`).
     pub adapter_module: Option<String>,
+    /// #337: what the project being compiled supplies (`host.rs`); empty by default.
+    pub host: Arc<Host>,
 }
 
 /// One compiled module (J86).
@@ -179,7 +139,7 @@ pub fn compile(source: &str, display_path: &str, options: &Options) -> Result<St
 
 /// Compile several modules together (J86): each TypeScript module becomes one Python module, and an
 /// import of one of them from another is a relative import of the generated module. An import of
-/// anything else goes through the adapter seam (`adapters.rs`) or is refused.
+/// anything else goes through the host's adapter seam (`adapters.rs`, `host.rs`) or is refused.
 pub fn compile_modules(
     sources: &[(&str, &str)],
     options: &Options,
@@ -217,10 +177,11 @@ pub fn compile_modules(
             .adapter_module
             .clone()
             .unwrap_or_else(|| "._ts2py_adapters".to_string()),
+        adapters: Arc::new(options.host.adapters.clone()),
         ..lower::ModuleCtx::default()
     };
     ctx.class_methods
-        .extend(adapters::class_methods().map(str::to_string));
+        .extend(options.host.adapters.class_methods().map(str::to_string));
     let mut stems = Vec::new();
     // J89-5a: each module's own non-exported classes' method names (`scan_module`).
     let mut private_methods: HashMap<String, HashSet<String>> = HashMap::new();
@@ -359,10 +320,12 @@ fn emit(
     let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
 
     // J90-P7: a name a hand-written shim rebinds is read at call time under mypyc too.
-    let rebound: Vec<&str> = REBOUND
+    let rebound: Vec<&str> = options
+        .host
+        .rebound
         .iter()
-        .filter(|r| display_path.ends_with(r.module))
-        .map(|r| r.name)
+        .filter(|r| display_path.ends_with(r.module.as_str()))
+        .map(|r| r.name.as_str())
         .collect();
     let mut late_defs = String::new();
     for name in &rebound {
@@ -425,8 +388,9 @@ fn emit(
     let mut bound_imports: Vec<&str> = Vec::new();
 
     let mut out = String::new();
+    let generator = &options.host.generator;
     out.push_str(&format!(
-        "# Generated by tools/ts2py from {display_path}. DO NOT EDIT: change the TypeScript and regenerate.\n"
+        "# Generated by {generator} from {display_path}. DO NOT EDIT: change the TypeScript and regenerate.\n"
     ));
     out.push_str(&format!("# source-sha256: {hex}\n"));
     // Generated lines are not wrapped; and every lambda is a callback a helper calls before the
@@ -436,7 +400,7 @@ fn emit(
     // (UP034).
     out.push_str("# ruff: noqa: E501, B023, E741, UP034\n");
     out.push_str(&format!(
-        "\"\"\"Generated from `{display_path}` by tools/ts2py; the TypeScript source is the documentation.\"\"\"\n\n"
+        "\"\"\"Generated from `{display_path}` by {generator}; the TypeScript source is the documentation.\"\"\"\n\n"
     ));
     match &options.runtime_module {
         None => out.push_str(RUNTIME),

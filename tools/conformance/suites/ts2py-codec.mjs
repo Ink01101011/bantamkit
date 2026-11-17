@@ -98,7 +98,8 @@ function ts2py(args, out) {
   const cargo = findCargo();
   const r = spawnSync(
     cargo,
-    ['run', '--release', '--quiet', '--manifest-path', join(repoRoot, 'tools', 'ts2py', 'Cargo.toml'), '--', ...args],
+    // #337: the compiler holds no bantamkit name; bantamkit's adapters and header names are its host file.
+    ['run', '--release', '--quiet', '--manifest-path', join(repoRoot, 'tools', 'ts2py', 'Cargo.toml'), '--', ...args, '--config', join(repoRoot, 'tools', 'ts2py-bantamkit', 'ts2py.toml')],
     { cwd: repoRoot, encoding: 'utf8', timeout: 900_000, maxBuffer: 64 * 1024 * 1024 },
   );
   if (r.error) throw new Error(`ts2py: could not run ${cargo}: ${r.error.message} (set TS2PY_CARGO)`);

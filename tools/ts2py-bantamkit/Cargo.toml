@@ -1,0 +1,15 @@
+[package]
+name = "ts2py-bantamkit"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "bantamkit's host input to ts2py (#337): its adapter table and config, and the tests that compile bantamkit's own TypeScript."
+license = "MIT"
+
+# The compiler, by path: the package it will be lifted out as after 1.0.0 (#337).
+# Every dependency is pinned exactly (in ../ts2py/Cargo.toml); Cargo.lock is committed.
+[dependencies]
+ts2py = { path = "../ts2py" }
+
+[dev-dependencies]
+sha2 = "=0.10.9"

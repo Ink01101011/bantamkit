@@ -2783,8 +2783,8 @@ def _js_catch(error):
 
 
 def _js_py_value(value):
-    """A JS value lifted into the Python value a hand-written caller is given, as Node's `fromJs`
-    (`runtime-ts/src/pyjson.ts`) lifts it for `dumpJson`: a number that is a safe integer (and not
+    """A JS value lifted into the Python value a hand-written caller is given, as a host's `fromJs`
+    (the JS side's lift into a JSON-ready value) lifts it for `dumpJson`: a number that is a safe integer (and not
     -0) is an `int`, any other number a `float`; `undefined` is `None`; lists and dicts are copied
     through. Not used by generated code: shims call it on what a generated function returns."""
     if value is _JS_UNDEFINED or value is None:
@@ -4085,7 +4085,7 @@ def _js_lift_values_same(values):
 
 
 def _js_py_round_float9(x, *_):
-    """`pyRoundFloat9` (runtime-ts/src/pysem.ts): CPython's `round(x, 9)`, which it ports. The
+    """`pyRoundFloat9` (a host's TypeScript port of it): CPython's `round(x, 9)`. The host
     adapters' `py_round_float9`, moved here (#316 G4, J90-P7B) with `pyRoundFloat9`'s own fast
     path (J68-5): for a float `0 < x` with `y = x * 1e9 < 2**40` whose fraction is more than 1e-3
     from one half, the nearer whole `y` over 1e9 IS what `round` answers (`y` is within 2**-13 of
@@ -4102,7 +4102,7 @@ def _js_py_round_float9(x, *_):
 
 
 def _js_lifted(value):
-    """`value` as `fromJs` reads it (runtime-ts/src/pyjson.ts), as the Python value `json.dumps`
+    """`value` as a host's `fromJs` reads it (its JS lift), as the Python value `json.dumps`
     is handed: a number that is a safe integer (`Number.isSafeInteger`) and not -0 is an int, any
     other a float; a Map or a plain object a dict keyed by
     `String(key)` in `Object.entries` order; an array a list; null and undefined None; a BigInt an

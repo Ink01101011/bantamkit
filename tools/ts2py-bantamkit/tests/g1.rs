@@ -52,7 +52,7 @@ fn package(dir: &Path, modules: &[ts2py::Compiled]) {
     std::fs::write(package.join("_ts2py_runtime.py"), ts2py::RUNTIME).unwrap();
     std::fs::write(
         package.join("_ts2py_adapters.py"),
-        ts2py::adapters_module("._ts2py_runtime"),
+        ts2py_bantamkit::adapters_module("._ts2py_runtime"),
     )
     .unwrap();
     for module in modules {
@@ -67,7 +67,7 @@ fn package(dir: &Path, modules: &[ts2py::Compiled]) {
 fn compile_package(sources: &[(&str, &str)]) -> Vec<ts2py::Compiled> {
     let options = ts2py::Options {
         runtime_module: Some("._ts2py_runtime".to_string()),
-        ..ts2py::Options::default()
+        ..ts2py_bantamkit::options()
     };
     ts2py::compile_modules(sources, &options)
         .unwrap_or_else(|lines| panic!("refused:\n{}", lines.join("\n")))
@@ -82,7 +82,7 @@ def node_json(m, value):
 #[test]
 fn g1_constructs_answer_like_node() {
     let source = include_str!("fixtures/j87_g1_probe.ts");
-    let module = ts2py::compile(source, "j87_g1_probe.ts", &ts2py::Options::default())
+    let module = ts2py::compile(source, "j87_g1_probe.ts", &ts2py_bantamkit::options())
         .unwrap_or_else(|lines| panic!("probe refused:\n{}", lines.join("\n")));
     // The lowerings themselves: a folded power, the constant, the optional read, the catch.
     assert!(
@@ -274,7 +274,7 @@ const OWN_KEYS: &str = r#"export function probe(input: unknown): unknown[] {
 
 #[test]
 fn own_key_builtins_answer_like_node() {
-    let module = ts2py::compile(OWN_KEYS, "own_keys.ts", &ts2py::Options::default())
+    let module = ts2py::compile(OWN_KEYS, "own_keys.ts", &ts2py_bantamkit::options())
         .unwrap_or_else(|lines| panic!("probe refused:\n{}", lines.join("\n")));
     assert!(module.contains("_js_object_has_own(proto, k)"), "{module}");
     assert!(module.contains("_js_object_from_entries("), "{module}");

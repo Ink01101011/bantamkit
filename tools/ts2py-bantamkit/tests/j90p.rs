@@ -44,7 +44,7 @@ fn package(dir: &Path, modules: &[ts2py::Compiled]) {
     std::fs::write(package.join("_ts2py_runtime.py"), ts2py::RUNTIME).unwrap();
     std::fs::write(
         package.join("_ts2py_adapters.py"),
-        ts2py::adapters_module("._ts2py_runtime"),
+        ts2py_bantamkit::adapters_module("._ts2py_runtime"),
     )
     .unwrap();
     for module in modules {
@@ -69,7 +69,7 @@ fn j90p_lowerings_are_taken_and_answer_like_node() {
         &[("j90p_probe.ts", source)],
         &ts2py::Options {
             runtime_module: Some("._ts2py_runtime".to_string()),
-            ..ts2py::Options::default()
+            ..ts2py_bantamkit::options()
         },
     )
     .unwrap_or_else(|lines| panic!("refused:\n{}", lines.join("\n")));
@@ -124,7 +124,7 @@ fn j90p_only_a_pure_key_difference_is_a_key_sort() {
         let code = ts2py::compile(
             &format!("{head}{cmp});\n}}\n"),
             "m.ts",
-            &ts2py::Options::default(),
+            &ts2py_bantamkit::options(),
         )
         .unwrap_or_else(|lines| panic!("{cmp} refused:\n{}", lines.join("\n")));
         assert!(
@@ -135,7 +135,7 @@ fn j90p_only_a_pure_key_difference_is_a_key_sort() {
     let code = ts2py::compile(
         &format!("{head}(a, b) => o[b]! - o[a]!);\n}}\n"),
         "m.ts",
-        &ts2py::Options::default(),
+        &ts2py_bantamkit::options(),
     )
     .unwrap();
     assert!(
@@ -150,7 +150,7 @@ fn j90p_runtime_fast_paths_answer_as_the_general_paths() {
     std::fs::write(dir.join("rt.py"), ts2py::RUNTIME).unwrap();
     std::fs::write(
         dir.join("ad.py"),
-        ts2py::adapters_module("rt").replace("from .rt import", "from rt import"),
+        ts2py_bantamkit::adapters_module("rt").replace("from .rt import", "from rt import"),
     )
     .unwrap();
     let out = run_python(FAST_PATH_FUZZ, &[dir.to_str().unwrap(), "3000"]);

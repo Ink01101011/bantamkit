@@ -1,10 +1,12 @@
 //! J90-P2 (#316 G4): the support modules ship without their comments and docstrings
 //! (`ts2py::shipped`), and that changes no statement: Python's `ast.dump` of the shipped runtime
-//! and adapter module is the source's, once each function's and class's docstring (which `shipped`
+//! is the source's (a host's adapter module is held to the same in the host's own tests), once each function's and class's docstring (which `shipped`
 //! drops when the body goes on) is set aside. A rule that cut a code line, or a line inside a
 //! string, is red here.
 
 use std::process::Command;
+
+const NOTE: &str = ts2py::host::DEFAULT_SHIPPED_NOTE;
 
 const SAME_CODE: &str = r#"
 import ast, sys
@@ -26,10 +28,10 @@ fn shipped_support_modules_are_the_source_statement_for_statement() {
     let dir = std::env::temp_dir().join(format!("ts2py-shipped-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let adapters = ts2py::adapters_module("._ts2py_runtime");
-    for (name, source) in [("runtime", ts2py::RUNTIME), ("adapters", adapters.as_str())] {
-        let shipped = ts2py::shipped(source);
-        assert!(shipped.contains(ts2py::SHIPPED_NOTE));
+    {
+        let (name, source) = ("runtime", ts2py::RUNTIME);
+        let shipped = ts2py::shipped(source, NOTE);
+        assert!(shipped.contains(NOTE));
         assert!(
             shipped.len() < source.len() * 3 / 4,
             "{name}: {} of {}",
@@ -67,7 +69,7 @@ fn shipped_keeps_strings_and_lone_docstrings() {
     let source = "# head\n# more\nimport os\n# gone\nX = \"\"\"\n# kept: in a string\n\"\"\"\n\n\ndef f(\n    a,\n):\n    \"\"\"Gone.\n\n    # still gone\n    \"\"\"\n    return a  # trailing kept\n\n\ndef g():\n    \"\"\"Kept: the only statement.\"\"\"\n\n\nclass C:\n    r\"\"\"Gone.\"\"\"\n\n    x = 1\n";
     let want = format!(
         "# head\n# more\n{}\nimport os\nX = \"\"\"\n# kept: in a string\n\"\"\"\n\n\ndef f(\n    a,\n):\n    return a  # trailing kept\n\n\ndef g():\n    \"\"\"Kept: the only statement.\"\"\"\n\n\nclass C:\n\n    x = 1\n",
-        ts2py::SHIPPED_NOTE
+        NOTE
     );
-    assert_eq!(ts2py::shipped(source), want);
+    assert_eq!(ts2py::shipped(source, NOTE), want);
 }

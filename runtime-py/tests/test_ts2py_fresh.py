@@ -7,9 +7,11 @@ into line 2 of every module it emits, so this gate compares that header with the
 disk and fails, naming the regenerate command, the moment they part.
 
 The runtime support module and the adapter module are checked the same way against the copies
-ts2py embeds (`tools/ts2py/src/runtime.py`, which `--emit-runtime` writes out in its shipped form —
-comments and docstrings left in the source, J90-P2 — and
-`tools/ts2py/src/adapters.py`, which `--emit-adapters` writes with its runtime import filled in).
+ts2py embeds (`tools/ts2py/python/ts2py/runtime.py`, which `--emit-runtime` writes out in its
+shipped form — comments and docstrings left in the source, J90-P2 — and bantamkit's
+`tools/ts2py-bantamkit/adapters.py`, which `--emit-adapters` writes with its runtime import filled
+in). Since #337 the compiler holds no bantamkit name: the adapters, the `shipped_note` and the
+generator name come from bantamkit's host file `tools/ts2py-bantamkit/ts2py.toml` (`--config`).
 
 Every `.py` in the directory must be one of those, so a generated module committed later cannot
 sit outside this gate. Behaviour, not just freshness, is gated by
@@ -18,6 +20,7 @@ compares it byte for byte) and `--suite ts2py-codec`.
 """
 
 import hashlib
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -25,8 +28,10 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 GENERATED = REPO / "runtime-py" / "src" / "bantamkit" / "_generated"
 TS = REPO / "runtime-ts" / "src"
-RUNTIME_SOURCE = REPO / "tools" / "ts2py" / "src" / "runtime.py"
-ADAPTERS_SOURCE = REPO / "tools" / "ts2py" / "src" / "adapters.py"
+RUNTIME_SOURCE = REPO / "tools" / "ts2py" / "python" / "ts2py" / "runtime.py"
+HOST = REPO / "tools" / "ts2py-bantamkit" / "ts2py.toml"
+_HOST = tomllib.loads(HOST.read_text(encoding="utf-8"))
+ADAPTERS_SOURCE = HOST.parent / _HOST["adapter_source"]
 
 # Each generated module and the TypeScript it is compiled from.
 MODULES = {
@@ -69,7 +74,10 @@ MODULES = {
 SUPPORT = {"_ts2py_runtime.py", "_ts2py_adapters.py"}
 HAND_WRITTEN = {"__init__.py"}
 
-_CARGO = "cargo run --release --manifest-path tools/ts2py/Cargo.toml --"
+_CARGO = (
+    "cargo run --release --manifest-path tools/ts2py/Cargo.toml -- "
+    "--config tools/ts2py-bantamkit/ts2py.toml"
+)
 REGENERATE = (
     "regenerate with:\n"
     f"  {_CARGO} runtime-ts/src/workplan.ts -o runtime-py/src/bantamkit/_generated/workplan.py "
@@ -101,13 +109,15 @@ def source_header(generated: Path, source: Path) -> tuple[str, str]:
     return carried, wanted
 
 
-SHIPPED_NOTE = "# Shipped form (J90-P2): its comments and docstrings are in tools/ts2py/src/."
+# bantamkit's `shipped_note` (`tools/ts2py-bantamkit/ts2py.toml`), which `shipped` writes.
+SHIPPED_NOTE = _HOST["shipped_note"]
 
 
 def shipped(text: str) -> str:
     """`shipped` in tools/ts2py/src/lib.rs, line for line (J90-P2): the leading comment block and
-    `SHIPPED_NOTE`, then every line but the full-line comments and the docstring of each function or
-    class whose body goes on after it; nothing inside a triple-quoted string is touched."""
+    `SHIPPED_NOTE` (the host's note), then every line but the full-line comments and the docstring
+    of each function or class whose body goes on after it; nothing inside a triple-quoted string is
+    touched."""
     lines = text.split("\n")
     out = []
 
@@ -166,8 +176,8 @@ def expected_runtime() -> bytes:
 
 
 def expected_adapters() -> bytes:
-    # `adapters_module` in tools/ts2py/src/lib.rs: the embedded copy, runtime import filled in,
-    # in its shipped form.
+    # `Host::adapters_module` in tools/ts2py/src/host.rs: the host's adapter_source, runtime
+    # import filled in, in its shipped form.
     text = ADAPTERS_SOURCE.read_text(encoding="utf-8").replace("__RUNTIME__", "._ts2py_runtime")
     return shipped(text).encode("utf-8")
 
@@ -193,7 +203,7 @@ def test_generated_module_names_the_typescript_on_disk(module):
 def test_generated_runtime_is_the_one_ts2py_emits():
     committed = (GENERATED / "_ts2py_runtime.py").read_bytes()
     assert committed == expected_runtime(), (
-        "bantamkit/_generated/_ts2py_runtime.py differs from tools/ts2py/src/runtime.py; "
+        "bantamkit/_generated/_ts2py_runtime.py differs from tools/ts2py/python/ts2py/runtime.py; "
         + REGENERATE
     )
 
@@ -201,7 +211,7 @@ def test_generated_runtime_is_the_one_ts2py_emits():
 def test_generated_adapters_are_the_ones_ts2py_emits():
     committed = (GENERATED / "_ts2py_adapters.py").read_bytes()
     assert committed == expected_adapters(), (
-        "bantamkit/_generated/_ts2py_adapters.py differs from tools/ts2py/src/adapters.py; "
+        "bantamkit/_generated/_ts2py_adapters.py differs from tools/ts2py-bantamkit/adapters.py; "
         + REGENERATE
     )
 
