@@ -165,6 +165,80 @@ const DEFAULT_REF_TIMEOUT_MS = 600_000;
 const REF_TIMEOUT_MS = Number(process.env.BANTAMKIT_CONFORMANCE_REF_TIMEOUT_MS ?? DEFAULT_REF_TIMEOUT_MS);
 
 /**
+ * A SUITE THAT DOES NOT SETTLE IS ONE RED SUITE, NOT A SILENT EXIT (#316 G4, J90-RF2).
+ *
+ * MEASURED by J90-RR with the mypyc extensions in-tree: `version.mjs` awaited an answer from a
+ * server child that had already died on import, so `mod.run(ctx)` never settled; with nothing
+ * left on the event loop Node ended the process with exit 13 ("Warning: Detected unsettled
+ * top-level await" at the `await mod.run(ctx)` below), printed no PASS/FAIL line, and the
+ * suites after `version` never ran. Two ways a suite can fail to settle, two arms:
+ *
+ *   - NOTHING LEFT TO RUN. Node emits `beforeExit` when the loop drains; the pending suite is
+ *     rejected from there (through `setImmediate`, so the loop has work again and a second
+ *     stalled suite gets its own `beforeExit`), and the run carries on to the next suite.
+ *   - STILL BUSY, FOREVER (a child that never exits, a timer that never stops). The per-suite
+ *     bound below. It equals the CI job deadline (`.github/workflows/ci.yml`, 30 minutes): a
+ *     suite that needs longer already fails CI, and this one names itself.
+ *
+ * `BANTAMKIT_CONFORMANCE_SUITE_TIMEOUT_MS` overrides the bound, so the arm can be demonstrated
+ * (`runtime-py/tests/test_conformance_harness_resilience.py`). Anything else that ends the
+ * process inside a suite (an uncaught exception in a suite's callback, a `die`) still prints a
+ * FAIL line naming the suite, from the `exit` listener below.
+ */
+const DEFAULT_SUITE_TIMEOUT_MS = 1_800_000;
+const SUITE_TIMEOUT_MS = Number(process.env.BANTAMKIT_CONFORMANCE_SUITE_TIMEOUT_MS ?? DEFAULT_SUITE_TIMEOUT_MS);
+
+class SuiteDidNotSettle extends Error {}
+
+let onDrain = null;
+process.on('beforeExit', () => {
+  if (onDrain === null) return;
+  const fire = onDrain;
+  onDrain = null;
+  setImmediate(fire);
+});
+
+function settled(promise) {
+  return new Promise((resolve, reject) => {
+    const finish = (how) => (value) => {
+      clearTimeout(timer);
+      onDrain = null;
+      how(value);
+    };
+    const timer = setTimeout(() => {
+      onDrain = null;
+      reject(
+        new SuiteDidNotSettle(
+          `the suite did not settle within ${SUITE_TIMEOUT_MS / 1000}s (still busy: a child or a timer ` +
+            'kept the process alive); BANTAMKIT_CONFORMANCE_SUITE_TIMEOUT_MS overrides the bound',
+        ),
+      );
+    }, SUITE_TIMEOUT_MS);
+    timer.unref();
+    onDrain = () => {
+      clearTimeout(timer);
+      reject(
+        new SuiteDidNotSettle(
+          'the suite did not settle: its run() was still pending with nothing left to run ' +
+            '(Node would have exited 13, "unsettled top-level await", and skipped every suite after it)',
+        ),
+      );
+    };
+    Promise.resolve(promise).then(finish(resolve), finish(reject));
+  });
+}
+
+let runningSuite = null;
+let summarised = false;
+process.on('exit', (code) => {
+  if (summarised || runningSuite === null) return;
+  console.log(
+    `\nFAIL: the run ended (exit ${code}) inside suite ${runningSuite}, before its summary; ` +
+      'the suites after it did not run',
+  );
+});
+
+/**
  * Run a reference script with a JSON payload on stdin and parse its JSON on stdout.
  *
  * `env` is merged over the parent environment, so a suite can pin `TZ` and compare a
@@ -345,14 +419,19 @@ try {
     let cases = [];
     let suiteNotes = [];
     let failed = 0;
+    runningSuite = suiteName;
     try {
-      ({ cases, notes: suiteNotes = [] } = await mod.run(ctx));
+      ({ cases, notes: suiteNotes = [] } = await settled(mod.run(ctx)));
     } catch (e) {
       failed += 1;
       cases = [];
       suiteNotes = [];
-      console.log(`\n  ✖ ${suiteName}: the suite could not build its cases`);
-      console.log(`      ${e && e.stack ? e.stack.split('\n').slice(0, 4).join('\n      ') : String(e)}`);
+      if (e instanceof SuiteDidNotSettle) {
+        console.log(`\n  ✖ ${suiteName}: ${e.message}`);
+      } else {
+        console.log(`\n  ✖ ${suiteName}: the suite could not build its cases`);
+        console.log(`      ${e && e.stack ? e.stack.split('\n').slice(0, 4).join('\n      ') : String(e)}`);
+      }
     }
     for (const c of cases) {
       totals.cases += 1;
@@ -403,6 +482,7 @@ try {
       }), ${failed} differed`,
     );
   }
+  runningSuite = null;
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
@@ -421,6 +501,7 @@ if (requireExactStrings && totals.strings === 0) {
   process.exit(1);
 }
 
+summarised = true;
 console.log(
   `\n${totals.failed === 0 ? 'PASS' : 'FAIL'}: ${totals.cases} cases, ${totals.bytes} byte-identical, ` +
     `${totals.strings} exact-string, ${totals.json} structural, ${totals.rulings} ruled-different, ` +

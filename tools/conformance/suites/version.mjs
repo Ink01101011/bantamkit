@@ -32,6 +32,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { cpSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { copyPythonPackage } from '../lib/pypackage.mjs';
 
 export const name = 'version';
 export const summary = 'one version, two registry spellings: serverInfo and build_identity over fixture trees';
@@ -69,10 +70,9 @@ function buildFixture(ctx, fx) {
   const root = join(ctx.scratch, 'version', fx.label);
   const pySrc = join(root, 'py', 'runtime-py', 'src');
   mkdirSync(pySrc, { recursive: true });
-  cpSync(join(ctx.repoRoot, 'runtime-py', 'src', 'bantamkit'), join(pySrc, 'bantamkit'), {
-    recursive: true,
-    filter: (src) => !src.includes('__pycache__'),
-  });
+  // The package AND mypyc's group library beside it, so a compiled checkout's copy imports
+  // (J90-RF2; `lib/pypackage.mjs`). Only `__init__.py` is patched, and it is never compiled.
+  copyPythonPackage(ctx.repoRoot, pySrc);
   // `assets.py` resolves `parents[3] / "assets"` from `bantamkit/assets.py`: `<root>/py/assets`.
   dirLink(join(ctx.repoRoot, 'assets'), join(root, 'py', 'assets'));
   const init = join(pySrc, 'bantamkit', '__init__.py');
@@ -128,12 +128,20 @@ function session(command, args, { env, cwd }) {
       }
     });
     const failed = (why) => ({ serverInfo: `<no answer: ${why}>`, identity: `<no answer: ${why}>` });
+    // A child that is gone answers nothing more: every waiter, including one registered AFTER
+    // the exit, resolves at once. J90-RR measured the other way: a server that died on import
+    // released the `initialize` waiter, `build_identity`'s waiter was set after the exit and
+    // never released, and the suite's promise was left pending with nothing left to run.
+    let exited = false;
     child.on('exit', () => {
+      exited = true;
       clearTimeout(timer);
       for (const w of waiters.values()) w();
     });
+    child.stdin.on('error', () => {}); // EPIPE to a dead child; the missing answer reports it
     const ask = (msg) =>
       new Promise((res) => {
+        if (exited) return res();
         waiters.set(msg.id, res);
         child.stdin.write(`${JSON.stringify(msg)}\n`);
       });

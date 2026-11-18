@@ -33,15 +33,21 @@ harness is copied into `tmp_path` and the synthetic suites are written there ins
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 RUN_MJS = REPO / "tools" / "conformance" / "run.mjs"
-VENV_PYTHON = REPO / ".venv" / "bin" / "python"
+# `run.mjs` refuses to start without a reference interpreter, and none of these synthetic suites
+# calls one, so the interpreter running this test is enough. It was `<repo>/.venv/bin/python`,
+# which a tree without its own venv lacks: J90-RR's compiled tree had none, and all four nodes
+# below went red there on "reference interpreter not found" before reaching any suite.
+VENV_PYTHON = Path(sys.executable)
 
 # A case whose `expected` is `undefined` — the M4 shape, written the short way. Compared as a
 # string, so `run.mjs` reaches `toBytes` with a value that is not one.
@@ -89,6 +95,43 @@ export async function run() {
 """
 
 
+# #316 G4, J90-RF2. A suite whose `run()` never settles and leaves NOTHING on the event loop:
+# the shape `version.mjs` took when its server child died on import (J90-RR, compiled tree).
+# Before J90-RF2 Node ended the whole run with exit 13 ("unsettled top-level await") and no
+# PASS/FAIL line, and every suite sorting after it was skipped.
+STALLS = """
+export const name = 'stalls';
+export const summary = 'a suite awaiting a promise nothing will ever settle';
+export async function run() {
+  await new Promise(() => {});
+  return { cases: [] };
+}
+"""
+
+# The other way not to settle: something keeps the loop alive forever (a child that never
+# exits, an interval). Only a bound ends it; the test shortens the bound.
+BUSY_FOREVER = """
+export const name = 'busy';
+export const summary = 'a suite that never settles while a timer keeps the process alive';
+export async function run() {
+  setInterval(() => {}, 1000);
+  await new Promise(() => {});
+  return { cases: [] };
+}
+"""
+
+# A suite whose callback throws outside any await: the process dies with an uncaught exception.
+# The run cannot carry on from that, but it must not end without a FAIL line naming the suite.
+CRASHES = """
+export const name = 'crashes';
+export const summary = 'a suite whose timer callback throws';
+export async function run() {
+  await new Promise(() => { setTimeout(() => { throw new Error('boom from a callback'); }, 10); });
+  return { cases: [] };
+}
+"""
+
+
 def _node_or_skip() -> str:
     node = shutil.which("node")
     if node is None:
@@ -105,11 +148,65 @@ def harness(tmp_path: Path) -> Path:
     return root
 
 
-def _run(root: Path, *args: str) -> subprocess.CompletedProcess:
+def _run(root: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     node = _node_or_skip()
     return subprocess.run(
         [node, str(root / "run.mjs"), "--all", "--python", str(VENV_PYTHON), *args],
         cwd=root, capture_output=True, text=True, encoding="utf-8", check=False,
+        env={**os.environ, **(env or {})}, timeout=120,
+    )
+
+
+def test_a_suite_that_never_settles_is_one_red_suite_and_the_run_carries_on(harness: Path) -> None:
+    """J90-RF2: an unsettled `run()` with an empty event loop is a red suite, not exit 13."""
+    (harness / "suites" / "stalls.mjs").write_text(STALLS, encoding="utf-8")
+    (harness / "suites" / "stalls2.mjs").write_text(
+        STALLS.replace("'stalls'", "'stalls2'"), encoding="utf-8"
+    )
+    (harness / "suites" / "zhealthy.mjs").write_text(HEALTHY, encoding="utf-8")
+
+    done = _run(harness)
+    out = done.stdout + done.stderr
+
+    assert "Detected unsettled top-level await" not in out, (
+        f"Node ended the run on the unsettled await instead of the harness reporting it\n{out}"
+    )
+    assert done.returncode == 1, f"a suite that never settled must be a FAILURE (exit 1)\n{out}"
+    # Two in a row: each stalled suite needs its own drain to be noticed.
+    for suite in ("stalls", "stalls2"):
+        assert f"✖ {suite}: the suite did not settle" in out, (
+            f"suite {suite} that never settled did not report itself\n{out}"
+        )
+    assert "✔ zhealthy" in out, f"the run stopped at the stalled suite instead of continuing\n{out}"
+    assert "FAIL: 1 cases" in out, f"the run did not reach its own summary line\n{out}"
+
+
+def test_a_suite_kept_busy_forever_is_ended_by_the_suite_bound(harness: Path) -> None:
+    """J90-RF2: the bound ends a suite that keeps the loop alive, names it, and carries on."""
+    (harness / "suites" / "busy.mjs").write_text(BUSY_FOREVER, encoding="utf-8")
+    (harness / "suites" / "zhealthy.mjs").write_text(HEALTHY, encoding="utf-8")
+
+    done = _run(harness, env={"BANTAMKIT_CONFORMANCE_SUITE_TIMEOUT_MS": "1500"})
+    out = done.stdout + done.stderr
+
+    assert "✖ busy: the suite did not settle within 1.5s" in out, (
+        f"the busy suite was not ended by the bound, or did not name itself\n{out}"
+    )
+    assert "✔ zhealthy" in out, f"the run did not carry on past the busy suite\n{out}"
+    assert "FAIL: 1 cases" in out and done.returncode == 1, f"no FAIL summary\n{out}"
+
+
+def test_a_run_that_dies_inside_a_suite_still_says_fail_and_names_it(harness: Path) -> None:
+    """J90-RF2: a crash the harness cannot recover from still never exits silently."""
+    (harness / "suites" / "crashes.mjs").write_text(CRASHES, encoding="utf-8")
+    (harness / "suites" / "zhealthy.mjs").write_text(HEALTHY, encoding="utf-8")
+
+    done = _run(harness)
+    out = done.stdout + done.stderr
+
+    assert done.returncode != 0, f"a crashed run must not exit 0\n{out}"
+    assert "FAIL: the run ended (exit 1) inside suite crashes, before its summary" in out, (
+        f"the run died inside a suite without a FAIL line naming it\n{out}"
     )
 
 

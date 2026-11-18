@@ -39,6 +39,7 @@ import os
 import shutil
 import subprocess
 import sys
+from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,24 @@ from bantamkit.memory import Memory  # noqa: E402
 
 PACKAGE_SRC = Path(bantamkit.__file__).resolve().parent
 ASSET_SRC = assets_root()
+
+
+def _copy_package(import_root: Path) -> None:
+    """`bantamkit/` and, beside it, mypyc's group library: the build this checkout runs.
+
+    #316 G4, J90-RF2. With the mypyc extensions beside the `.py` files, every compiled module
+    imports one shared library mypyc writes for the group, `<hash>__mypyc.<ext suffix>`, by
+    that TOP-LEVEL name, from the directory that holds `bantamkit/` (where a wheel puts it in
+    site-packages). A copy of `bantamkit/` alone could not import there: J90-RR measured six
+    errors in this file. Copying the library keeps each copy the SAME build as the checkout,
+    compiled or pure, which is what these nodes compare; a pure checkout has no such file.
+    """
+    shutil.copytree(
+        PACKAGE_SRC, import_root / "bantamkit", ignore=shutil.ignore_patterns("__pycache__")
+    )
+    for lib in PACKAGE_SRC.parent.iterdir():
+        if "__mypyc." in lib.name and lib.name.endswith(tuple(EXTENSION_SUFFIXES)):
+            shutil.copy2(lib, import_root / lib.name)
 
 PROTOCOL_VERSION = "2024-11-05"
 
@@ -159,11 +178,7 @@ def _tree(root: Path, name: str) -> Path:
     """
     tree = root / name
     (tree / "runtime-py" / "src").mkdir(parents=True)
-    shutil.copytree(
-        PACKAGE_SRC,
-        tree / "runtime-py" / "src" / "bantamkit",
-        ignore=shutil.ignore_patterns("__pycache__"),
-    )
+    _copy_package(tree / "runtime-py" / "src")
     shutil.copytree(ASSET_SRC, tree / "assets", ignore=shutil.ignore_patterns("__pycache__"))
     return tree
 
@@ -181,9 +196,7 @@ def _wheel_shaped(root: Path, name: str) -> Path:
     """
     pkgroot = root / name / "pkgroot"
     pkgroot.mkdir(parents=True)
-    shutil.copytree(
-        PACKAGE_SRC, pkgroot / "bantamkit", ignore=shutil.ignore_patterns("__pycache__")
-    )
+    _copy_package(pkgroot)
     shutil.copytree(
         ASSET_SRC, pkgroot / "bantamkit" / "assets", ignore=shutil.ignore_patterns("__pycache__")
     )

@@ -54,6 +54,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { pep440ToSemver } from './version.mjs';
+import { copyPythonPackage } from '../lib/pypackage.mjs';
 
 export const name = 'cli';
 export const summary = 'the `bantamkit-mcp` command line as a process: stdout, stderr, exit code';
@@ -1348,7 +1349,9 @@ function updateRegistryBed(scratch, name, stubs, { lies = false } = {}) {
   );
   // --- the reference
   const site = join(root, 'py', 'site');
-  cpSync(join(repoRoot, 'runtime-py', 'src', 'bantamkit'), join(site, 'bantamkit'), { recursive: true });
+  // The package and mypyc's group library beside it, where a wheel puts both (J90-RF2,
+  // `lib/pypackage.mjs`): a compiled checkout's copy of `bantamkit/` alone cannot import.
+  copyPythonPackage(repoRoot, site);
   const distInfo = join(site, `bantamkit-${REFERENCE_VERSION}.dist-info`);
   mkdirSync(distInfo, { recursive: true });
   writeFileSync(join(distInfo, 'METADATA'), `Metadata-Version: 2.1\nName: bantamkit\nVersion: ${REFERENCE_VERSION}\n`);
