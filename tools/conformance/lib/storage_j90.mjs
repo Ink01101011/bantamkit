@@ -291,6 +291,18 @@ async function cold(runtimeTs, d) {
       if (readFileSync(p, 'utf8').includes('"word"')) sub(p, '"description",1]', '"description",1.0]');
     }
   });
+  // J90-RF (F5, migration entry 2): a name's tf rows summed as doubles once the sum is past 2^53:
+  // a hand-edited row of 9007199254740993 (read as JSON.parse reads it, 2^53) plus a row of 1
+  // scores 9007199254740992 (0.40.0's Python read the row exactly and answered ...994).
+  ci = fresh('tf_big');
+  for (let i = 0; i < 16; i += 1) {
+    const p = ci.shardPath(i);
+    const raw = readFileSync(p, 'utf8');
+    if (raw.includes('"two"')) writeFileSync(p, raw.replace('"two":[["beta","000001","description",1]]', '"two":[["beta","000001","description",9007199254740993]]'));
+  }
+  // Each score as its exact integer in decimal: a JSON number past 2^53 would be rounded by the
+  // harness's own JSON.parse of the reference's answer, and hide an exact Python int.
+  out.tf_big = ci.query(['word', 'two']).map(([n, seg, score]) => [n, seg, BigInt(score).toString()]);
   out.version_true = run('version_true', (x) => sub(x.manifestPath, '"version":1', '"version":true'));
   out.id_newline = run('id_newline', (x) => sub(x.manifestPath, '"id":"000002"', '"id":"000002\\n"'));
   out.seg_invalid_utf8 = run('seg_invalid_utf8', (x) =>
@@ -369,6 +381,27 @@ async function retention(runtimeTs, d) {
     ci.addDocs(new Map([['k', { ...doc, name: 'k', file: '.shiftwork/archive/k.json.gz' }]]));
     out.no_file_run = attempt(() => r.runRetention(home, [root], now));
     out.no_file_search = attempt(() => r.searchArchived(join(root, '.shiftwork', 'checkpoint.json'), 'x', home));
+    // J90-RF (F4): compaction keeps a job doc while `path.join(root, file)` is a file, so an
+    // ABSOLUTE `file` names a path under the root, not the absolute file; 0.40.0's Python joined
+    // with `Path /` (the absolute path wins) and kept those docs. Both runtimes now drop them.
+    [home, root] = bed('abs_file');
+    writeFileSync(join(root, 'real.json'), '{}');
+    const outside = join(d, 'abs_file', 'outside.json');
+    writeFileSync(outside, '{}');
+    {
+      const cold = r.shiftworkCold(home, root);
+      const jdoc = (name, file) => ({
+        name, description: 'alpha', file, type: 'project', keywords: [], links: [], tags: [], refs: [], mtime_ns: '1', size: 1,
+      });
+      cold.addDocs(new Map([['a', jdoc('a', outside)], ['b', jdoc('b', 'real.json')], ['c', jdoc('c', 'gone.json')],
+        ['d', jdoc('d', '../root/real.json')], ['f', jdoc('f', join(root, 'real.json'))]]));
+      cold.addDocs(new Map([['e', jdoc('e', 'real.json')]]));
+      const ran = attempt(() => r.runRetention(home, [root], now));
+      out.abs_file = {
+        compacted: ran && Array.isArray(ran.compacted) ? ran.compacted.length : ran,
+        names: r.shiftworkCold(home, root).query(['alpha']).map((x) => x[0]).sort(),
+      };
+    }
     // J90-1F: an OSError in searchArchived's RETRY, as the reference builds it.
     [home, root] = bed('retry_oserror');
     writeFileSync(join(root, '.shiftwork', 'archive', 'j.json.gz'), gzipSync(JSON.stringify({ '.shiftwork/checkpoint-j.json': 'alpha word' })));
@@ -656,6 +689,8 @@ export function j90Cases(section, { py, nd, dirs }) {
       same(w, py[k], nd[k]);
       lit(w, want, py[k], nd[k]);
     }
+    same('J90-RF a cold query summing tf rows past 2^53 adds them as doubles (migration entry 2)', py.tf_big, nd.tf_big);
+    lit('J90-RF a cold query summing tf rows past 2^53', [['beta', '000001', '9007199254740992'], ['alpha', '000002', '1']], py.tf_big, nd.tf_big);
     // J90-3: the sentence a ColdIndexError quotes for a failed read (`coldErrorText`, an adapter).
     // A gone segment and a segment that is not UTF-8 are worded alike (CPython's OSError and
     // decoder wording, a PyOSError / PyUnicodeDecodeError on node); the class is compared too.
@@ -729,6 +764,9 @@ export function j90Cases(section, { py, nd, dirs }) {
     lit('Retention over a list unit status', listStatus, P(py.list_status), N(nd.list_status));
     same('Retention compacting a job cold index holding a doc with no file: the sweep goes on', py.no_file_run, nd.no_file_run);
     lit('Retention over a doc with no file', EMPTY_REPORT, py.no_file_run, nd.no_file_run);
+    // J90-RF (F4): Node's answer (docs/porting.md, the J90-3 section); 0.40.0's Python kept a and f.
+    same('J90-RF compaction drops a job doc whose file is absolute (joined under the root, as path.join joins)', py.abs_file, nd.abs_file);
+    lit('J90-RF compaction drops a job doc whose file is absolute', { compacted: 1, names: ['b', 'd', 'e'] }, py.abs_file, nd.abs_file);
     same('searchArchived over a job cold index holding a doc with no file raises (the refusal bit)', bit(py.no_file_search), bit(nd.no_file_search));
     same('searchArchived over a doc with no file — the class raised', py.no_file_search.raised, nd.no_file_search.raised);
     lit('searchArchived over a doc with no file — the class raised', 'TypeError', py.no_file_search.raised, nd.no_file_search.raised);

@@ -2583,6 +2583,18 @@ U+2029 (JS's `^` under `m`; main's `re.MULTILINE` saw only `\n`); a `KeyError` o
 `path.join` (a `..` in `home` is collapsed); an index file's JSON integer of 16 or more digits or
 `-0` read as `JSON.parse` reads it (main read the exact Python int, J90-1F having moved only floats).
 
+**Settled before generation (J90-1F, 9c6bc181), recorded here by J90-RF (F5).** J90-1 pinned sixteen
+storage inputs `UNRULED`; J90-1F settled fifteen to one answer (the sixteenth is the #228 row in the
+divergence table). The ones a 0.40.0 Python user can see, each pinned in `--suite storage-index` or
+`storage-lock` with a literal per side: a hand-edited head whose `lens_total` holds `1.0` (0.40.0
+rebuilt the index; now read as `1` and trusted: Node's), a head whose `full_at` is spelled with a
+lowercase `t` and `z` (0.40.0 trusted it; now unreadable, so a full refresh rewrites it: Node's), a
+postings shard whose run length is `1.0` (0.40.0 raised `malformed postings` on every query of the
+shard; now `1`: Node's), a postings shard, a head line or a cold segment holding an invalid UTF-8
+byte (refused and rebuilt on both: Python's answer, Node moved), and the lock file's mode (0.40.0
+created it `0o755`; now `0o666` before the umask, `0o644` under 022: Node's). `CHANGELOG.md`
+entries 18 and 21.
+
 **Write and lock safety (J90-2 probe; this tree's Python and Node against 9c6bc181's).** On a 2 MB
 HFS+ volume (`hdiutil`) and under `ulimit -f 64`, over a copy of this repository's `.bantamkit/memory`
 (92 facts; the facts on a normal disk, the index on the volume): a rebuild into 48 KB of free space
@@ -2763,6 +2775,19 @@ on on the port; `--suite storage-retention`, `J90-3 the BANTAMKIT_RETENTION swit
 trim`); a sweep's `error` record naming the JS class (`Error`) where the reference named Python's;
 a `child_main` claim or sweep that raises anything (the reference let all but an `OSError` out); and
 a cold-index JSON integer read as `JSON.parse` reads it (`-0`, 16 digits or more).
+
+**Moved to Node's answer, found by J90-R (F4): a job doc whose `file` is absolute.** Compaction keeps
+a doc of a root's job cold index while `<root>/<file>` is a file. `keepUnder` joins the two with
+`path.join`, so an absolute `file` names a path UNDER the root; the hand-written Python (743b54b9,
+0.40.0) joined with `Path /`, where the absolute path wins, and kept a doc naming any existing
+absolute file. Over `a` (absolute, outside the root), `b` (`real.json`), `c` (gone), `d`
+(`../root/real.json`), `f` (absolute, inside the root) and a later `e`, 0.40.0's Python kept
+`a b d e f`; this tree's Python and Node keep `b d e`. bantamkit writes a root-relative `file` for
+every job it archives (`.shiftwork/archive/<job>.json.gz`), so only a hand-built doc is absolute.
+Node's answer is kept: the join is one rule on both runtimes, and the cold index is shared on disk.
+`--suite storage-retention`, `J90-RF compaction drops a job doc whose file is absolute` with a
+literal per side (both red when `keepUnder` resolves the path instead of joining it);
+`CHANGELOG.md` entry 22.
 
 **Fixed in Node (J90-3): a short archive write.** `retentionFs.writeArchive` wrote the archive with
 ONE `writeSync` and did not read its count, so under a file-size limit (`ulimit -f`: write(2) answers

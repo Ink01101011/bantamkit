@@ -365,6 +365,37 @@ export async function run(ctx) {
     cases.push({ name: `load: ${p === SHIPPED ? 'the shipped table' : p.slice(bedDir.length + 1)}`, kind: 'json', expected: pyLoad[i], actual });
   });
 
+  // J90-RF (F5, migration entry 7): the empty path is a path, not the default: nothing is found
+  // there (0.40.0's Python opened '.' and raised IsADirectoryError).
+  const pyEmpty = ctx.runPython(REF, { op: 'load', paths: [''] }).out[0];
+  let ndEmpty;
+  try {
+    ndEmpty = { table: nodeTablePairs(pricing.loadPriceTable('')) };
+  } catch (err) {
+    ndEmpty = { error: b64(err.message) };
+  }
+  cases.push({ name: 'load: the empty path', kind: 'json', expected: pyEmpty, actual: ndEmpty });
+  cases.push(...literalCases(pyEmpty, ndEmpty, 'load: the empty path is not found', { error: b64('price table not found: ') }));
+
+  // J90-RF (F5, migration entry 8): `format_micros` outside its contract (a negative, a fraction,
+  // a number past 2^53), the answer each runtime gives; 0.40.0's Python answered `-1.999999`, a
+  // ValueError about a format code, and the exact integer's decimal.
+  const EDGES = [-1, 0.5, { int: '1000000000000000000000000000000' }];
+  const pyEdges = ctx.runPython(REF, { op: 'format_edges', micros: EDGES }).out;
+  const ndEdges = EDGES.map((m) => {
+    try {
+      return { out: pricing.formatMicros(typeof m === 'object' ? Number(m.int) : m) };
+    } catch (err) {
+      return { raised: err.constructor.name, msg: err.message };
+    }
+  });
+  cases.push({ name: 'format_micros outside its contract: -1, 0.5, 10**30', kind: 'json', expected: pyEdges, actual: ndEdges });
+  cases.push(...literalCases(pyEdges, ndEdges, 'format_micros outside its contract', [
+    { out: '0.0000-1' },
+    { raised: 'RangeError', msg: 'The number 0.5 cannot be converted to a BigInt because it is not an integer' },
+    { out: '1000000000000000019884624.838656' },
+  ]));
+
   // ------------------------------------------------------------------ the literals
 
   const pyConst = ctx.runPython(REF, { op: 'constants' });

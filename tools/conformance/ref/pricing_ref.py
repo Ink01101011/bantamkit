@@ -124,6 +124,20 @@ def run_format(request: dict) -> dict:
     return {"out": [b64(pricing.format_micros(m)) for m in request["micros"]]}
 
 
+def run_format_edges(request: dict) -> dict:
+    """J90-RF (F5, migration entry 8): `format_micros` outside its contract, each a value or a raise.
+    An `{"int": "<digits>"}` input is that exact Python int (10**30 is not a JSON number Node can
+    send unrounded); a raise is its class without the runtime's `_Js` prefix, and its sentence."""
+    out = []
+    for m in request["micros"]:
+        value = int(m["int"]) if isinstance(m, dict) else m
+        try:
+            out.append({"out": pricing.format_micros(value)})
+        except Exception as exc:  # noqa: BLE001 -- a raise is an answer here
+            out.append({"raised": type(exc).__name__.removeprefix("_Js"), "msg": str(exc)})
+    return {"out": out}
+
+
 def run_load(request: dict) -> dict:
     out = []
     for path in request["paths"]:
@@ -158,6 +172,8 @@ def main() -> None:
         out = run_format(request)
     elif op == "load":
         out = run_load(request)
+    elif op == "format_edges":
+        out = run_format_edges(request)
     elif op == "constants":
         out = run_constants()
     else:

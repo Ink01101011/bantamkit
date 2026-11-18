@@ -1107,6 +1107,15 @@ def _j90_cold(d: Path) -> dict:
                 sub(p, b'"description",1]', b'"description",1.0]')
 
     out["tf_float"] = run("tf_float", tf_float)
+    # J90-RF (F5, migration entry 2): tf rows summed past 2^53 (lib/storage_j90.mjs).
+    ci = fresh("tf_big")
+    for i in range(16):
+        p = ci.shard_path(i)
+        raw = p.read_bytes()
+        if b'"two"' in raw:
+            p.write_bytes(raw.replace(b'"two":[["beta","000001","description",1]]',
+                                      b'"two":[["beta","000001","description",9007199254740993]]'))
+    out["tf_big"] = [[n, seg, str(int(score))] for n, seg, score in ci.query(["word", "two"])]
     out["version_true"] = run("version_true", lambda ci: sub(ci.manifest_path, b'"version":1', b'"version":true'))
     out["id_newline"] = run("id_newline", lambda ci: sub(ci.manifest_path, b'"id":"000002"', b'"id":"000002\\n"'))
     out["seg_invalid_utf8"] = run("seg_invalid_utf8", lambda ci: sub(ci.segment_path("000001"), b'"word two"', b'"word tw\xff"'))
@@ -1193,6 +1202,27 @@ def _j90_retention(d: Path) -> dict:
         cold.add({"k": dict(doc, name="k", file=".shiftwork/archive/k.json.gz")})
         out["no_file_run"] = _j90_try(lambda: r.run_retention(home, [root], now))
         out["no_file_search"] = _j90_try(lambda: r.search_archived(root / ".shiftwork" / "checkpoint.json", "x", home))
+        # J90-RF (F4): compaction keeps a job doc while `<root>/<file>` is a file, joined as Node's
+        # `path.join` joins: an ABSOLUTE `file` is a path under the root, not the absolute file
+        # (lib/storage_j90.mjs). 0.40.0's Python joined with `Path /` and kept those docs.
+        home, root = bed("abs_file")
+        (root / "real.json").write_text("{}", encoding="utf-8")
+        outside = d / "abs_file" / "outside.json"
+        outside.write_text("{}", encoding="utf-8")
+        cold = r.shiftwork_cold(home, root)
+
+        def jdoc(name: str, file: str) -> dict:
+            return {"name": name, "description": "alpha", "file": file, "type": "project", "keywords": [],
+                    "links": [], "tags": [], "refs": [], "mtime_ns": "1", "size": 1}
+
+        cold.add({"a": jdoc("a", str(outside)), "b": jdoc("b", "real.json"), "c": jdoc("c", "gone.json"),
+                  "d": jdoc("d", "../root/real.json"), "f": jdoc("f", str(root / "real.json"))})
+        cold.add({"e": jdoc("e", "real.json")})
+        ran = _j90_try(lambda: r.run_retention(home, [root], now))
+        out["abs_file"] = {
+            "compacted": len(ran["compacted"]) if isinstance(ran, dict) and "compacted" in ran else ran,
+            "names": sorted(n for n, *_ in r.shiftwork_cold(home, root).query(["alpha"])),
+        }
         # J90-1F: an OSError in search_archived's RETRY (after a ColdIndexError): the live segment
         # renumbered 000002, every shard corrupt, and a DIRECTORY where the rebuild writes 000001.
         import gzip
