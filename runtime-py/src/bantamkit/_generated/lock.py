@@ -169,7 +169,7 @@ def exclusive(target, body, options=_JS_UNDEFINED):
 
 def _temp_base__typed(name):
     _jsu_name = _js_code_units(name)
-    if not _js_m_endsWith(name, ".tmp"):
+    if not name.endswith(".tmp"):
         return None
     stem = _js_units_slice(_jsu_name, 0, -4)
     _jsu_stem = _js_code_units(stem)
@@ -185,7 +185,7 @@ def _temp_base__typed(name):
 def temp_base(name):
     if type(name) is str:
         return _temp_base__typed(name)
-    if not _js_m_endsWith(name, ".tmp"):
+    if not (name.endswith(".tmp") if type(name) is str else _js_m_endsWith(name, ".tmp")):
         return None
     stem = _js_m_slice(name, 0, -4)
     dot = _js_m_lastIndexOf(stem, ".")
@@ -209,7 +209,7 @@ def remove_stale_temps(dir, owns, stale_ms=_JS_UNDEFINED):
     if _js_caught10 is not None:
         return []
     removed = []
-    for name in _js_m_sort([n for n in _js_array("filter", names) if _js_m_endsWith(n, ".tmp")], cmp_codepoint):
+    for name in _js_m_sort([n for n in _js_array("filter", names) if (n.endswith(".tmp") if type(n) is str else _js_m_endsWith(n, ".tmp"))], cmp_codepoint):
         base = temp_base(name)
         if base is None or not _js_truthy(owns(base)):
             continue

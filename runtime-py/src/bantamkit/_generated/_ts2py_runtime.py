@@ -217,6 +217,8 @@ def _js_num_str(value):
 def _js_str(value):
     if isinstance(value, str):
         return value
+    if type(value) is int and _JS_SAFE_MIN <= value <= _JS_SAFE_MAX:
+        return str(value)
     if value is None:
         return "null"
     if value is _JS_UNDEFINED:
@@ -735,7 +737,7 @@ def _js_outside(method, receiver):
 
 
 def _js_m_has(receiver, key):
-    if type(key) is str:
+    if type(key) is str or (type(key) is int and _JS_SAFE_MIN <= key <= _JS_SAFE_MAX):
         kind = type(receiver)
         if kind is _JsMap:
             return key in receiver._entries
@@ -753,7 +755,9 @@ def _js_m_delete(receiver, key):
 
 
 def _js_m_get(receiver, key):
-    if type(receiver) is _JsMap and type(key) is str:
+    if type(receiver) is _JsMap and (
+        type(key) is str or (type(key) is int and _JS_SAFE_MIN <= key <= _JS_SAFE_MAX)
+    ):
         return receiver._entries.get(key, _JS_UNDEFINED)
     if isinstance(receiver, _JsMap):
         return receiver.get(key)
@@ -761,7 +765,11 @@ def _js_m_get(receiver, key):
 
 
 def _js_m_set(receiver, key, value):
-    if type(receiver) is _JsMap and type(key) is str and receiver._keys is None:
+    if (
+        type(receiver) is _JsMap
+        and (type(key) is str or (type(key) is int and _JS_SAFE_MIN <= key <= _JS_SAFE_MAX))
+        and receiver._keys is None
+    ):
         receiver._entries[key] = value
         return receiver
     if isinstance(receiver, _JsMap):
@@ -1129,7 +1137,36 @@ def _js_json(value):
     raise TypeError(f"ts2py: JSON.stringify of {type(value).__name__} is outside the subset")
 
 
+_JS_JSON_PLAIN: _Final = frozenset({str, bool, type(None), int, list})
+
+
+def _js_json_plain(values):
+    for _ in range(64):
+        kinds = set(map(type, values))
+        if not kinds <= _JS_JSON_PLAIN:
+            return False
+        if int in kinds:
+            ints = values if kinds == _JS_INT_ONLY else [v for v in values if type(v) is int]
+            if not (_JS_SAFE_MIN <= min(ints) and max(ints) <= _JS_SAFE_MAX):
+                return False
+        if list not in kinds:
+            return True
+        lists = [v for v in values if type(v) is list]
+        if len(set(map(id, lists))) != len(lists):
+            return False
+        values = list(_js_itertools.chain.from_iterable(lists))
+    return False
+
+
 def _js_json_stringify(value):
+    if type(value) is list and _js_json_plain(value):
+        text = _js_jsonlib.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError:
+            pass
+        else:
+            return text
     text = _js_json(value)
     return _JS_UNDEFINED if text is None else text
 
@@ -2314,8 +2351,12 @@ def _js_json_int(text):
 
 
 def _js_json_ints_exact(text):
-    if _JS_JSON_NEG_ZERO.search(text) is not None:
-        return False
+    for match in _JS_JSON_NEG_ZERO.finditer(text):
+        before = match.start() - 1
+        while before >= 0 and text[before] in " \t\n\r":
+            before -= 1
+        if before < 0 or text[before] in "[,:":
+            return False
     data = text.encode("utf-8", "surrogatepass")
     zeros = data.translate(_JS_DIGITS_TO_ZERO)
     at = zeros.find(_JS_SIXTEEN_ZEROS)
@@ -2344,7 +2385,10 @@ def _js_json_parse(text):
                 "Unexpected UTF-8 BOM (decode using utf-8-sig)", text, 0
             )
         decoder = _JS_JSON_DECODER
-        if len(text) > 2048 and _js_json_ints_exact(text):
+        size = len(text)
+        if (
+            size > 2048 or (size > 512 and text.count(",") * 8 > size)
+        ) and _js_json_ints_exact(text):
             decoder = _JS_JSON_DECODER_INTS
         collecting = _js_gc.isenabled()
         _js_gc.disable()
@@ -3404,6 +3448,13 @@ def _js_v8_sort(items, compare):
 
 
 def _js_rows(items, n, wanted):
+    if n == 2 and type(items) is _JsMap and items._keys is None:
+        entries = items._entries
+        for tag in list(entries):
+            value = entries.get(tag, _JS_ABSENT)
+            if value is not _JS_ABSENT:
+                yield tag, value
+        return
     for item in items:
         if type(item) is list and len(item) >= n:
             yield item if len(item) == n else item[:n]
@@ -3422,6 +3473,33 @@ def _js_sort_keyed(items, key, descending, compare):
             items[:] = list(map(items.__getitem__, order))
             return items
     return _js_m_sort(items, compare)
+
+
+def _js_sort_num(items, descending, compare):
+    if (
+        type(items) is list
+        and len(items) > 1
+        and set(map(type, items)) == _JS_INT_ONLY
+        and _JS_SAFE_MIN <= min(items)
+        and max(items) <= _JS_SAFE_MAX
+    ):
+        items.sort(reverse=descending is True)
+        return items
+    return _js_sort_keyed(items, _js_sort_self, descending, compare)
+
+
+def _js_sort_self(a, *_):
+    return a
+
+
+def _js_sort_unique(items, compare):
+    if (
+        type(items) is list
+        and getattr(compare, "_js_codepoint_order", False)
+        and set(map(type, items)) <= _JS_STR_ONLY
+    ):
+        return sorted(set(items))
+    return _js_m_sort([*_JsSet(items)], compare)
 
 
 def _js_sort_lex(items, parts, compare):

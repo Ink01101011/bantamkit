@@ -34,7 +34,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_sort_lex,
     _js_str,
     _js_str_includes,
-    _js_str_starts_with,
     _js_typeof,
     _JsMap,
     _JsSet,
@@ -57,7 +56,7 @@ def _is_integer(value):
 def _plain_path(path):
     if not isinstance(path, str) or path == "" or _js_str_includes(path, "\\"):
         return False
-    if _js_str_starts_with(path, "/") or _JS_RE_0.search(_js_code_units(path)) is not None:
+    if path.startswith("/") or _JS_RE_0.search(_js_code_units(path)) is not None:
         return False
     return all(segment != "" and segment != "." and segment != ".." for segment in _js_m_split(path, "/"))
 
@@ -119,8 +118,8 @@ def _cycle_path(nodes, emitted):
             return [*_js_m_slice(path, repeat), _js_get(current, "id")]
         _js_m_set(at, _js_get(current, "id"), len(path))
         path.append(_js_get(current, "id"))
-        next = _js_m_find(_js_get(current, "depends_on"), lambda dep, *_: not _js_m_has(emitted, dep))
-        current = _JS_UNDEFINED if next is _JS_UNDEFINED else (by_id._entries.get(next, _JS_UNDEFINED) if type(by_id) is _JsMap and type(next) is str else _js_m_get(by_id, next))
+        next = _js_m_find(_js_get(current, "depends_on"), lambda dep, *_: not (dep in emitted._entries if type(emitted) is _JsMap and (type(dep) is str or type(dep) is int and -9007199254740992 <= dep <= 9007199254740992) else dep in emitted._items if type(emitted) is _JsSet and (type(dep) is str or type(dep) is int and -9007199254740992 <= dep <= 9007199254740992) else _js_m_has(emitted, dep)))
+        current = _JS_UNDEFINED if next is _JS_UNDEFINED else (by_id._entries.get(next, _JS_UNDEFINED) if type(by_id) is _JsMap and (type(next) is str or type(next) is int and -9007199254740992 <= next <= 9007199254740992) else _js_m_get(by_id, next))
     return path
 
 
@@ -135,7 +134,7 @@ def _plan__typed(input):
         _js_m_add(declared, _js_get(node, "id"))
     for node in nodes:
         for dep in _js_get(node, "depends_on"):
-            if not _js_m_has(declared, dep):
+            if not (dep in declared._entries if type(declared) is _JsMap and (type(dep) is str or type(dep) is int and -9007199254740992 <= dep <= 9007199254740992) else dep in declared._items if type(declared) is _JsSet and (type(dep) is str or type(dep) is int and -9007199254740992 <= dep <= 9007199254740992) else _js_m_has(declared, dep)):
                 return _refuse("node " + _js_str(_js_get(node, "id")) + " depends on " + _js_str(dep) + ", which no node declares")
     emitted = _JsSet()
     batches = []
@@ -156,13 +155,13 @@ def _plan__typed(input):
         owner = _JsMap()
         for entry in ready:
             touches = _js_coalesce_value(_js_get(_js_list_at(nodes, _js_get(entry, "index")), "touches"), [])
-            clash = _js_m_find(touches, lambda path, *_: _js_m_has(owner, path))
+            clash = _js_m_find(touches, lambda path, *_: (path in owner._entries if type(owner) is _JsMap and (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else path in owner._items if type(owner) is _JsSet and (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else _js_m_has(owner, path)))
             if clash is not _JS_UNDEFINED:
-                held.append({"id": _js_get(entry, "id"), "batch": len(batches), "by": (owner._entries.get(clash, _JS_UNDEFINED) if type(owner) is _JsMap and type(clash) is str else _js_m_get(owner, clash)), "path": clash})
+                held.append({"id": _js_get(entry, "id"), "batch": len(batches), "by": (owner._entries.get(clash, _JS_UNDEFINED) if type(owner) is _JsMap and (type(clash) is str or type(clash) is int and -9007199254740992 <= clash <= 9007199254740992) else _js_m_get(owner, clash)), "path": clash})
                 continue
             batch.append(_js_get(entry, "id"))
             for path in touches:
-                if not _js_m_has(owner, path):
+                if not (path in owner._entries if type(owner) is _JsMap and (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else path in owner._items if type(owner) is _JsSet and (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else _js_m_has(owner, path)):
                     _js_m_set(owner, path, _js_get(entry, "id"))
         batches.append(batch)
         for id_ in batch:
@@ -189,7 +188,7 @@ def plan(input):
         _js_m_add(declared, _js_get(node, "id"))
     for node in nodes:
         for dep in _js_get(node, "depends_on"):
-            if not _js_m_has(declared, dep):
+            if not (dep in declared._entries if type(declared) is _JsMap and (type(dep) is str or type(dep) is int and -9007199254740992 <= dep <= 9007199254740992) else dep in declared._items if type(declared) is _JsSet and (type(dep) is str or type(dep) is int and -9007199254740992 <= dep <= 9007199254740992) else _js_m_has(declared, dep)):
                 return _refuse("node " + _js_str(_js_get(node, "id")) + " depends on " + _js_str(dep) + ", which no node declares")
     emitted = _JsSet()
     batches = []
@@ -210,13 +209,13 @@ def plan(input):
         owner = _JsMap()
         for entry in ready:
             touches = _js_coalesce_value(_js_get(_js_list_at(nodes, _js_get(entry, "index")), "touches"), [])
-            clash = _js_m_find(touches, lambda path, *_: _js_m_has(owner, path))
+            clash = _js_m_find(touches, lambda path, *_: (path in owner._entries if type(owner) is _JsMap and (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else path in owner._items if type(owner) is _JsSet and (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else _js_m_has(owner, path)))
             if clash is not _JS_UNDEFINED:
-                held.append({"id": _js_get(entry, "id"), "batch": len(batches), "by": (owner._entries.get(clash, _JS_UNDEFINED) if type(owner) is _JsMap and type(clash) is str else _js_m_get(owner, clash)), "path": clash})
+                held.append({"id": _js_get(entry, "id"), "batch": len(batches), "by": (owner._entries.get(clash, _JS_UNDEFINED) if type(owner) is _JsMap and (type(clash) is str or type(clash) is int and -9007199254740992 <= clash <= 9007199254740992) else _js_m_get(owner, clash)), "path": clash})
                 continue
             batch.append(_js_get(entry, "id"))
             for path in touches:
-                if not _js_m_has(owner, path):
+                if not (path in owner._entries if type(owner) is _JsMap and (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else path in owner._items if type(owner) is _JsSet and (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else _js_m_has(owner, path)):
                     _js_m_set(owner, path, _js_get(entry, "id"))
         batches.append(batch)
         for id_ in batch:

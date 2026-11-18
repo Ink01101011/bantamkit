@@ -16,7 +16,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_lt,
     _js_m_endsWith,
     _js_m_get,
-    _js_m_push,
     _js_m_reduce,
     _js_m_slice,
     _js_m_sort,
@@ -56,7 +55,7 @@ def settings_paths(home, cwd):
     paths = [path_join(home, ".claude", "settings.json")]
     if cwd is not None:
         project = path_join(cwd, ".claude")
-        _js_m_push(paths, path_join(project, "settings.json"), path_join(project, "settings.local.json"))
+        paths.extend((path_join(project, "settings.json"), path_join(project, "settings.local.json"),))
     return paths
 
 
@@ -188,7 +187,7 @@ def _logs(base):
     if _js_caught10 is not None:
         pass
     for n in names:
-        if _js_m_endsWith(n, ".jsonl"):
+        if (n.endswith(".jsonl") if type(n) is str else _js_m_endsWith(n, ".jsonl")):
             found.append(["usage/" + _js_str(_js_m_slice(n, 0, _js_neg(_js_str_len(".jsonl")))), path_join(base, "usage", n)])
     touched = []
     _js_caught11 = None
@@ -199,7 +198,7 @@ def _logs(base):
     if _js_caught11 is not None:
         pass
     for n in touched:
-        if _js_m_endsWith(n, ".jsonl"):
+        if (n.endswith(".jsonl") if type(n) is str else _js_m_endsWith(n, ".jsonl")):
             found.append(["touch/" + _js_str(_js_m_slice(n, 0, _js_neg(_js_str_len(".jsonl")))), path_join(base, "touch", n)])
     return found
 
@@ -228,10 +227,10 @@ def log_lines(home, detail=_JS_UNDEFINED):
         _js_put(family, 2, _js_add(_js_get(family, 2), _js_len(segments)))
         _js_put(family, 3, _js_add(_js_get(family, 3), _js_get(seg, "skipped")))
     for family, sums in _js_rows(families, 2, (0, 1)):
-        n = _js_get(sums, 0)
+        n = (sums[0] if type(sums) is list and 0 < len(sums) else _js_get(sums, 0))
         if _js_strict_eq(n, 0):
             continue
-        out.append("logs: " + _js_str(family) + "/* " + _plural(n, "file") + " " + _js_str(_js_get(sums, 1)) + " (" + _js_str(_js_get(sums, 2)) + " rotated, " + _js_str(_js_get(sums, 3)) + " skipped)")
+        out.append("logs: " + _js_str(family) + "/* " + _plural(n, "file") + " " + _js_str((sums[1] if type(sums) is list and 1 < len(sums) else _js_get(sums, 1))) + " (" + _js_str((sums[2] if type(sums) is list and 2 < len(sums) else _js_get(sums, 2))) + " rotated, " + _js_str((sums[3] if type(sums) is list and 3 < len(sums) else _js_get(sums, 3))) + " skipped)")
     return out if len(out) > 0 else ["logs: none"]
 
 

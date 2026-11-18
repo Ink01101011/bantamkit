@@ -135,7 +135,8 @@ fn string_fast_paths_taken_only_on_a_proven_str() {
         "_js_units_slice(_jsu_s, -2, 9)",
         "_js_units_index_of(_jsu_s, \"b\", 2)",
         "_js_str_includes(s, ",
-        "_js_str_starts_with(s, \"a\")",
+        // J90-PF: an ASCII literal needle is Python's own `startswith` on the proven `str`.
+        "s.startswith(\"a\")",
         "\"yes\" if s != \"\" else \"no\"",
         "not s != \"\"",
     ] {

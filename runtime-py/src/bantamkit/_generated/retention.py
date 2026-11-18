@@ -69,7 +69,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_size,
     _js_str,
     _js_str_len,
-    _js_str_starts_with,
     _js_strict_eq,
     _js_truthy,
     _js_typeof,
@@ -132,20 +131,20 @@ _DAY_NS: _JsAny = _js_mul(_JsBigInt(86400), _JsBigInt(1000000000))
 
 def _is_ledger__typed(name):
     _jsu_name = _js_code_units(name)
-    return len(_jsu_name) >= 12 and _js_str_starts_with(name, "ledger-") and _js_m_endsWith(name, ".json")
+    return len(_jsu_name) >= 12 and name.startswith("ledger-") and name.endswith(".json")
 
 
 def _is_ledger(name):
     if type(name) is str:
         return _is_ledger__typed(name)
-    return _js_ge(_js_len(name), 12) and _js_m_startsWith(name, "ledger-") and _js_m_endsWith(name, ".json")
+    return _js_ge(_js_len(name), 12) and (name.startswith("ledger-") if type(name) is str else _js_m_startsWith(name, "ledger-")) and (name.endswith(".json") if type(name) is str else _js_m_endsWith(name, ".json"))
 
 
 def _checkpoint_job__typed(name):
     _jsu_name = _js_code_units(name)
     if name == "checkpoint.json":
         return "checkpoint"
-    if len(_jsu_name) >= 17 and _js_str_starts_with(name, "checkpoint-") and _js_m_endsWith(name, ".json"):
+    if len(_jsu_name) >= 17 and name.startswith("checkpoint-") and name.endswith(".json"):
         return _js_units_slice(_jsu_name, 11, -5)
     return None
 
@@ -155,20 +154,20 @@ def _checkpoint_job(name):
         return _checkpoint_job__typed(name)
     if name == "checkpoint.json":
         return "checkpoint"
-    if _js_ge(_js_len(name), 17) and _js_m_startsWith(name, "checkpoint-") and _js_m_endsWith(name, ".json"):
+    if _js_ge(_js_len(name), 17) and (name.startswith("checkpoint-") if type(name) is str else _js_m_startsWith(name, "checkpoint-")) and (name.endswith(".json") if type(name) is str else _js_m_endsWith(name, ".json")):
         return _js_m_slice(name, 11, -5)
     return None
 
 
 def _is_top_checkpoint__typed(r):
     _jsu_r = _js_code_units(r)
-    return r == ".shiftwork/checkpoint.json" or len(_jsu_r) >= 28 and _js_str_starts_with(r, ".shiftwork/checkpoint-") and _js_m_endsWith(r, ".json")
+    return r == ".shiftwork/checkpoint.json" or len(_jsu_r) >= 28 and r.startswith(".shiftwork/checkpoint-") and r.endswith(".json")
 
 
 def _is_top_checkpoint(r):
     if type(r) is str:
         return _is_top_checkpoint__typed(r)
-    return r == ".shiftwork/checkpoint.json" or _js_ge(_js_len(r), 28) and _js_m_startsWith(r, ".shiftwork/checkpoint-") and _js_m_endsWith(r, ".json")
+    return r == ".shiftwork/checkpoint.json" or _js_ge(_js_len(r), 28) and (r.startswith(".shiftwork/checkpoint-") if type(r) is str else _js_m_startsWith(r, ".shiftwork/checkpoint-")) and (r.endswith(".json") if type(r) is str else _js_m_endsWith(r, ".json"))
 
 
 _DAYS_IN_MONTH: _JsAny = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
@@ -307,10 +306,13 @@ def hook_log_reducer(rows):
     for row in rows:
         ts = _js_get(row, "ts")
         day = _js_m_join(_js_m_slice([*ts], 0, 10), "") if isinstance(ts, str) else "?"
-        c = (days._entries.get(day, _JS_UNDEFINED) if type(days) is _JsMap and type(day) is str else _js_m_get(days, day))
+        c = (days._entries.get(day, _JS_UNDEFINED) if type(days) is _JsMap and (type(day) is str or type(day) is int and -9007199254740992 <= day <= 9007199254740992) else _js_m_get(days, day))
         if c is _JS_UNDEFINED:
             c = _JsMap()
-            _js_m_set(days, day, c)
+            if type(days) is _JsMap and (type(day) is str or type(day) is int and -9007199254740992 <= day <= 9007199254740992) and days._keys is None:
+                days._entries[day] = c
+            else:
+                _js_m_set(days, day, c)
         counts = _js_get(row, "counts")
         if _js_get(row, "event") == "Folded" and _is_obj(counts):
             for k, v in _js_rows(_js_object_entries(counts), 2, (0, 1)):
@@ -327,7 +329,7 @@ def hook_log_reducer(rows):
         c = _js_m_get(days, day)
         counts = {}
         for k in _js_m_sort([*_js_m_keys(c)], cmp_codepoint):
-            _js_put(counts, k, (c._entries.get(k, _JS_UNDEFINED) if type(c) is _JsMap and type(k) is str else _js_m_get(c, k)))
+            _js_put(counts, k, (c._entries.get(k, _JS_UNDEFINED) if type(c) is _JsMap and (type(k) is str or type(k) is int and -9007199254740992 <= k <= 9007199254740992) else _js_m_get(c, k)))
         return {"ts": _js_str(day) + "T00:00:00.000Z", "event": "Folded", "counts": counts}
     return _js_m_map(_js_m_sort([*_js_m_keys(days)], cmp_codepoint), _js_fn9)
 
@@ -443,10 +445,10 @@ def _fold_logs__typed(home, now_ms, report):
     usage_cutoff = _iso_s(cutoff_ms)
     for name in _listdir(path_join(base, "usage")):
         p = path_join(base, "usage", name)
-        if _js_m_endsWith(name, ".jsonl") and _old_use(p, usage_cutoff):
+        if (name.endswith(".jsonl") if type(name) is str else _js_m_endsWith(name, ".jsonl")) and _old_use(p, usage_cutoff):
             logs.append([p, "usage"])
     for name in _listdir(path_join(base, "touch")):
-        if not _js_m_endsWith(name, ".jsonl"):
+        if not (name.endswith(".jsonl") if type(name) is str else _js_m_endsWith(name, ".jsonl")):
             continue
         p = path_join(base, "touch", name)
         logs.append([p, "touch" if _old_touch(p, usage_cutoff) else "none"])
@@ -483,10 +485,10 @@ def _fold_logs(home, now_ms, report):
     usage_cutoff = _iso_s(cutoff_ms)
     for name in _listdir(path_join(base, "usage")):
         p = path_join(base, "usage", name)
-        if _js_m_endsWith(name, ".jsonl") and _old_use(p, usage_cutoff):
+        if (name.endswith(".jsonl") if type(name) is str else _js_m_endsWith(name, ".jsonl")) and _old_use(p, usage_cutoff):
             logs.append([p, "usage"])
     for name in _listdir(path_join(base, "touch")):
-        if not _js_m_endsWith(name, ".jsonl"):
+        if not (name.endswith(".jsonl") if type(name) is str else _js_m_endsWith(name, ".jsonl")):
             continue
         p = path_join(base, "touch", name)
         logs.append([p, "touch" if _old_touch(p, usage_cutoff) else "none"])
@@ -686,12 +688,12 @@ def job_doc(job, rel_archive, data, bundle):
     for r in keys:
         for t in tokenize_v2(r):
             _js_m_add(terms, t)
-        value = (bundle._entries.get(r, _JS_UNDEFINED) if type(bundle) is _JsMap and type(r) is str else _js_m_get(bundle, r))
+        value = (bundle._entries.get(r, _JS_UNDEFINED) if type(bundle) is _JsMap and (type(r) is str or type(r) is int and -9007199254740992 <= r <= 9007199254740992) else _js_m_get(bundle, r))
         if isinstance(value, str):
             for t in tokenize_v2(value):
                 _js_m_add(terms, t)
     for r in keys:
-        value = (bundle._entries.get(r, _JS_UNDEFINED) if type(bundle) is _JsMap and type(r) is str else _js_m_get(bundle, r))
+        value = (bundle._entries.get(r, _JS_UNDEFINED) if type(bundle) is _JsMap and (type(r) is str or type(r) is int and -9007199254740992 <= r <= 9007199254740992) else _js_m_get(bundle, r))
         if not isinstance(value, str) or not _is_top_checkpoint(r):
             continue
         doc = _JS_UNDEFINED
@@ -724,7 +726,7 @@ def _archive_jobs(root, now_ns, report):
         return added
     arch_dir = path_join(sw, "archive")
     def _js_fn39(b=_JS_UNDEFINED, *_):
-        return _js_m_endsWith(b, ".json.gz")
+        return (b.endswith(".json.gz") if type(b) is str else _js_m_endsWith(b, ".json.gz"))
     for n in remove_stale_temps(arch_dir, _js_fn39):
         _js_m_push(_js_get(report, "deleted"), path_join(arch_dir, n))
     cutoff = _js_num(_js_num(now_ns) - _js_mul(_js_bigint(JOB_DAYS), _DAY_NS))
@@ -858,10 +860,10 @@ def _sync_jobs__typed(home, root):
     adds = _JsMap()
     arch = path_join(root, ".shiftwork", "archive")
     for name in _listdir(arch):
-        if not _js_m_endsWith(name, ".json.gz") or _regular(path_join(arch, name)) is None:
+        if not (name.endswith(".json.gz") if type(name) is str else _js_m_endsWith(name, ".json.gz")) or _regular(path_join(arch, name)) is None:
             continue
         r = _rel(root, path_join(arch, name))
-        if _js_m_has(held, r):
+        if (r in held._entries if type(held) is _JsMap and (type(r) is str or type(r) is int and -9007199254740992 <= r <= 9007199254740992) else r in held._items if type(held) is _JsSet and (type(r) is str or type(r) is int and -9007199254740992 <= r <= 9007199254740992) else _js_m_has(held, r)):
             continue
         data = _gunzip(path_join(arch, name))
         if data is None:
@@ -901,10 +903,10 @@ def sync_jobs(home, root):
     adds = _JsMap()
     arch = path_join(root, ".shiftwork", "archive")
     for name in _listdir(arch):
-        if not _js_m_endsWith(name, ".json.gz") or _regular(path_join(arch, name)) is None:
+        if not (name.endswith(".json.gz") if type(name) is str else _js_m_endsWith(name, ".json.gz")) or _regular(path_join(arch, name)) is None:
             continue
         r = _rel(root, path_join(arch, name))
-        if _js_m_has(held, r):
+        if (r in held._entries if type(held) is _JsMap and (type(r) is str or type(r) is int and -9007199254740992 <= r <= 9007199254740992) else r in held._items if type(held) is _JsSet and (type(r) is str or type(r) is int and -9007199254740992 <= r <= 9007199254740992) else _js_m_has(held, r)):
             continue
         data = _gunzip(path_join(arch, name))
         if data is None:
@@ -978,10 +980,10 @@ def _compact_cold__typed(home, roots, report):
         if not _js_truthy(_is_file(path_join(base, name, "manifest.json"))):
             continue
         cold = ColdIndex(name, home, base)
-        held = (keeps._entries.get(name, _JS_UNDEFINED) if type(keeps) is _JsMap and type(name) is str else _js_m_get(keeps, name))
+        held = (keeps._entries.get(name, _JS_UNDEFINED) if type(keeps) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(keeps, name))
         _js_caught59 = None
         try:
-            if _js_invoke(cold, "compact", None if held is _JS_UNDEFINED else _keep_under(_js_get(held, 0), _js_get(held, 1))) is not None:
+            if _js_invoke(cold, "compact", None if held is _JS_UNDEFINED else _keep_under((held[0] if type(held) is list and 0 < len(held) else _js_get(held, 0)), (held[1] if type(held) is list and 1 < len(held) else _js_get(held, 1)))) is not None:
                 _js_m_push(_js_get(report, "compacted"), name)
         except Exception as _js_error59:
             _js_caught59 = _js_catch(_js_error59)
@@ -1006,10 +1008,10 @@ def _compact_cold(home, roots, report):
         if not _js_truthy(_is_file(path_join(base, name, "manifest.json"))):
             continue
         cold = ColdIndex(name, home, base)
-        held = (keeps._entries.get(name, _JS_UNDEFINED) if type(keeps) is _JsMap and type(name) is str else _js_m_get(keeps, name))
+        held = (keeps._entries.get(name, _JS_UNDEFINED) if type(keeps) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(keeps, name))
         _js_caught60 = None
         try:
-            if _js_invoke(cold, "compact", None if held is _JS_UNDEFINED else _keep_under(_js_get(held, 0), _js_get(held, 1))) is not None:
+            if _js_invoke(cold, "compact", None if held is _JS_UNDEFINED else _keep_under((held[0] if type(held) is list and 0 < len(held) else _js_get(held, 0)), (held[1] if type(held) is list and 1 < len(held) else _js_get(held, 1)))) is not None:
                 _js_m_push(_js_get(report, "compacted"), name)
         except Exception as _js_error60:
             _js_caught60 = _js_catch(_js_error60)
@@ -1353,7 +1355,7 @@ def search_archived(checkpoint, search, home):
             lines = _js_m_split(value, "\n")
             i = 0
             while i < len(lines):
-                toks = _JsSet(tokenize_v2(_js_list_at(lines, i)))
+                toks = _JsSet(tokenize_v2((lines[i] if type(i) is int and 0 <= i < len(lines) else _js_list_at(lines, i))))
                 if all(_js_m_has(toks, t) for t in [*want]):
                     hits.append({"job": job, "file": r, "line": _js_num(i + 1)})
                     if len(hits) >= SEARCH_MAX:

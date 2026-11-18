@@ -74,8 +74,19 @@ function parseNativeFront(front: string): Record<string, unknown> {
   return meta;
 }
 
-/** `divergence.parse_fact` for the native shape: name, description, type and body. */
-export function parseNative(p: string): { name: string; description: string; type: string; body: string; meta: Record<string, unknown> } {
+/**
+ * `divergence.parse_fact` for the native shape: name, description, type and body; `meta`, the
+ * frontmatter read, and `front`, its text (the second of `pySplit(text, '---\n', 2)`'s three parts;
+ * #316 G4, J90-PF: the hot index tests it where it read the file again).
+ */
+export function parseNative(p: string): {
+  name: string;
+  description: string;
+  type: string;
+  body: string;
+  meta: Record<string, unknown>;
+  front: string;
+} {
   let text: string;
   try {
     text = pyReadText(p);
@@ -123,5 +134,6 @@ export function parseNative(p: string): { name: string; description: string; typ
     type,
     body: pyStrip(body),
     meta,
+    front,
   };
 }

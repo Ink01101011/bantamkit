@@ -84,6 +84,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_sar,
     _js_size,
     _js_sort_lex,
+    _js_sort_unique,
     _js_spread,
     _js_str,
     _js_str_includes,
@@ -355,10 +356,10 @@ def pool_without(pool, drop):
     df = _JsMap()
     for t in _js_m_keys(_js_get(pool, "df")):
         out = []
-        seg = _js_coalesce_value((_js_h1._entries.get(t, _JS_UNDEFINED) if type(_js_h1 := _js_get(pool, "segs")) is _JsMap and type(t) is str else _js_m_get(_js_h1, t)), [])
+        seg = _js_coalesce_value((_js_h1._entries.get(t, _JS_UNDEFINED) if type(_js_h1 := _js_get(pool, "segs")) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(_js_h1, t)), [])
         j = 0
         while _js_lt(j, _js_len(seg)):
-            start = _js_get(seg, j)
+            start = (seg[j] if type(seg) is list and type(j) is int and 0 <= j < len(seg) else _js_get(seg, j))
             count = _js_get(seg, _js_num(j + 1))
             weight = _js_get(seg, _js_num(j + 2))
             old = start
@@ -370,22 +371,28 @@ def pool_without(pool, drop):
                     old = _js_add(old, 1)
                 if not (_js_lt(old, (start + count if type(start) is int and type(count) is int and -4503599627370496 <= count <= 4503599627370496 and -4503599627370496 <= start <= 4503599627370496 else _js_add(start, count)))):
                     break
-                nid = (new_id._entries.get(old, _JS_UNDEFINED) if type(new_id) is _JsMap and type(old) is str else _js_m_get(new_id, old))
+                nid = (new_id._entries.get(old, _JS_UNDEFINED) if type(new_id) is _JsMap and (type(old) is str or type(old) is int and -9007199254740992 <= old <= 9007199254740992) else _js_m_get(new_id, old))
                 if nid is _JS_UNDEFINED:
                     continue
                 k = len(out)
-                if k > 0 and (_js_h2 == nid if type(_js_h2 := _js_add(_js_list_at(out, _js_num(k - 3)), _js_list_at(out, _js_num(k - 2)))) is type(nid) is str else _js_strict_eq(_js_h2, nid)) and (_js_h3 == weight if type(_js_h3 := _js_list_at(out, _js_num(k - 1))) is type(weight) is str else _js_strict_eq(_js_h3, weight)):
+                if k > 0 and (_js_h2 == nid if type(_js_h2 := _js_add(_js_list_at(out, _js_num(k - 3)), _js_list_at(out, _js_num(k - 2)))) is type(nid) is str or type(_js_h2) is type(nid) is int and -9007199254740992 <= _js_h2 <= 9007199254740992 and -9007199254740992 <= nid <= 9007199254740992 else _js_strict_eq(_js_h2, nid)) and (_js_h3 == weight if type(_js_h3 := _js_list_at(out, _js_num(k - 1))) is type(weight) is str or type(_js_h3) is type(weight) is int and -9007199254740992 <= _js_h3 <= 9007199254740992 and -9007199254740992 <= weight <= 9007199254740992 else _js_strict_eq(_js_h3, weight)):
                     _js_put(out, _js_num(k - 2), (_js_h4 + 1 if type(_js_h4 := _js_list_at(out, _js_num(k - 2))) is int and -4503599627370496 <= _js_h4 <= 4503599627370496 else _js_add(_js_h4, 1)))
                 else:
-                    _js_m_push(out, nid, 1, weight)
+                    out.extend((nid, 1, weight,))
             j = _js_num(j + 3)
-        _js_m_set(segs, t, out)
+        if type(segs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and segs._keys is None:
+            segs._entries[t] = out
+        else:
+            _js_m_set(segs, t, out)
         d = 0
         j = 1
         while j < len(out):
-            d = _js_add(d, _js_list_at(out, j))
+            d = _js_add(d, (out[j] if type(j) is int and 0 <= j < len(out) else _js_list_at(out, j)))
             j = _js_num(j + 3)
-        _js_m_set(df, t, d)
+        if type(df) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and df._keys is None:
+            df._entries[t] = d
+        else:
+            _js_m_set(df, t, d)
     return {"n": _js_num(_js_num(_js_get(pool, "n")) - _js_num(_js_num(_js_len(_js_get(pool, "names"))) - len(keep))), "total": total, "df": df, "names": [_js_get(_js_get(pool, "names"), i) for i in keep], "lengths": [_js_get(_js_get(pool, "lengths"), i) for i in keep], "types": [_js_get(_js_get(pool, "types"), i) for i in keep], "typeNames": _js_get(pool, "typeNames"), "stale": [_js_m_get(new_id, i) for i in [i for i in _js_array("filter", _js_get(pool, "stale")) if _js_m_has(new_id, i)]], "segs": segs, "facts": None, "files": None if _js_get(pool, "files") is None else [_js_get(_js_get(pool, "files"), i) for i in keep], "indexed": _js_get(pool, "indexed"), "every": None}
 
 
@@ -399,7 +406,7 @@ def _bisect_name__typed(names, name, right):
     hi = len(names)
     while lo < hi:
         mid = _js_sar(_js_num(lo + hi), 1)
-        c = cmp_codepoint(_js_list_at(names, mid), name)
+        c = cmp_codepoint((names[mid] if type(mid) is int and 0 <= mid < len(names) else _js_list_at(names, mid)), name)
         if _js_lt(c, 0) or right and _js_strict_eq(c, 0):
             lo = _js_num(mid + 1)
         else:
@@ -414,7 +421,7 @@ def _bisect_name(names, name, right):
     hi = _js_len(names)
     while _js_lt(lo, hi):
         mid = _js_sar((lo + hi if type(lo) is int and type(hi) is int and -4503599627370496 <= hi <= 4503599627370496 and -4503599627370496 <= lo <= 4503599627370496 else _js_add(lo, hi)), 1)
-        c = cmp_codepoint(_js_get(names, mid), name)
+        c = cmp_codepoint((names[mid] if type(names) is list and type(mid) is int and 0 <= mid < len(names) else _js_get(names, mid)), name)
         if _js_truthy(_js_or(_js_lt(c, 0), lambda: _js_and(right, lambda: _js_strict_eq(c, 0)))):
             lo = _js_num(mid + 1)
         else:
@@ -438,7 +445,7 @@ def _pool_weights(p, usage, context=_JS_UNDEFINED):
             hi = _bisect_name(_js_get(p, "names"), name, True)
             i = lo
             while _js_lt(i, hi):
-                _js_put(out, i, weight_of(_js_get(_js_get(p, "typeNames"), _js_get(_js_get(p, "types"), i)), _js_m_has(stale_ids, i), u))
+                _js_put(out, i, weight_of(_js_get(_js_get(p, "typeNames"), _js_get(_js_get(p, "types"), i)), (i in stale_ids._entries if type(stale_ids) is _JsMap and (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) else i in stale_ids._items if type(stale_ids) is _JsSet and (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) else _js_m_has(stale_ids, i)), u))
                 i = _js_add(i, 1)
     if context is not None and _js_gt(_js_size(context), 0):
         stale_ids = _JsSet(_js_get(p, "stale"))
@@ -447,10 +454,10 @@ def _pool_weights(p, usage, context=_JS_UNDEFINED):
                 continue
             lo = _bisect_name(_js_get(p, "names"), name, False)
             hi = _bisect_name(_js_get(p, "names"), name, True)
-            u = _js_coalesce_value((usage._entries.get(name, _JS_UNDEFINED) if type(usage) is _JsMap and type(name) is str else _js_m_get(usage, name)), 0)
+            u = _js_coalesce_value((usage._entries.get(name, _JS_UNDEFINED) if type(usage) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(usage, name)), 0)
             i = lo
             while _js_lt(i, hi):
-                _js_put(out, i, weight_of(_js_get(_js_get(p, "typeNames"), _js_get(_js_get(p, "types"), i)), _js_m_has(stale_ids, i), u, c))
+                _js_put(out, i, weight_of(_js_get(_js_get(p, "typeNames"), _js_get(_js_get(p, "types"), i)), (i in stale_ids._entries if type(stale_ids) is _JsMap and (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) else i in stale_ids._items if type(stale_ids) is _JsSet and (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) else _js_m_has(stale_ids, i)), u, c))
                 i = _js_add(i, 1)
     return out
 
@@ -469,19 +476,19 @@ def _pool_of__typed(facts, q, every_row=_JS_UNDEFINED):
         total = _js_add(total, length)
         mine = _JsMap()
         for t in q:
-            if _js_m_has(weights, t):
-                _js_m_set(mine, t, (weights._entries.get(t, _JS_UNDEFINED) if type(weights) is _JsMap and type(t) is str else _js_m_get(weights, t)))
+            if (t in weights._entries if type(weights) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else t in weights._items if type(weights) is _JsSet and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_has(weights, t)):
+                _js_m_set(mine, t, (weights._entries.get(t, _JS_UNDEFINED) if type(weights) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(weights, t)))
         for t in _js_m_keys(mine):
-            _js_m_set(df, t, (_js_h5 + 1 if type(_js_h5 := (df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and type(t) is str else _js_m_get(df, t))) is int and -4503599627370496 <= _js_h5 <= 4503599627370496 else _js_add(_js_h5, 1)))
+            _js_m_set(df, t, (_js_h5 + 1 if type(_js_h5 := (df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(df, t))) is int and -4503599627370496 <= _js_h5 <= 4503599627370496 else _js_add(_js_h5, 1)))
         if _js_truthy(_js_or_value(_js_gt(_js_size(mine), 0), every_row)):
             held.append({"name": name, "length": length, "type": py_text(_js_get(fact, "type")), "stale": stale(description), "fact": fact, "mine": mine})
     _js_sort_lex(held, ((lambda a, *_: _js_get(a, "name"), False, True),), lambda a, b, *_: cmp_codepoint(_js_get(a, "name"), _js_get(b, "name")))
-    type_names = _js_m_sort([*_JsSet([_js_get(r, "type") for r in held])], cmp_codepoint)
+    type_names = _js_sort_unique([_js_get(r, "type") for r in held], cmp_codepoint)
     code = _JsMap(_js_m_map(type_names, lambda t, i, *_: [t, i]))
     segs = _JsMap([[t, []] for t in q])
     def _js_fn5(r=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
         for t, w in _js_rows(_js_get(r, "mine"), 2, (0, 1)):
-            _js_m_push((segs._entries.get(t, _JS_UNDEFINED) if type(segs) is _JsMap and type(t) is str else _js_m_get(segs, t)), i, 1, w)
+            _js_m_push((segs._entries.get(t, _JS_UNDEFINED) if type(segs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(segs, t)), i, 1, w)
         return _JS_UNDEFINED
     _js_m_forEach(held, _js_fn5)
     stale_ids = []
@@ -509,19 +516,19 @@ def pool_of(facts, q, every_row=_JS_UNDEFINED):
         total = _js_add(total, length)
         mine = _JsMap()
         for t in q:
-            if _js_m_has(weights, t):
-                _js_m_set(mine, t, (weights._entries.get(t, _JS_UNDEFINED) if type(weights) is _JsMap and type(t) is str else _js_m_get(weights, t)))
+            if (t in weights._entries if type(weights) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else t in weights._items if type(weights) is _JsSet and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_has(weights, t)):
+                _js_m_set(mine, t, (weights._entries.get(t, _JS_UNDEFINED) if type(weights) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(weights, t)))
         for t in _js_m_keys(mine):
-            _js_m_set(df, t, (_js_h6 + 1 if type(_js_h6 := (df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and type(t) is str else _js_m_get(df, t))) is int and -4503599627370496 <= _js_h6 <= 4503599627370496 else _js_add(_js_h6, 1)))
+            _js_m_set(df, t, (_js_h6 + 1 if type(_js_h6 := (df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(df, t))) is int and -4503599627370496 <= _js_h6 <= 4503599627370496 else _js_add(_js_h6, 1)))
         if _js_truthy(_js_or_value(_js_gt(_js_size(mine), 0), every_row)):
             held.append({"name": name, "length": length, "type": py_text(_js_get(fact, "type")), "stale": stale(description), "fact": fact, "mine": mine})
     _js_sort_lex(held, ((lambda a, *_: _js_get(a, "name"), False, True),), lambda a, b, *_: cmp_codepoint(_js_get(a, "name"), _js_get(b, "name")))
-    type_names = _js_m_sort([*_JsSet([_js_get(r, "type") for r in held])], cmp_codepoint)
+    type_names = _js_sort_unique([_js_get(r, "type") for r in held], cmp_codepoint)
     code = _JsMap(_js_m_map(type_names, lambda t, i, *_: [t, i]))
     segs = _JsMap([[t, []] for t in _js_array("map", q)])
     def _js_fn7(r=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
         for t, w in _js_rows(_js_get(r, "mine"), 2, (0, 1)):
-            _js_m_push((segs._entries.get(t, _JS_UNDEFINED) if type(segs) is _JsMap and type(t) is str else _js_m_get(segs, t)), i, 1, w)
+            _js_m_push((segs._entries.get(t, _JS_UNDEFINED) if type(segs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(segs, t)), i, 1, w)
         return _JS_UNDEFINED
     _js_m_forEach(held, _js_fn7)
     stale_ids = []
@@ -563,13 +570,13 @@ def pooled_ranking(pools, q, ratio, usage, context=_JS_UNDEFINED, scorer=_JS_UND
         offset = len(lengths)
         starts.append(offset)
         for t in q:
-            _js_m_set(df, t, _js_add((df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and type(t) is str else _js_m_get(df, t)), _js_coalesce_value((_js_h7._entries.get(t, _JS_UNDEFINED) if type(_js_h7 := _js_get(p, "df")) is _JsMap and type(t) is str else _js_m_get(_js_h7, t)), 0)))
-            seg = (_js_h8._entries.get(t, _JS_UNDEFINED) if type(_js_h8 := _js_get(p, "segs")) is _JsMap and type(t) is str else _js_m_get(_js_h8, t))
+            _js_m_set(df, t, _js_add((df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(df, t)), _js_coalesce_value((_js_h7._entries.get(t, _JS_UNDEFINED) if type(_js_h7 := _js_get(p, "df")) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(_js_h7, t)), 0)))
+            seg = (_js_h8._entries.get(t, _JS_UNDEFINED) if type(_js_h8 := _js_get(p, "segs")) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(_js_h8, t))
             if seg is not _JS_UNDEFINED and _js_gt(_js_len(seg), 0):
-                into = (segs._entries.get(t, _JS_UNDEFINED) if type(segs) is _JsMap and type(t) is str else _js_m_get(segs, t))
+                into = (segs._entries.get(t, _JS_UNDEFINED) if type(segs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(segs, t))
                 j = 0
                 while _js_lt(j, _js_len(seg)):
-                    _js_m_push(into, (_js_h9 + offset if type(_js_h9 := _js_get(seg, j)) is int and type(offset) is int and -4503599627370496 <= offset <= 4503599627370496 and -4503599627370496 <= _js_h9 <= 4503599627370496 else _js_add(_js_h9, offset)), _js_get(seg, _js_num(j + 1)), _js_get(seg, _js_num(j + 2)))
+                    _js_m_push(into, (_js_h9 + offset if type(_js_h9 := (seg[j] if type(seg) is list and type(j) is int and 0 <= j < len(seg) else _js_get(seg, j))) is int and type(offset) is int and -4503599627370496 <= offset <= 4503599627370496 and -4503599627370496 <= _js_h9 <= 4503599627370496 else _js_add(_js_h9, offset)), _js_get(seg, _js_num(j + 1)), _js_get(seg, _js_num(j + 2)))
                     j = _js_num(j + 3)
         for x in _js_get(p, "lengths"):
             lengths.append(x)
@@ -591,9 +598,9 @@ def pooled_ranking(pools, q, ratio, usage, context=_JS_UNDEFINED, scorer=_JS_UND
     order = rank_columns(scores, weights, ratio, floor)
     for g in order:
         at = _js_num(len(starts) - 1)
-        while _js_gt(_js_list_at(starts, at), g):
+        while _js_gt((starts[at] if type(at) is int and 0 <= at < len(starts) else _js_list_at(starts, at)), g):
             at = _js_num(at - 1)
-        yield [_js_get(_js_list_at(live, at), 0), _js_num(_js_num(g) - _js_num(_js_list_at(starts, at)))]
+        yield [_js_get((live[at] if type(at) is int and 0 <= at < len(live) else _js_list_at(live, at)), 0), _js_num(_js_num(g) - _js_num((starts[at] if type(at) is int and 0 <= at < len(starts) else _js_list_at(starts, at))))]
 
 
 def _row_vectors(live, rows):
@@ -633,13 +640,13 @@ def _pick_hits__typed(stores, pools, q, k, ratio, usage, repool, dedupe=_JS_UNDE
         for layer, row in _js_rows(pooled_ranking(live, q, ratio, weights, context, scorer, rows), 2, (0, 1)):
             if k >= 0 and len(out) >= k:
                 break
-            fact = _js_invoke(_js_list_at(stores, layer), "resolve", _js_list_at(live, layer), row)
+            fact = _js_invoke((stores[layer] if type(layer) is int and 0 <= layer < len(stores) else _js_list_at(stores, layer)), "resolve", (live[layer] if type(layer) is int and 0 <= layer < len(live) else _js_list_at(live, layer)), row)
             if fact is None:
                 redo = layer
                 break
             if _js_truthy(dedupe):
                 key = py_hash_key(_js_get(fact, "name"))
-                if _js_m_has(seen, key):
+                if (key in seen._entries if type(seen) is _JsMap and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else key in seen._items if type(seen) is _JsSet and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_has(seen, key)):
                     continue
                 _js_m_add(seen, key)
             out.append([layer, fact])
@@ -674,13 +681,13 @@ def pick_hits(stores, pools, q, k, ratio, usage, repool, dedupe=_JS_UNDEFINED, c
         for layer, row in _js_rows(pooled_ranking(live, q, ratio, weights, context, scorer, rows), 2, (0, 1)):
             if _js_ge(k, 0) and _js_ge(len(out), k):
                 break
-            fact = _js_invoke(_js_get(stores, layer), "resolve", _js_list_at(live, layer), row)
+            fact = _js_invoke(_js_get(stores, layer), "resolve", (live[layer] if type(layer) is int and 0 <= layer < len(live) else _js_list_at(live, layer)), row)
             if fact is None:
                 redo = layer
                 break
             if _js_truthy(dedupe):
                 key = py_hash_key(_js_get(fact, "name"))
-                if _js_m_has(seen, key):
+                if (key in seen._entries if type(seen) is _JsMap and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else key in seen._items if type(seen) is _JsSet and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_has(seen, key)):
                     continue
                 _js_m_add(seen, key)
             out.append([layer, fact])
@@ -722,7 +729,7 @@ def jaccard(a, b):
         return 0
     shared = 0
     for t in a:
-        if _js_m_has(b, t):
+        if (t in b._entries if type(b) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else t in b._items if type(b) is _JsSet and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_has(b, t)):
             shared = _js_num(shared + 1)
     return _js_div(shared, _js_num(_js_num(_js_add(_js_size(a), _js_size(b))) - shared))
 
@@ -829,17 +836,20 @@ def _sort_scored__typed(scored):
         k = i
     start = _js_max(k, 1)
     while start < n:
-        pivot = _js_list_at(a, start)
+        pivot = (a[start] if type(start) is int and 0 <= start < len(a) else _js_list_at(a, start))
         l = 0
         r = start
         while l < r:
             p = _js_num(l + _js_sar(_js_num(r - l), 1))
-            if _js_truthy(lt(pivot, _js_list_at(a, p))):
+            if _js_truthy(lt(pivot, (a[p] if type(p) is int and 0 <= p < len(a) else _js_list_at(a, p)))):
                 r = p
             else:
                 l = _js_num(p + 1)
         _js_m_copyWithin(a, _js_num(l + 1), l, start)
-        _js_put(a, l, pivot)
+        if type(a) is list and type(l) is int and 0 <= l < len(a):
+            a[l] = pivot
+        else:
+            _js_put(a, l, pivot)
         start = _js_num(start + 1)
     return a
 
@@ -869,17 +879,20 @@ def sort_scored(scored):
         k = i
     start = _js_max(k, 1)
     while start < n:
-        pivot = _js_list_at(a, start)
+        pivot = (a[start] if type(start) is int and 0 <= start < len(a) else _js_list_at(a, start))
         l = 0
         r = start
         while l < r:
             p = _js_num(l + _js_sar(_js_num(r - l), 1))
-            if _js_truthy(lt(pivot, _js_list_at(a, p))):
+            if _js_truthy(lt(pivot, (a[p] if type(p) is int and 0 <= p < len(a) else _js_list_at(a, p)))):
                 r = p
             else:
                 l = _js_num(p + 1)
         _js_m_copyWithin(a, _js_num(l + 1), l, start)
-        _js_put(a, l, pivot)
+        if type(a) is list and type(l) is int and 0 <= l < len(a):
+            a[l] = pivot
+        else:
+            _js_put(a, l, pivot)
         start = _js_num(start + 1)
     return a
 
@@ -889,11 +902,11 @@ def _looks_like_mapping(front):
         return False
     first = _js_m_find(_js_m_split(front, "\n"), lambda line, *_: py_strip(line) != "")
     head = _js_dispatch(first, "replace", _js_m_replace, _JS_RE_8, "")
-    if _js_m_startsWith(head, "#"):
+    if (head.startswith("#") if type(head) is str else _js_m_startsWith(head, "#")):
         return True
-    if head == "-" or _js_m_startsWith(head, "- ") or _js_m_startsWith(head, "["):
+    if head == "-" or (head.startswith("- ") if type(head) is str else _js_m_startsWith(head, "- ")) or (head.startswith("[") if type(head) is str else _js_m_startsWith(head, "[")):
         return False
-    if _js_m_startsWith(head, "{") or _js_m_startsWith(head, "? "):
+    if (head.startswith("{") if type(head) is str else _js_m_startsWith(head, "{")) or (head.startswith("? ") if type(head) is str else _js_m_startsWith(head, "? ")):
         return True
     return _js_m_test(_JS_RE_9, head)
 
@@ -1056,7 +1069,7 @@ class MemoryStore(_JsObject):
                     self.use(self.usageLedger(), [hit], "body_read")
                 return hit
         for fact in self.candidates(skipped):
-            if isinstance(_js_get(fact, "name"), str) and (_js_h14 == name if type(_js_h14 := _js_get(fact, "name")) is type(name) is str else _js_strict_eq(_js_h14, name)):
+            if isinstance(_js_get(fact, "name"), str) and (_js_h14 == name if type(_js_h14 := _js_get(fact, "name")) is type(name) is str or type(_js_h14) is type(name) is int and -9007199254740992 <= _js_h14 <= 9007199254740992 and -9007199254740992 <= name <= 9007199254740992 else _js_strict_eq(_js_h14, name)):
                 if _js_truthy(stamp):
                     self.use(self.usageLedger(), [fact], "body_read")
                 return fact
@@ -1203,7 +1216,7 @@ class MemoryStore(_JsObject):
         for name, in _js_rows(rows, 1, (0,)):
             if _js_ge(len(hits), k):
                 break
-            if _js_m_has(skip, name):
+            if (name in skip._entries if type(skip) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else name in skip._items if type(skip) is _JsSet and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_has(skip, name)):
                 continue
             doc = _js_invoke(cold, "doc", name)
             if doc is None:
@@ -1218,7 +1231,7 @@ class MemoryStore(_JsObject):
                 if _js_instanceof(_js_caught28, BantamError) or _js_instanceof(_js_caught28, PyOSError):
                     continue
                 raise _js_caught28
-            if isinstance(_js_get(fact, "name"), str) and (_js_h15 == name if type(_js_h15 := _js_get(fact, "name")) is type(name) is str else _js_strict_eq(_js_h15, name)):
+            if isinstance(_js_get(fact, "name"), str) and (_js_h15 == name if type(_js_h15 := _js_get(fact, "name")) is type(name) is str or type(_js_h15) is type(name) is int and -9007199254740992 <= _js_h15 <= 9007199254740992 and -9007199254740992 <= name <= 9007199254740992 else _js_strict_eq(_js_h15, name)):
                 hits.append(fact)
         return hits
 
@@ -1365,7 +1378,10 @@ class MemoryStore(_JsObject):
             if _js_caught41 is not None:
                 if not (_js_instanceof(_js_caught41, BantamError) or _js_instanceof(_js_caught41, PyOSError)):
                     raise _js_caught41
-                _js_m_push(skipped, {"file": path_basename(path), "reason": py_os_error_text(_js_caught41) if _js_instanceof(_js_caught41, PyOSError) else _js_get(_js_caught41, "message")})
+                if type(skipped) is list:
+                    skipped.append({"file": path_basename(path), "reason": py_os_error_text(_js_caught41) if _js_instanceof(_js_caught41, PyOSError) else _js_get(_js_caught41, "message")})
+                else:
+                    _js_m_push(skipped, {"file": path_basename(path), "reason": py_os_error_text(_js_caught41) if _js_instanceof(_js_caught41, PyOSError) else _js_get(_js_caught41, "message")})
         return out
 
     def readFact(self, path, findings=_JS_UNDEFINED):
@@ -1469,7 +1485,7 @@ def _js_method_MemoryStore_save(self, type_, name, description, body, links=_JS_
     existing = None
     skipped = []
     for fact in self.facts(_JS_UNDEFINED, skipped):
-        if (_js_h10 == name if type(_js_h10 := _js_get(fact, "name")) is type(name) is str else _js_strict_eq(_js_h10, name)):
+        if (_js_h10 == name if type(_js_h10 := _js_get(fact, "name")) is type(name) is str or type(_js_h10) is type(name) is int and -9007199254740992 <= _js_h10 <= 9007199254740992 and -9007199254740992 <= name <= 9007199254740992 else _js_strict_eq(_js_h10, name)):
             existing = fact
             continue
         if _js_m_includes(dup_exempt, py_text(_js_get(fact, "name"))):
@@ -1555,11 +1571,11 @@ def _js_method_MemoryStore_listFacts(self, type_=_JS_UNDEFINED, outcome=_JS_UNDE
         status = None
     facts = []
     for fact in self.facts():
-        if type_ is not None and (_js_h11 != type_ if type(_js_h11 := _js_get(fact, "type")) is type(type_) is str else not _js_strict_eq(_js_h11, type_)):
+        if type_ is not None and (_js_h11 != type_ if type(_js_h11 := _js_get(fact, "type")) is type(type_) is str or type(_js_h11) is type(type_) is int and -9007199254740992 <= _js_h11 <= 9007199254740992 and -9007199254740992 <= type_ <= 9007199254740992 else not _js_strict_eq(_js_h11, type_)):
             continue
-        if outcome is not None and (_js_h12 != outcome if type(_js_h12 := _js_get(fact, "outcome")) is type(outcome) is str else not _js_strict_eq(_js_h12, outcome)):
+        if outcome is not None and (_js_h12 != outcome if type(_js_h12 := _js_get(fact, "outcome")) is type(outcome) is str or type(_js_h12) is type(outcome) is int and -9007199254740992 <= _js_h12 <= 9007199254740992 and -9007199254740992 <= outcome <= 9007199254740992 else not _js_strict_eq(_js_h12, outcome)):
             continue
-        if status is not None and (_js_h13 != status if type(_js_h13 := _js_get(fact, "status") if _js_truthy(py_truthy(_js_coalesce_value(_js_get(fact, "status"), None))) else "active") is type(status) is str else not _js_strict_eq(_js_h13, status)):
+        if status is not None and (_js_h13 != status if type(_js_h13 := _js_get(fact, "status") if _js_truthy(py_truthy(_js_coalesce_value(_js_get(fact, "status"), None))) else "active") is type(status) is str or type(_js_h13) is type(status) is int and -9007199254740992 <= _js_h13 <= 9007199254740992 and -9007199254740992 <= status <= 9007199254740992 else not _js_strict_eq(_js_h13, status)):
             continue
         facts.append(fact)
     return _js_m_sort(facts, lambda a, b, *_: cmp_codepoint(py_text(_js_get(a, "name")), py_text(_js_get(b, "name"))))
@@ -1614,7 +1630,7 @@ def _js_method_MemoryStore_compact(self, reserve=_JS_UNDEFINED):
             break
         path = _js_coalesce(_js_get(fact, "source"), lambda: self.factPath(_js_get(fact, "name")))
         py_replace(path, py_join(self.root, "archive", py_name(path)))
-        bytes = (sizes._entries.get(fact, _JS_UNDEFINED) if type(sizes) is _JsMap and type(fact) is str else _js_m_get(sizes, fact))
+        bytes = (sizes._entries.get(fact, _JS_UNDEFINED) if type(sizes) is _JsMap and (type(fact) is str or type(fact) is int and -9007199254740992 <= fact <= 9007199254740992) else _js_m_get(sizes, fact))
         size = _js_num(_js_num(size) - _js_num(bytes))
         archived.append({"name": _js_get(fact, "name"), "type": _js_get(fact, "type"), "description": _js_get(fact, "description"), "indexBytes": bytes, "lastRecalled": _js_coalesce_value(_js_get(fact, "last_recalled"), None), "created": _js_coalesce_value(_js_get(fact, "created"), None)})
     self.rebuildIndex()
@@ -1662,9 +1678,9 @@ def _js_method_MemoryStore_byEviction(self, facts, used=_JS_UNDEFINED):
         right = key(b)
         slot = 0
         while slot < 2:
-            if py_compare_lt(_js_get(left, slot), _js_get(right, slot)):
+            if py_compare_lt((left[slot] if type(left) is list and type(slot) is int and 0 <= slot < len(left) else _js_get(left, slot)), (right[slot] if type(right) is list and type(slot) is int and 0 <= slot < len(right) else _js_get(right, slot))):
                 return -1
-            if py_compare_lt(_js_get(right, slot), _js_get(left, slot)):
+            if py_compare_lt((right[slot] if type(right) is list and type(slot) is int and 0 <= slot < len(right) else _js_get(right, slot)), (left[slot] if type(left) is list and type(slot) is int and 0 <= slot < len(left) else _js_get(left, slot))):
                 return 1
             slot = _js_num(slot + 1)
         return 0
@@ -1712,9 +1728,15 @@ def _js_method_MemoryStore_readFact(self, path, findings=_JS_UNDEFINED):
     for key in ["created", "last_recalled"]:
         raw = _js_get(meta, key)
         value = timestamp_text(raw)
-        if findings is not _JS_UNDEFINED and (value != raw if type(value) is type(raw) is str else not _js_strict_eq(value, raw)):
-            _js_m_push(findings, "fact '" + py_text(name) + "' in " + _js_str(file) + ": " + key + " is the unquoted timestamp " + _js_str(value) + ", " + ("read as '" + _js_str(value) + "'; quote it"))
-        _js_put(stamps, key, value)
+        if findings is not _JS_UNDEFINED and (value != raw if type(value) is type(raw) is str or type(value) is type(raw) is int and -9007199254740992 <= value <= 9007199254740992 and -9007199254740992 <= raw <= 9007199254740992 else not _js_strict_eq(value, raw)):
+            if type(findings) is list:
+                findings.append("fact '" + py_text(name) + "' in " + _js_str(file) + ": " + key + " is the unquoted timestamp " + _js_str(value) + ", " + ("read as '" + _js_str(value) + "'; quote it"))
+            else:
+                _js_m_push(findings, "fact '" + py_text(name) + "' in " + _js_str(file) + ": " + key + " is the unquoted timestamp " + _js_str(value) + ", " + ("read as '" + _js_str(value) + "'; quote it"))
+        if type(stamps) is list and type(key) is int and 0 <= key < len(stamps):
+            stamps[key] = value
+        else:
+            _js_put(stamps, key, value)
     suffix = py_suffix(file)
     stem = file if suffix == "" else _js_m_slice(file, 0, _js_num(_js_num(_js_len(file)) - _js_num(_js_len(suffix))))
     if findings is not _JS_UNDEFINED and stem != py_text(name):
@@ -1746,7 +1768,7 @@ def _js_method_MemoryStore_poolIndexed(idx, q):
         d = 0
         j = 0
         while _js_lt(j, _js_len(seg)):
-            a = _js_get(seg, j)
+            a = (seg[j] if type(seg) is list and type(j) is int and 0 <= j < len(seg) else _js_get(seg, j))
             c = _js_get(seg, _js_num(j + 1))
             x = _js_get(seg, _js_num(j + 2))
             y = _js_get(seg, _js_num(j + 3))
@@ -1755,11 +1777,17 @@ def _js_method_MemoryStore_poolIndexed(idx, q):
                 return None
             if _js_lt(c, 1) or _js_lt(a, 0) or _js_gt((a + c if type(a) is int and type(c) is int and -4503599627370496 <= c <= 4503599627370496 and -4503599627370496 <= a <= 4503599627370496 else _js_add(a, c)), n) or _js_lt(x, 0) or _js_lt(y, 0) or _js_lt(z, 0):
                 return None
-            _js_m_push(out, a, c, _js_add(_js_add(_js_mul(bn, x), _js_mul(bd, y)), _js_mul(bk, z)))
+            out.extend((a, c, _js_add(_js_add(_js_mul(bn, x), _js_mul(bd, y)), _js_mul(bk, z)),))
             d = _js_add(d, c)
             j = _js_num(j + 5)
-        _js_m_set(segs, t, out)
-        _js_m_set(df, t, d)
+        if type(segs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and segs._keys is None:
+            segs._entries[t] = out
+        else:
+            _js_m_set(segs, t, out)
+        if type(df) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and df._keys is None:
+            df._entries[t] = d
+        else:
+            _js_m_set(df, t, d)
     return {"n": n, "total": length_of(_js_invoke(idx, "lensTotal")), "df": df, "names": _js_get(cols, "name"), "lengths": _js_len(cols), "types": _js_get(cols, "type"), "typeNames": _js_get(cols, "types"), "stale": _js_get(cols, "stale"), "segs": segs, "facts": None, "files": _js_get(cols, "file"), "indexed": True, "every": None}
 
 

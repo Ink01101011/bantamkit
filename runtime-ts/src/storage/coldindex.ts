@@ -366,7 +366,12 @@ export class ColdIndex {
       const text: Record<string, string> = { name: d.name, description: d.description, keywords: d.keywords.join(' ') };
       for (const [field] of FIELD_BOOST) {
         const counts = new Map<string, number>();
-        for (const t of tokenizeV2(text[field]!)) counts.set(t, (counts.get(t) ?? 0) + 1);
+        for (const t of tokenizeV2(text[field]!)) {
+          // Through a local, so the store is of a plain value (#316 G4, J90-PF: ts2py writes such
+          // a `set` inline in a loop).
+          const n = (counts.get(t) ?? 0) + 1;
+          counts.set(t, n);
+        }
         for (const [term, tf] of counts) {
           const table = fresh[shardOf(term)]!;
           let list = table.get(term);
@@ -408,7 +413,13 @@ export class ColdIndex {
     for (let i = 0; i < SHARDS; i += 1) {
       const terms = new Map<string, ColdRow[]>();
       for (const [term, rows] of tables[i]!) {
-        const kept = rows.filter((r) => keep.has(r[1]));
+        // A loop, not a `filter` callback (#316 G4, J90-PF: ts2py writes the id read, `has` and
+        // `push` inline in a loop body); the same rows in the same order.
+        const kept: ColdRow[] = [];
+        for (const r of rows) {
+          const id = r[1];
+          if (keep.has(id)) kept.push(r);
+        }
         if (kept.length) terms.set(term, kept);
       }
       if (add !== null) {

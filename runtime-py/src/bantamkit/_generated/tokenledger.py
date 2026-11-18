@@ -254,14 +254,17 @@ def _read__typed(root, options=_JS_UNDEFINED):
             if not isinstance(request_id, str) or request_id == "":
                 omit(OMIT_NO_REQUEST_ID, site)
                 continue
-            if _js_m_has(seen_requests, request_id):
+            if (request_id in seen_requests._entries if type(seen_requests) is _JsMap and (type(request_id) is str or type(request_id) is int and -9007199254740992 <= request_id <= 9007199254740992) else request_id in seen_requests._items if type(seen_requests) is _JsSet and (type(request_id) is str or type(request_id) is int and -9007199254740992 <= request_id <= 9007199254740992) else _js_m_has(seen_requests, request_id)):
                 omit(OMIT_DUPLICATE_REQUEST, site)
                 continue
             _js_m_add(seen_requests, request_id)
-            row = (sessions._entries.get(session_id, _JS_UNDEFINED) if type(sessions) is _JsMap and type(session_id) is str else _js_m_get(sessions, session_id))
+            row = (sessions._entries.get(session_id, _JS_UNDEFINED) if type(sessions) is _JsMap and (type(session_id) is str or type(session_id) is int and -9007199254740992 <= session_id <= 9007199254740992) else _js_m_get(sessions, session_id))
             if row is _JS_UNDEFINED:
                 row = {"session": session_id, "cwd": "", "first": "", "last": "", "requests": 0, "sidechain_requests": 0, "input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0}
-                _js_m_set(sessions, session_id, row)
+                if type(sessions) is _JsMap and (type(session_id) is str or type(session_id) is int and -9007199254740992 <= session_id <= 9007199254740992) and sessions._keys is None:
+                    sessions._entries[session_id] = row
+                else:
+                    _js_m_set(sessions, session_id, row)
             cwd = _js_get(record, "cwd")
             if _js_get(row, "cwd") == "" and isinstance(cwd, str):
                 _js_put(row, "cwd", cwd)
@@ -283,9 +286,9 @@ def _read__typed(root, options=_JS_UNDEFINED):
     ordered = _js_sort_lex([*_js_m_values(sessions)], ((lambda a, *_: _js_get(a, "first"), False, True), (lambda a, *_: _js_get(a, "session"), False, True),), lambda a, b, *_: _js_or(cmp_codepoint(_js_get(a, "first"), _js_get(b, "first")), lambda: cmp_codepoint(_js_get(a, "session"), _js_get(b, "session"))))
     omissions = []
     for subject in OMISSION_ORDER:
-        count = _js_coalesce_value((counts._entries.get(subject, _JS_UNDEFINED) if type(counts) is _JsMap and type(subject) is str else _js_m_get(counts, subject)), 0)
+        count = _js_coalesce_value((counts._entries.get(subject, _JS_UNDEFINED) if type(counts) is _JsMap and (type(subject) is str or type(subject) is int and -9007199254740992 <= subject <= 9007199254740992) else _js_m_get(counts, subject)), 0)
         if _js_gt(count, 0):
-            omissions.append({"subject": subject, "count": count, "what": _what_of(count, _js_coalesce_value((sites._entries.get(subject, _JS_UNDEFINED) if type(sites) is _JsMap and type(subject) is str else _js_m_get(sites, subject)), ""))})
+            omissions.append({"subject": subject, "count": count, "what": _what_of(count, _js_coalesce_value((sites._entries.get(subject, _JS_UNDEFINED) if type(sites) is _JsMap and (type(subject) is str or type(subject) is int and -9007199254740992 <= subject <= 9007199254740992) else _js_m_get(sites, subject)), ""))})
     ledger = {"root": root, "transcripts": len(files), "lines": lines, "requests": _js_size(seen_requests), "totals": totals, "sessions": ordered, "omissions": omissions}
     if model is not None:
         _js_put(ledger, "cost", price_tokens(load_price_table(_js_coalesce_value(prices, _JS_UNDEFINED)), model, {**_js_spread(totals)}))
@@ -367,14 +370,17 @@ def read(root, options=_JS_UNDEFINED):
             if not isinstance(request_id, str) or request_id == "":
                 omit(OMIT_NO_REQUEST_ID, site)
                 continue
-            if _js_m_has(seen_requests, request_id):
+            if (request_id in seen_requests._entries if type(seen_requests) is _JsMap and (type(request_id) is str or type(request_id) is int and -9007199254740992 <= request_id <= 9007199254740992) else request_id in seen_requests._items if type(seen_requests) is _JsSet and (type(request_id) is str or type(request_id) is int and -9007199254740992 <= request_id <= 9007199254740992) else _js_m_has(seen_requests, request_id)):
                 omit(OMIT_DUPLICATE_REQUEST, site)
                 continue
             _js_m_add(seen_requests, request_id)
-            row = (sessions._entries.get(session_id, _JS_UNDEFINED) if type(sessions) is _JsMap and type(session_id) is str else _js_m_get(sessions, session_id))
+            row = (sessions._entries.get(session_id, _JS_UNDEFINED) if type(sessions) is _JsMap and (type(session_id) is str or type(session_id) is int and -9007199254740992 <= session_id <= 9007199254740992) else _js_m_get(sessions, session_id))
             if row is _JS_UNDEFINED:
                 row = {"session": session_id, "cwd": "", "first": "", "last": "", "requests": 0, "sidechain_requests": 0, "input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0}
-                _js_m_set(sessions, session_id, row)
+                if type(sessions) is _JsMap and (type(session_id) is str or type(session_id) is int and -9007199254740992 <= session_id <= 9007199254740992) and sessions._keys is None:
+                    sessions._entries[session_id] = row
+                else:
+                    _js_m_set(sessions, session_id, row)
             cwd = _js_get(record, "cwd")
             if _js_get(row, "cwd") == "" and isinstance(cwd, str):
                 _js_put(row, "cwd", cwd)
@@ -396,9 +402,9 @@ def read(root, options=_JS_UNDEFINED):
     ordered = _js_sort_lex([*_js_m_values(sessions)], ((lambda a, *_: _js_get(a, "first"), False, True), (lambda a, *_: _js_get(a, "session"), False, True),), lambda a, b, *_: _js_or(cmp_codepoint(_js_get(a, "first"), _js_get(b, "first")), lambda: cmp_codepoint(_js_get(a, "session"), _js_get(b, "session"))))
     omissions = []
     for subject in OMISSION_ORDER:
-        count = _js_coalesce_value((counts._entries.get(subject, _JS_UNDEFINED) if type(counts) is _JsMap and type(subject) is str else _js_m_get(counts, subject)), 0)
+        count = _js_coalesce_value((counts._entries.get(subject, _JS_UNDEFINED) if type(counts) is _JsMap and (type(subject) is str or type(subject) is int and -9007199254740992 <= subject <= 9007199254740992) else _js_m_get(counts, subject)), 0)
         if _js_gt(count, 0):
-            omissions.append({"subject": subject, "count": count, "what": _what_of(count, _js_coalesce_value((sites._entries.get(subject, _JS_UNDEFINED) if type(sites) is _JsMap and type(subject) is str else _js_m_get(sites, subject)), ""))})
+            omissions.append({"subject": subject, "count": count, "what": _what_of(count, _js_coalesce_value((sites._entries.get(subject, _JS_UNDEFINED) if type(sites) is _JsMap and (type(subject) is str or type(subject) is int and -9007199254740992 <= subject <= 9007199254740992) else _js_m_get(sites, subject)), ""))})
     ledger = {"root": root, "transcripts": len(files), "lines": lines, "requests": _js_size(seen_requests), "totals": totals, "sessions": ordered, "omissions": omissions}
     if model is not None:
         _js_put(ledger, "cost", price_tokens(load_price_table(_js_coalesce_value(prices, _JS_UNDEFINED)), model, {**_js_spread(totals)}))

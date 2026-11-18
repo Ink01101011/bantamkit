@@ -46,6 +46,7 @@ import { dumpJsValue } from '../pyjson.js';
 import { extractRefs, factRefs } from '../touch/refs.js';
 import { exclusive, removeStaleTemps } from './lock.js';
 import { parseNative } from './nativefact.js';
+import { statFile, statMtimeNs, statStamp } from './statstamp.js';
 import { nodeRealpath } from './realpath.js';
 
 // 2: the head + 16-shard layout. A version-1 single file is rebuilt, never read as a head.
@@ -336,7 +337,12 @@ const SHARD_MEMO_MAX = 4096;
 let SHARD_MEMO = new Map<string, number>();
 
 function fingerprint(value: unknown): string {
-  return createHash('sha256').update(dumpIndex(value), 'utf8').digest('hex').slice(0, 16);
+  return printOf(dumpIndex(value));
+}
+
+/** `fingerprint` of the value whose `dumpIndex` is `text`. */
+function printOf(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 16);
 }
 
 const isFps = (v: unknown): v is string[] =>
@@ -496,12 +502,21 @@ export class HotIndex {
   readonly real: string;
   readonly path: string;
   readonly dir: string;
+  /** `shardPath`'s fixed part, made on its first use: the head's directory joined with its name
+   * less `.json`. */
+  private shardStem: string | null = null;
   persisted = true;
   private data: IndexData | null = null;
   /** The head's (mtime_ns, size, ino) when `data` was read or written: an unchanged head is not re-read. */
   private headStat: string | null = null;
   /** `family:shard` -> [fingerprint, terms]; valid only while the head names that print. */
   private shards = new Map<string, [string, Map<string, unknown>]>();
+  /**
+   * `family:shard` -> [terms, `dumpIndex(terms)`]: the text `derive` printed each table from, which
+   * the `write` right after it reuses instead of dumping the same table again (#316 G4, J90-PF).
+   * Taken by `write` (emptied at its start); used only for the very table it was dumped from.
+   */
+  private dumped = new Map<string, [Map<string, unknown>, string]>();
   /**
    * Whether every doc of `data` has been shape-checked. A head read from disk is checked when
    * something reads ALL its docs (`docs()`, a patch), not on the hook's fresh path, which reads
@@ -686,10 +701,15 @@ export class HotIndex {
   }
 
   shardPath(family: Family, i: number): string {
-    // `this.path` is always `<sha16>.json`: its basename less the five units of `.json`.
-    const base = path.basename(this.path).slice(0, -5);
-    return path.join(path.dirname(this.path), `${base}.${family}-${String(i).padStart(2, '0')}.json`);
+    // `path.join(dirname, `${base}.${family}-NN.json`)`, the join made once (#316 G4, J90-PF): the
+    // name joined is the 16-hex-digit stem plus a suffix with no `/`, so joining the stem alone
+    // and appending the suffix normalizes the same path.
+    if (this.shardStem === null) {
+      this.shardStem = path.join(path.dirname(this.path), path.basename(this.path).slice(0, -5));
+    }
+    return `${this.shardStem}.${family}-${String(i).padStart(2, '0')}.json`;
   }
+
 
   private loaded(): IndexData {
     if (this.data === null) this.refresh('fast');
@@ -708,16 +728,26 @@ export class HotIndex {
     const byShard = new Map<number, string[]>();
     for (const t of want) {
       const i = shardOf(t);
-      let list = byShard.get(i);
-      if (list === undefined) {
-        list = [];
-        byShard.set(i, list);
-      }
-      list.push(t);
+      const list = byShard.get(i);
+      if (list === undefined) byShard.set(i, [t]);
+      else list.push(t);
     }
     const out = new Map<string, unknown>();
+    // `shard(family, i)`'s first test, inline (#316 G4, J90-PF): the table held under the print
+    // the head names for it. `prints` is the head's, read again after any `shard` call (which may
+    // rebuild the head); nothing else here changes it.
+    let prints = this.loaded().shards[family];
     for (const i of [...byShard.keys()].sort((a, b) => a - b)) {
-      const table = this.shard(family, i);
+      const fp = prints[i];
+      const key = `${family}:${i}`;
+      const held = this.shards.get(key);
+      let table: Map<string, unknown>;
+      if (held !== undefined && held[0] === fp) {
+        table = held[1];
+      } else {
+        table = this.shard(family, i);
+        prints = this.loaded().shards[family];
+      }
       for (const t of byShard.get(i)!) if (table.has(t)) out.set(t, table.get(t));
     }
     return out;
@@ -811,9 +841,10 @@ export class HotIndex {
   // -------------------------------------------------------------------------- disk
 
   private statHead(): string | null {
+    // `${mtimeNs}:${size}:${ino}` of `fs.statSync(this.path, { bigint: true })` (#316 G4, J90-PF:
+    // an adapter answers it in Python from the stat, without the BigIntStats object).
     try {
-      const st = fs.statSync(this.path, { bigint: true });
-      return `${st.mtimeNs}:${st.size}:${st.ino}`;
+      return statStamp(this.path);
     } catch {
       return null;
     }
@@ -932,14 +963,26 @@ export class HotIndex {
    */
   private write(before: Shards | null): void {
     const d: IndexData = this.data!;
+    const dumped = this.dumped;
+    this.dumped = new Map();
     const texts: Array<[string, string]> = [];
     for (const family of FAMILIES) {
       for (let i = 0; i < SHARDS; i += 1) {
         const fp = d.shards[family][i]!;
         if (before !== null && before[family][i] === fp) continue;
-        const held = this.shards.get(`${family}:${i}`);
+        const key = `${family}:${i}`;
+        const held = this.shards.get(key);
         if (held === undefined || held[0] !== fp) throw new Error(`hotindex: shard ${family}-${i} not held`);
-        texts.push([this.shardPath(family, i), dumpIndex({ fingerprint: fp, terms: held[1] })]);
+        // `dumpIndex({fingerprint, terms})` is `{"fingerprint":...` and then `,"terms":` and the
+        // terms' own text (keys sorted, no indent: a value's text is the same at any depth), so the
+        // text `derive` printed this very table from is reused (#316 G4, J90-PF).
+        const done = dumped.get(key);
+        texts.push([
+          this.shardPath(family, i),
+          done !== undefined && done[0] === held[1]
+            ? `${dumpIndex({ fingerprint: fp }).slice(0, -1)},"terms":${done[1]}}`
+            : dumpIndex({ fingerprint: fp, terms: held[1] }),
+        ]);
       }
     }
     const all: Record<string, unknown> = {
@@ -1010,7 +1053,7 @@ export class HotIndex {
 
   private dirMtime(): string | null {
     try {
-      return fs.statSync(this.dir, { bigint: true }).mtimeNs.toString();
+      return statMtimeNs(this.dir);
     } catch {
       return null;
     }
@@ -1047,14 +1090,16 @@ export class HotIndex {
     const native = this.kind !== 'facts';
     for (const f of native ? this.mdNames() : this.listing()) {
       const p = native ? pyJoin(this.dir, f) : f;
-      let st: fs.BigIntStats;
+      // `[mtimeNs.toString(), Number(size), isFile()]` of `fs.statSync(p, { bigint: true })`
+      // (#316 G4, J90-PF: an adapter answers it in Python without the BigIntStats object).
+      let st: [string, number, boolean];
       try {
-        st = fs.statSync(p, { bigint: true });
+        st = statFile(p);
       } catch {
         continue; // gone between the listing and the stat: it is not there
       }
-      if (native && !st.isFile()) continue;
-      out.push([native ? f : path.basename(p), st.mtimeNs.toString(), Number(st.size)]);
+      if (native && !st[2]) continue;
+      out.push([native ? f : path.basename(p), st[0], st[1]]);
     }
     return out;
   }
@@ -1200,7 +1245,9 @@ export class HotIndex {
       if (e instanceof BantamError) return e.message;
       throw e;
     }
-    const extra = NATIVE_EXTRA_LINE.test(frontOf(safeRead(p))) ? stored.meta : {};
+    // `stored.front` is the frontmatter `parseNative` read, `frontOf` of the same text (#316 G4,
+    // J90-PF: the file was read a second time for it).
+    const extra = NATIVE_EXTRA_LINE.test(stored.front) ? stored.meta : {};
     const md = extra['metadata'];
     const nested = md !== null && typeof md === 'object' && !Array.isArray(md) ? (md as Record<string, unknown>) : {};
     // A top-level key wins, as a top-level `type` does in `parse_fact`.
@@ -1264,7 +1311,10 @@ export class HotIndex {
             fresh[k] = 1;
             tfs.set(t, fresh);
           } else {
-            row[k] = row[k]! + 1;
+            // Through a local, so the store is of a plain value (#316 G4, J90-PF: ts2py writes
+            // such a store inline in a loop; `row[k] = row[k]! + 1` read the row inside it).
+            const n = row[k]! + 1;
+            row[k] = n;
           }
         }
       }
@@ -1276,9 +1326,16 @@ export class HotIndex {
         }
         const table = rows[i]!;
         const list = table.get(term);
-        if (list === undefined) table.set(term, [row]);
-        else list.push(row);
-        df.set(term, (df.get(term) ?? 0) + 1);
+        // A term's `df` is how many docs so far hold it, which is its posting list's length: each
+        // doc pushes one row per term, and both start empty here (#316 G4, J90-PF: was a read, a
+        // `?? 0` and a sum per term). First set when first seen, as before, so in the same order.
+        if (list === undefined) {
+          table.set(term, [row]);
+          df.set(term, 1);
+        } else {
+          const held = list.push(row);
+          df.set(term, held);
+        }
       }
       for (const w of tokens(`${d.name} ${d.description}`)) {
         let i = at.get(w);
@@ -1292,7 +1349,14 @@ export class HotIndex {
         else list.push(name);
       }
     }
-    const postings = rows.map((table) => new Map([...table].map(([t, r]) => [t, encodeSegments(r)])));
+    // A loop, not two `map` callbacks and a destructuring per term (#316 G4, J90-PF): the same
+    // tables, each term in the same order.
+    const postings: Array<Map<string, number[]>> = [];
+    for (const table of rows) {
+      const encoded = new Map<string, number[]>();
+      for (const [t, r] of table) encoded.set(t, encodeSegments(r));
+      postings.push(encoded);
+    }
     data.df = df;
     data.dfRaw = null;
     data.lens = lens;
@@ -1305,9 +1369,12 @@ export class HotIndex {
       ['words', words],
     ] as Array<[Family, Array<Map<string, unknown>>]>) {
       for (let i = 0; i < tables.length; i += 1) {
-        const fp = fingerprint(tables[i]!);
+        const table = tables[i]!;
+        const text = dumpIndex(table);
+        const fp = printOf(text);
         prints[family].push(fp);
-        this.shards.set(`${family}:${i}`, [fp, tables[i]!]);
+        this.shards.set(`${family}:${i}`, [fp, table]);
+        this.dumped.set(`${family}:${i}`, [table, text]);
       }
     }
     data.shards = prints;
@@ -1384,14 +1451,6 @@ function derivedKey(docs: Map<string, IndexDoc>): string {
   for (const [n, d] of docs) rows.push([n, d.description, d.keywords]);
   rows.sort((a, b) => cmpCodepoint(a[0], b[0]));
   return JSON.stringify(rows);
-}
-
-function safeRead(p: string): string {
-  try {
-    return pyReadText(p);
-  } catch {
-    return '';
-  }
 }
 
 function isFile(p: string): boolean {

@@ -634,6 +634,20 @@ def lstat_sync(path, *rest):
     return BigIntStats(st) if bigint else Stats(st)
 
 
+def stat_stamp(path, *_):
+    st = _os.stat(_node_path(path, "fs.statSync"))
+    return f"{st.st_mtime_ns}:{st.st_size}:{st.st_ino}"
+
+
+def stat_mtime_ns(path, *_):
+    return str(_os.stat(_node_path(path, "fs.statSync")).st_mtime_ns)
+
+
+def stat_file(path, *_):
+    st = _os.stat(_node_path(path, "fs.statSync"))
+    return [str(st.st_mtime_ns), _js_num(st.st_size), _stat.S_ISREG(st.st_mode)]
+
+
 def fstat_sync(fd, *rest):
     if rest or isinstance(fd, bool) or not isinstance(fd, int):
         raise TypeError("ts2py: fs.fstatSync of anything but a descriptor is outside the subset")
@@ -1296,6 +1310,7 @@ def parse_native(path, *_):
         "type": stored.type,
         "body": stored.body,
         "meta": meta,
+        "front": front,
     }
 
 

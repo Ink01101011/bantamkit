@@ -1147,3 +1147,92 @@ faster, each pinned equal to the code it shortcuts in `tests/j90p7b.rs`:
 `fs.statSync` / `fs.lstatSync` check their one option without building a set, and `BigIntStats`
 stores its five fields one by one: the same dict, in the same order.
 
+
+## J90-PF rules: the pure build's speed, without a changed answer (#316 G4)
+
+Every rule below writes, where it fires, the helper's own first branch under a guard at least as
+strict as the helper's test for it, and the unchanged helper call otherwise; or a runtime fast path
+that answers exactly what the general path answers for the inputs it admits. Pinned in
+`tools/ts2py-bantamkit/tests/j90pf.rs` (below); measured in docs/porting.md (*after J90-PF*).
+
+**Expressions in a loop body (`hot`, as J90-P6).**
+
+| Call | Expansion |
+|---|---|
+| `_js_m_get(m, k)` | the J90-P6 form, its key test widened: `(type(k) is str or type(k) is int and -9007199254740992 <= k <= 9007199254740992)` (a safe int is its own `_js_key` too); no key test for a string literal or an index literal (a non-negative int under 16 digits) |
+| `_js_m_has(m, k)` | `(k in m._entries if type(m) is _JsMap and <key test> else k in m._items if type(m) is _JsSet and <key test> else _js_m_has(m, k))` |
+| `_js_strict_eq(a, b)` / `not ...` | the J90-P6 form, and two safe ints (`_js_strict_eq`'s second branch): `... if type(a) is type(b) is str or type(a) is type(b) is int and -2^53 <= a <= 2^53 and -2^53 <= b <= 2^53 else ...` |
+| `_js_list_at(xs, i)` (a proven list) | `(xs[i] if type(i) is int and 0 <= i < len(xs) else _js_list_at(xs, i))`; both names (the guard tests no receiver) |
+| `_js_m_push(xs, x)` as a value | `(xs.append(x) or len(xs) if type(xs) is list else _js_m_push(xs, x))`; `xs` a name and `x` a name or a literal, so `len(xs)` reads the list the item went to |
+
+**Statements in a loop body (`hot_stmt`).** Each is an `if`/`else` whose `else` is the call as
+written; the result is discarded, as the statement discards the call's.
+
+| Statement | First arm, under its guard |
+|---|---|
+| `m.set(k, v)` | `m._entries[k] = v` if `type(m) is _JsMap`, the key test above and `m._keys is None` (`_js_m_set`'s own first branch); `m` a name, `k` a name or a literal, `v` a name, a literal or a list display of them (`[row]`), so nothing runs between the guard and the store |
+| `xs.push(x)` | `xs.append(x)` if `type(xs) is list`; `xs` a name, `x` anything: `xs.append` reads the list before `x` is evaluated, as JS reads the receiver first |
+| `xs[i] = v` | `xs[i] = v` if `type(xs) is list and type(i) is int and 0 <= i < len(xs)` (`_js_put`'s first branch); `xs` and `i` names (or `i` an index literal), `v` a name or a literal |
+
+**Reads by a number (member lowering).** In a loop body, `o[k]` with `o` a name and `k` a name the
+compiler proved a number, or an index literal: `(o[k] if type(o) is list and type(k) is int and 0 <=
+k < len(o) else _js_get(o, k))`, `_js_get`'s own branch for a list and an int. A key not proven a
+number is left to `_js_get` (a dict read would pay a list test for nothing).
+
+**Anywhere.**
+
+- `[...new Set(xs)].sort(cmp)`, `cmp` an adapter whose row promises `compare-codepoints` (not a
+  local) and `Set` the builtin, with the receiver lowered as exactly `[*_JsSet(<xs>)]`:
+  `_js_sort_unique(xs, cmp)`, which answers `sorted(set(xs))` for a list of `str`s (and
+  `cmp._js_codepoint_order`, as `_js_m_sort` checks it) and the general lowering otherwise.
+- `xs.sort((a, b) => a - b)` (or `b - a`), the key the first parameter itself:
+  `_js_sort_num(xs, descending, compare)`: a list of two or more safe ints sorts by value (ties are
+  equal ints, so every stable order is the same), anything else is `_js_sort_keyed` as before.
+- `s.endsWith(lit)` / `s.startsWith(lit)`, `lit` an ASCII string literal: `s.endswith(lit)` for a
+  proven `str`, else `(s.endswith(lit) if type(s) is str else _js_m_endsWith(s, lit))` with `s` a
+  name. An ASCII unit is its own code point and no surrogate unit equals one, so comparing code
+  points is comparing code units; a literal that is not ASCII (`'\ude00'`) keeps the helper.
+- `xs.push(a, b, ...)` as a statement on a proven list: `xs.extend((a, b, ...,))`, the helper's own
+  `extend`, the receiver read first.
+
+**Runtime fast paths.** `_js_str` of a safe int is `str(v)`; `_js_m_get` / `_js_m_set` /
+`_js_m_has` take a safe-int key as its own tag; `_js_rows(m, 2, ...)` of a plain Map with no kept
+keys walks `_JsMap.__iter__`'s own snapshot and yields each pair as a tuple (always unpacked at
+once); `_js_json_stringify` of a list of strings, booleans, nulls, safe ints and lists of them (64
+levels, no list twice in a level) is `json.dumps(ensure_ascii=False, separators=(",", ":"))` when
+the text holds no lone surrogate (strict UTF-8 encodes it); `_js_json_ints_exact` counts a `-0`
+only after `[`, `,`, `:` or the start (past blanks), as it already counted a 16-digit run; and
+`_js_json_parse` takes that scan for a text of 513-2048 characters with a comma every eight or fewer
+(an index shard) as well as past 2048. Which decoder parses is a cost: both read every text the
+scan admits to one value.
+
+**Adapters** (`ts2py.toml`): `statStamp`, `statMtimeNs` and `statFile`
+(`runtime-ts/src/storage/statstamp.ts`) answer the hot index's three stat reads from `os.stat`
+without a `BigIntStats` object; `parseNative` also returns `front`, the text it split.
+
+Pinned in `tests/j90pf.rs`: `probe()` and `fuzz(3000)` of `tests/fixtures/j90pf_probe.ts` equal to
+what Node v26.13.0 printed (a pool of 30 values through `===` / `!==`, a Map and a Set by every pool
+value with `-0`, NaN, `true`, 2^53 and 2^53 + 1 from JSON, a Map keyed by ints, `push` as a value,
+as a statement and of several items, stores at and past the end, reads by a counted and a literal
+index of a list, a string with an astral character and an object, `[...new Set(xs)]` with duplicates
+and a lone surrogate, `a - b` sorts with a tie, `-0`, big ints and NaN, `endsWith` / `startsWith`
+with astral and lone surrogates and a non-ASCII needle, `JSON.stringify` with every escape, a lone
+surrogate, shared lists and big ints, `JSON.parse` with `-0` in slugs, as tokens, in an exponent,
+and long texts); every expansion called from Python with values JS cannot build and held to the
+helper (value and type, or the same exception); the fast arms TAKEN with the helpers patched to
+raise; each runtime fast path against its general path over seeded inputs (4,000 sorts each way,
+2,000 Map walks deleting mid-walk, 3,000 Map and Set reads and writes, 6,000 stringified values,
+6,000 JSON texts); the stat adapters against `BigIntStats` over a file, a directory, a symlink, a
+dangling symlink and missing paths; `front` against the split text (CRLF, a nested `---`).
+
+Mutations, each red in `cargo test --test j90pf` (a scratch copy of both crates and
+`runtime-py/src`, one at a time): `_js_sort_num` without the safe range; `_js_sort_unique` without
+its `str`-only test; `_js_json_plain` without the int range, and with a list twice in a level
+allowed; `_js_json_stringify` without the lone-surrogate check; `_js_json_ints_exact` treating no
+`-0` as a token; `_js_rows`' Map path taken with kept keys; `_js_m_get` and `_js_str` with an
+unbounded int; the `get` / `has` key test with an unbounded int; the `===` int arm unbounded; the
+store without `0 <=`; the push value without its length; the member read on any receiver; `endsWith`
+of any literal (red once the probe's receiver was a name, which the rule requires); the statement
+`set` with kept keys allowed; the `has` Set arm on any receiver with `_items`; `statFile` through
+`lstat`; `statStamp` with `st_dev` for `st_ino`; `parseNative`'s `front` split from the text read
+without universal newlines.

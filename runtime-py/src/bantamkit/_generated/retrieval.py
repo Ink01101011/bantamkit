@@ -161,7 +161,7 @@ def _tokenize_v2__typed(text):
             flush_word(i)
             if run_at < 0:
                 run_at = i
-        elif _js_truthy(cp >= 97 and cp <= 122 or cp >= 48 and cp <= 57 or cp >= 65 and cp <= 90 if cp < 128 else py_wordchar(_js_get(s, i) if step == 1 else _js_m_slice(s, i, _js_num(i + 2)))):
+        elif _js_truthy(cp >= 97 and cp <= 122 or cp >= 48 and cp <= 57 or cp >= 65 and cp <= 90 if cp < 128 else py_wordchar((s[i] if type(s) is list and type(i) is int and 0 <= i < len(s) else _js_get(s, i)) if step == 1 else _js_m_slice(s, i, _js_num(i + 2)))):
             flush_run(i)
             if word_at < 0:
                 word_at = i
@@ -216,7 +216,7 @@ def tokenize_v2(text):
             flush_word(i)
             if run_at < 0:
                 run_at = i
-        elif _js_truthy(cp >= 97 and cp <= 122 or cp >= 48 and cp <= 57 or cp >= 65 and cp <= 90 if cp < 128 else py_wordchar(_js_get(s, i) if step == 1 else _js_m_slice(s, i, _js_num(i + 2)))):
+        elif _js_truthy(cp >= 97 and cp <= 122 or cp >= 48 and cp <= 57 or cp >= 65 and cp <= 90 if cp < 128 else py_wordchar((s[i] if type(s) is list and type(i) is int and 0 <= i < len(s) else _js_get(s, i)) if step == 1 else _js_m_slice(s, i, _js_num(i + 2)))):
             flush_run(i)
             if word_at < 0:
                 word_at = i
@@ -262,7 +262,7 @@ def doc_terms(d):
     for field, boost in _js_rows(FIELD_BOOST, 2, (0, 1)):
         toks = _js_get(f, field)
         for t in toks:
-            _js_m_set(weights, t, (_js_h1 + boost if type(_js_h1 := _js_coalesce_value((weights._entries.get(t, _JS_UNDEFINED) if type(weights) is _JsMap and type(t) is str else _js_m_get(weights, t)), 0)) is int and type(boost) is int and -4503599627370496 <= boost <= 4503599627370496 and -4503599627370496 <= _js_h1 <= 4503599627370496 else _js_add(_js_h1, boost)))
+            _js_m_set(weights, t, (_js_h1 + boost if type(_js_h1 := _js_coalesce_value((weights._entries.get(t, _JS_UNDEFINED) if type(weights) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(weights, t)), 0)) is int and type(boost) is int and -4503599627370496 <= boost <= 4503599627370496 and -4503599627370496 <= _js_h1 <= 4503599627370496 else _js_add(_js_h1, boost)))
         length = _js_add(length, _js_mul(boost, _js_len(toks)))
     return [weights, length]
 
@@ -281,7 +281,7 @@ def _length_of__typed(lens):
     length = 0
     i = 0
     while i < len(FIELD_BOOST):
-        length = _js_add(length, _js_mul(_js_get(_js_list_at(FIELD_BOOST, i), 1), _js_list_at(lens, i)))
+        length = _js_add(length, _js_mul(_js_get((FIELD_BOOST[i] if type(i) is int and 0 <= i < len(FIELD_BOOST) else _js_list_at(FIELD_BOOST, i)), 1), (lens[i] if type(i) is int and 0 <= i < len(lens) else _js_list_at(lens, i))))
         i = _js_num(i + 1)
     return length
 
@@ -292,7 +292,7 @@ def length_of(lens):
     length = 0
     i = 0
     while i < len(FIELD_BOOST):
-        length = _js_add(length, _js_mul(_js_get(_js_list_at(FIELD_BOOST, i), 1), _js_get(lens, i)))
+        length = _js_add(length, _js_mul(_js_get((FIELD_BOOST[i] if type(i) is int and 0 <= i < len(FIELD_BOOST) else _js_list_at(FIELD_BOOST, i)), 1), (lens[i] if type(lens) is list and type(i) is int and 0 <= i < len(lens) else _js_get(lens, i))))
         i = _js_num(i + 1)
     return length
 
@@ -305,14 +305,14 @@ def _bm25_postings__typed(q, n, total, df, lengths, postings):
     norm = [_js_mul(BM25_K1, _js_add(1 - BM25_B, _js_div(_js_mul(BM25_B, dl), avgdl))) for dl in lengths]
     s = _js_m_map(lengths, lambda *_: 0)
     for t in q:
-        hits = (postings._entries.get(t, _JS_UNDEFINED) if type(postings) is _JsMap and type(t) is str else _js_m_get(postings, t))
+        hits = (postings._entries.get(t, _JS_UNDEFINED) if type(postings) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(postings, t))
         if hits is _JS_UNDEFINED or _js_strict_eq(_js_len(hits), 0):
             continue
-        d = _js_coalesce_value((df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and type(t) is str else _js_m_get(df, t)), 0)
+        d = _js_coalesce_value((df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(df, t)), 0)
         idf = py_log(_js_add(1, _js_div(_js_num(n - _js_num(d)) + 0.5, _js_add(d, 0.5))))
         for i, w in _js_rows(hits, 2, (0, 1)):
             if not _js_strict_eq(w, 0):
-                _js_put(s, i, _js_add(_js_list_at(s, i), _js_div(_js_mul(idf, _js_mul(w, k1)), _js_add(w, _js_list_at(norm, i)))))
+                _js_put(s, i, _js_add((s[i] if type(i) is int and 0 <= i < len(s) else _js_list_at(s, i)), _js_div(_js_mul(idf, _js_mul(w, k1)), _js_add(w, (norm[i] if type(i) is int and 0 <= i < len(norm) else _js_list_at(norm, i))))))
     return _js_m_map(s, lambda _js_a0=_JS_UNDEFINED, *_: py_round9(_js_a0))
 
 
@@ -326,14 +326,14 @@ def bm25_postings(q, n, total, df, lengths, postings):
     norm = [_js_mul(BM25_K1, _js_add(1 - BM25_B, _js_div(_js_mul(BM25_B, dl), avgdl))) for dl in _js_array("map", lengths)]
     s = _js_m_map(lengths, lambda *_: 0)
     for t in q:
-        hits = (postings._entries.get(t, _JS_UNDEFINED) if type(postings) is _JsMap and type(t) is str else _js_m_get(postings, t))
+        hits = (postings._entries.get(t, _JS_UNDEFINED) if type(postings) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(postings, t))
         if hits is _JS_UNDEFINED or _js_strict_eq(_js_len(hits), 0):
             continue
-        d = _js_coalesce_value((df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and type(t) is str else _js_m_get(df, t)), 0)
+        d = _js_coalesce_value((df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(df, t)), 0)
         idf = py_log(_js_add(1, _js_div(_js_num(_js_num(n) - _js_num(d)) + 0.5, _js_add(d, 0.5))))
         for i, w in _js_rows(hits, 2, (0, 1)):
             if not _js_strict_eq(w, 0):
-                _js_put(s, i, _js_add(_js_list_at(s, i), _js_div(_js_mul(idf, _js_mul(w, k1)), _js_add(w, _js_list_at(norm, i)))))
+                _js_put(s, i, _js_add((s[i] if type(i) is int and 0 <= i < len(s) else _js_list_at(s, i)), _js_div(_js_mul(idf, _js_mul(w, k1)), _js_add(w, (norm[i] if type(i) is int and 0 <= i < len(norm) else _js_list_at(norm, i))))))
     return _js_m_map(s, lambda _js_a0=_JS_UNDEFINED, *_: py_round9(_js_a0))
 
 
@@ -350,18 +350,18 @@ def _bm25_segments__typed(q, n, total, df, lengths, segs):
             norm[i] = BM25_K1 * (1 - BM25_B + (BM25_B * lengths[i] / avgdl if avgdl else _js_div(BM25_B * lengths[i], avgdl)))
     else:
         while _js_lt(i, m):
-            _js_ta_put(norm, i, _js_mul(BM25_K1, _js_add(1 - BM25_B, _js_div(_js_mul(BM25_B, _js_list_at(lengths, i)), avgdl))))
+            _js_ta_put(norm, i, _js_mul(BM25_K1, _js_add(1 - BM25_B, _js_div(_js_mul(BM25_B, (lengths[i] if type(i) is int and 0 <= i < len(lengths) else _js_list_at(lengths, i))), avgdl))))
             i = _js_add(i, 1)
     s = _js_f64_new(m)
     for t in q:
-        seg = (segs._entries.get(t, _JS_UNDEFINED) if type(segs) is _JsMap and type(t) is str else _js_m_get(segs, t))
+        seg = (segs._entries.get(t, _JS_UNDEFINED) if type(segs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(segs, t))
         if seg is _JS_UNDEFINED or _js_strict_eq(_js_len(seg), 0):
             continue
-        d = _js_coalesce_value((df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and type(t) is str else _js_m_get(df, t)), 0)
+        d = _js_coalesce_value((df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(df, t)), 0)
         idf = py_log(_js_add(1, _js_div(_js_num(n - _js_num(d)) + 0.5, _js_add(d, 0.5))))
         j = 0
         while _js_lt(j, _js_len(seg)):
-            a = _js_get(seg, j)
+            a = (seg[j] if type(seg) is list and type(j) is int and 0 <= j < len(seg) else _js_get(seg, j))
             b = _js_add(a, _js_get(seg, _js_num(j + 1)))
             w = _js_get(seg, _js_num(j + 2))
             if not _js_strict_eq(w, 0):
@@ -408,14 +408,14 @@ def bm25_segments(q, n, total, df, lengths, segs):
             i = _js_add(i, 1)
     s = _js_f64_new(m)
     for t in q:
-        seg = (segs._entries.get(t, _JS_UNDEFINED) if type(segs) is _JsMap and type(t) is str else _js_m_get(segs, t))
+        seg = (segs._entries.get(t, _JS_UNDEFINED) if type(segs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(segs, t))
         if seg is _JS_UNDEFINED or _js_strict_eq(_js_len(seg), 0):
             continue
-        d = _js_coalesce_value((df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and type(t) is str else _js_m_get(df, t)), 0)
+        d = _js_coalesce_value((df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(df, t)), 0)
         idf = py_log(_js_add(1, _js_div(_js_num(_js_num(n) - _js_num(d)) + 0.5, _js_add(d, 0.5))))
         j = 0
         while _js_lt(j, _js_len(seg)):
-            a = _js_get(seg, j)
+            a = (seg[j] if type(seg) is list and type(j) is int and 0 <= j < len(seg) else _js_get(seg, j))
             b = _js_add(a, _js_get(seg, _js_num(j + 1)))
             w = _js_get(seg, _js_num(j + 2))
             if not _js_strict_eq(w, 0):
@@ -447,11 +447,11 @@ def _bm25_pooled__typed(q, n, total, df, rows):
     postings = _JsMap([[t, []] for t in q])
     i = 0
     while i < len(rows):
-        weights = _js_get(_js_list_at(rows, i), 0)
+        weights = _js_get((rows[i] if type(i) is int and 0 <= i < len(rows) else _js_list_at(rows, i)), 0)
         for t in q:
-            w = (weights._entries.get(t, _JS_UNDEFINED) if type(weights) is _JsMap and type(t) is str else _js_m_get(weights, t))
+            w = (weights._entries.get(t, _JS_UNDEFINED) if type(weights) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(weights, t))
             if w is not _JS_UNDEFINED:
-                _js_m_push((postings._entries.get(t, _JS_UNDEFINED) if type(postings) is _JsMap and type(t) is str else _js_m_get(postings, t)), [i, w])
+                _js_m_push((postings._entries.get(t, _JS_UNDEFINED) if type(postings) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(postings, t)), [i, w])
         i = _js_num(i + 1)
     return _bm25_postings__typed(q, n, total, df, _js_m_map(rows, lambda _js_arg0, *_: (lambda _, dl: dl)(*_js_destructure(_js_arg0, 2))), postings)
 
@@ -462,11 +462,11 @@ def bm25_pooled(q, n, total, df, rows):
     postings = _JsMap([[t, []] for t in _js_array("map", q)])
     i = 0
     while _js_lt(i, _js_len(rows)):
-        weights = _js_get(_js_get(rows, i), 0)
+        weights = _js_get((rows[i] if type(rows) is list and type(i) is int and 0 <= i < len(rows) else _js_get(rows, i)), 0)
         for t in q:
-            w = (weights._entries.get(t, _JS_UNDEFINED) if type(weights) is _JsMap and type(t) is str else _js_m_get(weights, t))
+            w = (weights._entries.get(t, _JS_UNDEFINED) if type(weights) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(weights, t))
             if w is not _JS_UNDEFINED:
-                _js_m_push((postings._entries.get(t, _JS_UNDEFINED) if type(postings) is _JsMap and type(t) is str else _js_m_get(postings, t)), [i, w])
+                _js_m_push((postings._entries.get(t, _JS_UNDEFINED) if type(postings) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(postings, t)), [i, w])
         i = _js_num(i + 1)
     return bm25_postings(q, n, total, df, _js_m_map(rows, lambda _js_arg1, *_: (lambda _, dl: dl)(*_js_destructure(_js_arg1, 2))), postings)
 
@@ -499,13 +499,19 @@ def _bm25_rows__typed(query, rows):
         return _JS_UNDEFINED
     i = 0
     while i < len(rows):
-        r = _js_coalesce_value(_js_list_at(rows, i), None)
+        r = _js_coalesce_value((rows[i] if type(i) is int and 0 <= i < len(rows) else _js_list_at(rows, i)), None)
         if r is None:
-            _js_put(lengths, i, 0)
+            if type(lengths) is list and type(i) is int and 0 <= i < len(lengths):
+                lengths[i] = 0
+            else:
+                _js_put(lengths, i, 0)
             total = _js_add(total, 0)
         else:
             w, dl = _js_destructure(r, 2)
-            _js_put(lengths, i, dl)
+            if type(lengths) is list and type(i) is int and 0 <= i < len(lengths):
+                lengths[i] = dl
+            else:
+                _js_put(lengths, i, dl)
             total = _js_add(total, dl)
             if _js_in("scan", w):
                 row = i
@@ -513,17 +519,17 @@ def _bm25_rows__typed(query, rows):
             else:
                 k = 0
                 while k < len(q):
-                    v = _js_m_get(w, _js_list_at(q, k))
+                    v = _js_m_get(w, (q[k] if type(k) is int and 0 <= k < len(q) else _js_list_at(q, k)))
                     if v is not _JS_UNDEFINED:
-                        _js_m_push(_js_list_at(hits, k), [i, v])
+                        _js_m_push((hits[k] if type(k) is int and 0 <= k < len(hits) else _js_list_at(hits, k)), [i, v])
                     k = _js_num(k + 1)
         i = _js_num(i + 1)
     df = _JsMap()
     postings = _JsMap()
     k = 0
     while k < len(q):
-        _js_m_set(df, _js_list_at(q, k), _js_len(_js_list_at(hits, k)))
-        _js_m_set(postings, _js_list_at(q, k), _js_list_at(hits, k))
+        _js_m_set(df, (q[k] if type(k) is int and 0 <= k < len(q) else _js_list_at(q, k)), _js_len((hits[k] if type(k) is int and 0 <= k < len(hits) else _js_list_at(hits, k))))
+        _js_m_set(postings, (q[k] if type(k) is int and 0 <= k < len(q) else _js_list_at(q, k)), (hits[k] if type(k) is int and 0 <= k < len(hits) else _js_list_at(hits, k)))
         k = _js_num(k + 1)
     return bm25_postings(q, len(rows), total, df, lengths, postings)
 
@@ -544,13 +550,19 @@ def bm25_rows(query, rows):
         return _JS_UNDEFINED
     i = 0
     while _js_lt(i, _js_len(rows)):
-        r = _js_coalesce_value(_js_get(rows, i), None)
+        r = _js_coalesce_value((rows[i] if type(rows) is list and type(i) is int and 0 <= i < len(rows) else _js_get(rows, i)), None)
         if r is None:
-            _js_put(lengths, i, 0)
+            if type(lengths) is list and type(i) is int and 0 <= i < len(lengths):
+                lengths[i] = 0
+            else:
+                _js_put(lengths, i, 0)
             total = _js_add(total, 0)
         else:
             w, dl = _js_destructure(r, 2)
-            _js_put(lengths, i, dl)
+            if type(lengths) is list and type(i) is int and 0 <= i < len(lengths):
+                lengths[i] = dl
+            else:
+                _js_put(lengths, i, dl)
             total = _js_add(total, dl)
             if _js_in("scan", w):
                 row = i
@@ -558,17 +570,17 @@ def bm25_rows(query, rows):
             else:
                 k = 0
                 while k < len(q):
-                    v = _js_m_get(w, _js_list_at(q, k))
+                    v = _js_m_get(w, (q[k] if type(k) is int and 0 <= k < len(q) else _js_list_at(q, k)))
                     if v is not _JS_UNDEFINED:
-                        _js_m_push(_js_list_at(hits, k), [i, v])
+                        _js_m_push((hits[k] if type(k) is int and 0 <= k < len(hits) else _js_list_at(hits, k)), [i, v])
                     k = _js_num(k + 1)
         i = _js_num(i + 1)
     df = _JsMap()
     postings = _JsMap()
     k = 0
     while k < len(q):
-        _js_m_set(df, _js_list_at(q, k), _js_len(_js_list_at(hits, k)))
-        _js_m_set(postings, _js_list_at(q, k), _js_list_at(hits, k))
+        _js_m_set(df, (q[k] if type(k) is int and 0 <= k < len(q) else _js_list_at(q, k)), _js_len((hits[k] if type(k) is int and 0 <= k < len(hits) else _js_list_at(hits, k))))
+        _js_m_set(postings, (q[k] if type(k) is int and 0 <= k < len(q) else _js_list_at(q, k)), (hits[k] if type(k) is int and 0 <= k < len(hits) else _js_list_at(hits, k)))
         k = _js_num(k + 1)
     return bm25_postings(q, _js_len(rows), total, df, lengths, postings)
 
@@ -707,8 +719,8 @@ def _gate__typed(scores, ratio=_JS_UNDEFINED, floor=_JS_UNDEFINED):
     best = 0
     i = 0
     while i < len(scores):
-        if i == 0 or _js_gt(_js_list_at(scores, i), best):
-            best = _js_list_at(scores, i)
+        if i == 0 or _js_gt((scores[i] if type(i) is int and 0 <= i < len(scores) else _js_list_at(scores, i)), best):
+            best = (scores[i] if type(i) is int and 0 <= i < len(scores) else _js_list_at(scores, i))
         i = _js_num(i + 1)
     return [_js_gt(s, 0) and _js_ge(s, floor) and _js_ge(s, _js_mul(ratio, best)) for s in scores]
 
@@ -723,8 +735,8 @@ def gate(scores, ratio=_JS_UNDEFINED, floor=_JS_UNDEFINED):
     best = 0
     i = 0
     while _js_lt(i, _js_len(scores)):
-        if i == 0 or _js_gt(_js_get(scores, i), best):
-            best = _js_get(scores, i)
+        if i == 0 or _js_gt((scores[i] if type(scores) is list and type(i) is int and 0 <= i < len(scores) else _js_get(scores, i)), best):
+            best = (scores[i] if type(scores) is list and type(i) is int and 0 <= i < len(scores) else _js_get(scores, i))
         i = _js_num(i + 1)
     return [_js_gt(s, 0) and _js_ge(s, floor) and _js_ge(s, _js_mul(ratio, best)) for s in _js_array("map", scores)]
 
@@ -780,7 +792,7 @@ def _rank_columns__typed(scores, weights, ratio=_JS_UNDEFINED, floor=_JS_UNDEFIN
                 best = x
     else:
         while i < m:
-            x = _js_list_at(scores, i)
+            x = (scores[i] if type(i) is int and 0 <= i < len(scores) else _js_list_at(scores, i))
             if i == 0 or _js_gt(x, best):
                 best = x
             i = _js_num(i + 1)
@@ -797,10 +809,10 @@ def _rank_columns__typed(scores, weights, ratio=_JS_UNDEFINED, floor=_JS_UNDEFIN
                 final[i] = _js_t3 if type(_js_t3) is float else _js_to_f64(_js_t3)
     else:
         while i < m:
-            x = _js_list_at(scores, i)
+            x = (scores[i] if type(i) is int and 0 <= i < len(scores) else _js_list_at(scores, i))
             if _js_gt(x, 0) and _js_ge(x, least):
                 admitted.append(i)
-                _js_ta_put(final, i, py_round_float9(_js_mul(x, _js_list_at(weights, i))))
+                _js_ta_put(final, i, py_round_float9(_js_mul(x, (weights[i] if type(i) is int and 0 <= i < len(weights) else _js_list_at(weights, i)))))
             i = _js_num(i + 1)
     return _js_sort_by_f64(admitted, final, True, lambda a, b, *_: _js_or(_js_num(_js_num(_js_ta_get(final, b)) - _js_num(_js_ta_get(final, a))), lambda: _js_num(_js_num(a) - _js_num(b))))
 
@@ -822,7 +834,7 @@ def rank_columns(scores, weights, ratio=_JS_UNDEFINED, floor=_JS_UNDEFINED):
                 best = x
     else:
         while _js_lt(i, m):
-            x = _js_get(scores, i)
+            x = (scores[i] if type(scores) is list and type(i) is int and 0 <= i < len(scores) else _js_get(scores, i))
             if i == 0 or _js_gt(x, best):
                 best = x
             i = _js_num(i + 1)
@@ -839,10 +851,10 @@ def rank_columns(scores, weights, ratio=_JS_UNDEFINED, floor=_JS_UNDEFINED):
                 final[i] = _js_t4 if type(_js_t4) is float else _js_to_f64(_js_t4)
     else:
         while _js_lt(i, m):
-            x = _js_get(scores, i)
+            x = (scores[i] if type(scores) is list and type(i) is int and 0 <= i < len(scores) else _js_get(scores, i))
             if _js_gt(x, 0) and _js_ge(x, least):
                 admitted.append(i)
-                _js_ta_put(final, i, py_round_float9(_js_mul(x, _js_get(weights, i))))
+                _js_ta_put(final, i, py_round_float9(_js_mul(x, (weights[i] if type(weights) is list and type(i) is int and 0 <= i < len(weights) else _js_get(weights, i)))))
             i = _js_num(i + 1)
     return _js_sort_by_f64(admitted, final, True, lambda a, b, *_: _js_or(_js_num(_js_num(_js_ta_get(final, b)) - _js_num(_js_ta_get(final, a))), lambda: _js_num(_js_num(a) - _js_num(b))))
 
@@ -857,8 +869,8 @@ def _rank__typed(items, scores, usage, ratio=_JS_UNDEFINED, context=_JS_UNDEFINE
     order = []
     i = 0
     while i < len(items):
-        if _js_truthy(_js_list_at(admitted, i)):
-            _js_m_set(final, i, py_round9(_js_mul(_js_list_at(scores, i), weight(_js_list_at(items, i), usage, context))))
+        if _js_truthy((admitted[i] if type(i) is int and 0 <= i < len(admitted) else _js_list_at(admitted, i))):
+            _js_m_set(final, i, py_round9(_js_mul((scores[i] if type(i) is int and 0 <= i < len(scores) else _js_list_at(scores, i)), weight((items[i] if type(i) is int and 0 <= i < len(items) else _js_list_at(items, i)), usage, context))))
             order.append(i)
         i = _js_num(i + 1)
     return _js_sort_lex(order, ((lambda a, *_: _js_m_get(final, a), True, False), (lambda a, *_: _js_get(_js_list_at(items, a), "layerOrder"), False, False), (lambda a, *_: _js_get(_js_list_at(items, a), "name"), False, True),), lambda a, b, *_: _js_or(_js_or(_js_num(_js_num(_js_m_get(final, b)) - _js_num(_js_m_get(final, a))), lambda: _js_num(_js_num(_js_get(_js_list_at(items, a), "layerOrder")) - _js_num(_js_get(_js_list_at(items, b), "layerOrder")))), lambda: cmp_codepoint(_js_get(_js_list_at(items, a), "name"), _js_get(_js_list_at(items, b), "name"))))
@@ -876,8 +888,8 @@ def rank(items, scores, usage, ratio=_JS_UNDEFINED, context=_JS_UNDEFINED):
     order = []
     i = 0
     while _js_lt(i, _js_len(items)):
-        if _js_truthy(_js_list_at(admitted, i)):
-            _js_m_set(final, i, py_round9(_js_mul(_js_get(scores, i), weight(_js_get(items, i), usage, context))))
+        if _js_truthy((admitted[i] if type(i) is int and 0 <= i < len(admitted) else _js_list_at(admitted, i))):
+            _js_m_set(final, i, py_round9(_js_mul((scores[i] if type(scores) is list and type(i) is int and 0 <= i < len(scores) else _js_get(scores, i)), weight((items[i] if type(items) is list and type(i) is int and 0 <= i < len(items) else _js_get(items, i)), usage, context))))
             order.append(i)
         i = _js_num(i + 1)
     return _js_sort_lex(order, ((lambda a, *_: _js_m_get(final, a), True, False), (lambda a, *_: _js_get(_js_get(items, a), "layerOrder"), False, False), (lambda a, *_: _js_get(_js_get(items, a), "name"), False, True),), lambda a, b, *_: _js_or(_js_or(_js_num(_js_num(_js_m_get(final, b)) - _js_num(_js_m_get(final, a))), lambda: _js_num(_js_num(_js_get(_js_get(items, a), "layerOrder")) - _js_num(_js_get(_js_get(items, b), "layerOrder")))), lambda: cmp_codepoint(_js_get(_js_get(items, a), "name"), _js_get(_js_get(items, b), "name"))))

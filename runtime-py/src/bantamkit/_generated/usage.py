@@ -277,10 +277,10 @@ def _weights_of__typed(events, now):
         fact = _js_get(e, "fact")
         if kind == "folded":
             age = _js_div(_js_div(_js_num(_js_num(t_now) - _js_num(parse_ts(_js_get(e, "ts")))), 1000), 86400)
-            _js_m_set(w, fact, _js_add(_js_coalesce_value((w._entries.get(fact, _JS_UNDEFINED) if type(w) is _JsMap and type(fact) is str else _js_m_get(w, fact)), 0), _js_mul(_clamp(_js_get(e, "weight")), py_pow(0.5, _js_div(age, USAGE_HALF_LIFE_DAYS)))))
+            _js_m_set(w, fact, _js_add(_js_coalesce_value((w._entries.get(fact, _JS_UNDEFINED) if type(w) is _JsMap and (type(fact) is str or type(fact) is int and -9007199254740992 <= fact <= 9007199254740992) else _js_m_get(w, fact)), 0), _js_mul(_clamp(_js_get(e, "weight")), py_pow(0.5, _js_div(age, USAGE_HALF_LIFE_DAYS)))))
         elif _js_m_includes(_USE, kind):
             age = _js_max(0, _js_div(_js_div(_js_num(_js_num(t_now) - _js_num(parse_ts(_js_get(e, "ts")))), 1000), 86400))
-            _js_m_set(w, fact, _js_add(_js_coalesce_value((w._entries.get(fact, _JS_UNDEFINED) if type(w) is _JsMap and type(fact) is str else _js_m_get(w, fact)), 0), py_pow(0.5, _js_div(age, USAGE_HALF_LIFE_DAYS))))
+            _js_m_set(w, fact, _js_add(_js_coalesce_value((w._entries.get(fact, _JS_UNDEFINED) if type(w) is _JsMap and (type(fact) is str or type(fact) is int and -9007199254740992 <= fact <= 9007199254740992) else _js_m_get(w, fact)), 0), py_pow(0.5, _js_div(age, USAGE_HALF_LIFE_DAYS))))
     return w
 
 
@@ -294,10 +294,10 @@ def _weights_of(events, now):
         fact = _js_get(e, "fact")
         if kind == "folded":
             age = _js_div(_js_div(_js_num(_js_num(t_now) - _js_num(parse_ts(_js_get(e, "ts")))), 1000), 86400)
-            _js_m_set(w, fact, _js_add(_js_coalesce_value((w._entries.get(fact, _JS_UNDEFINED) if type(w) is _JsMap and type(fact) is str else _js_m_get(w, fact)), 0), _js_mul(_clamp(_js_get(e, "weight")), py_pow(0.5, _js_div(age, USAGE_HALF_LIFE_DAYS)))))
+            _js_m_set(w, fact, _js_add(_js_coalesce_value((w._entries.get(fact, _JS_UNDEFINED) if type(w) is _JsMap and (type(fact) is str or type(fact) is int and -9007199254740992 <= fact <= 9007199254740992) else _js_m_get(w, fact)), 0), _js_mul(_clamp(_js_get(e, "weight")), py_pow(0.5, _js_div(age, USAGE_HALF_LIFE_DAYS)))))
         elif _js_m_includes(_USE, kind):
             age = _js_max(0, _js_div(_js_div(_js_num(_js_num(t_now) - _js_num(parse_ts(_js_get(e, "ts")))), 1000), 86400))
-            _js_m_set(w, fact, _js_add(_js_coalesce_value((w._entries.get(fact, _JS_UNDEFINED) if type(w) is _JsMap and type(fact) is str else _js_m_get(w, fact)), 0), py_pow(0.5, _js_div(age, USAGE_HALF_LIFE_DAYS))))
+            _js_m_set(w, fact, _js_add(_js_coalesce_value((w._entries.get(fact, _JS_UNDEFINED) if type(w) is _JsMap and (type(fact) is str or type(fact) is int and -9007199254740992 <= fact <= 9007199254740992) else _js_m_get(w, fact)), 0), py_pow(0.5, _js_div(age, USAGE_HALF_LIFE_DAYS))))
     return w
 
 
@@ -375,7 +375,7 @@ class UsageLedger(_JsObject):
     def keywordsCopy(self, fact):
         found = None
         for e in self.events():
-            if (_js_h1 != fact if type(_js_h1 := _js_get(e, "fact")) is type(fact) is str else not _js_strict_eq(_js_h1, fact)) or _js_get(e, "kind") != "save":
+            if (_js_h1 != fact if type(_js_h1 := _js_get(e, "fact")) is type(fact) is str or type(_js_h1) is type(fact) is int and -9007199254740992 <= _js_h1 <= 9007199254740992 and -9007199254740992 <= fact <= 9007199254740992 else not _js_strict_eq(_js_h1, fact)) or _js_get(e, "kind") != "save":
                 continue
             if isinstance(_js_get(e, "keywords"), list):
                 found = [k for k in _js_array("filter", _js_get(e, "keywords")) if isinstance(k, str)]
@@ -446,12 +446,12 @@ def _reduce_usage__typed(pairs, now):
     last = _last_used_of__typed(_js_m_map(read, lambda _js_arg5, *_: (lambda e: e)(*_js_destructure(_js_arg5, 1))))
     out = []
     for fact in order:
-        weight = (w._entries.get(fact, _JS_UNDEFINED) if type(w) is _JsMap and type(fact) is str else _js_m_get(w, fact))
+        weight = (w._entries.get(fact, _JS_UNDEFINED) if type(w) is _JsMap and (type(fact) is str or type(fact) is int and -9007199254740992 <= fact <= 9007199254740992) else _js_m_get(w, fact))
         if weight is not _JS_UNDEFINED:
-            at = (last._entries.get(fact, _JS_UNDEFINED) if type(last) is _JsMap and type(fact) is str else _js_m_get(last, fact))
+            at = (last._entries.get(fact, _JS_UNDEFINED) if type(last) is _JsMap and (type(fact) is str or type(fact) is int and -9007199254740992 <= fact <= 9007199254740992) else _js_m_get(last, fact))
             head = _js_json_stringify({"ts": now, "fact": fact, "kind": "folded"} if at is _JS_UNDEFINED else {"ts": now, "fact": fact, "kind": "folded", "last": at})
             out.append(_js_str(_js_m_slice(head, 0, -1)) + ",\"weight\":" + _js_m_toFixed(_clamp(weight), 9) + "}")
-        save = (latest_save._entries.get(fact, _JS_UNDEFINED) if type(latest_save) is _JsMap and type(fact) is str else _js_m_get(latest_save, fact))
+        save = (latest_save._entries.get(fact, _JS_UNDEFINED) if type(latest_save) is _JsMap and (type(fact) is str or type(fact) is int and -9007199254740992 <= fact <= 9007199254740992) else _js_m_get(latest_save, fact))
         if save is not _JS_UNDEFINED:
             out.append(save)
     return out
@@ -474,12 +474,12 @@ def reduce_usage(pairs, now):
     last = _last_used_of__typed(_js_m_map(read, lambda _js_arg7, *_: (lambda e: e)(*_js_destructure(_js_arg7, 1))))
     out = []
     for fact in order:
-        weight = (w._entries.get(fact, _JS_UNDEFINED) if type(w) is _JsMap and type(fact) is str else _js_m_get(w, fact))
+        weight = (w._entries.get(fact, _JS_UNDEFINED) if type(w) is _JsMap and (type(fact) is str or type(fact) is int and -9007199254740992 <= fact <= 9007199254740992) else _js_m_get(w, fact))
         if weight is not _JS_UNDEFINED:
-            at = (last._entries.get(fact, _JS_UNDEFINED) if type(last) is _JsMap and type(fact) is str else _js_m_get(last, fact))
+            at = (last._entries.get(fact, _JS_UNDEFINED) if type(last) is _JsMap and (type(fact) is str or type(fact) is int and -9007199254740992 <= fact <= 9007199254740992) else _js_m_get(last, fact))
             head = _js_json_stringify({"ts": now, "fact": fact, "kind": "folded"} if at is _JS_UNDEFINED else {"ts": now, "fact": fact, "kind": "folded", "last": at})
             out.append(_js_str(_js_m_slice(head, 0, -1)) + ",\"weight\":" + _js_m_toFixed(_clamp(weight), 9) + "}")
-        save = (latest_save._entries.get(fact, _JS_UNDEFINED) if type(latest_save) is _JsMap and type(fact) is str else _js_m_get(latest_save, fact))
+        save = (latest_save._entries.get(fact, _JS_UNDEFINED) if type(latest_save) is _JsMap and (type(fact) is str or type(fact) is int and -9007199254740992 <= fact <= 9007199254740992) else _js_m_get(latest_save, fact))
         if save is not _JS_UNDEFINED:
             out.append(save)
     return out

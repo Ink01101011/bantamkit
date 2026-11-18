@@ -80,7 +80,8 @@ fn j90p_lowerings_are_taken_and_answer_like_node() {
         "n = _js_map_entries(obj)",
         // A key sort (`k(b) - k(a)` and `a - b`), not for a Float64Array.
         "_js_sort_keyed([*names], lambda x, *_: _js_m_get(w, x), True, ",
-        "_js_sort_keyed([3, 1, 2, 10, -1], lambda a, *_: a, False, ",
+        // J90-PF: `(a, b) => a - b`, the item its own key: `_js_sort_num`.
+        "_js_sort_num([3, 1, 2, 10, -1], False, ",
         // Destructuring rows, and one name with its trailing comma.
         "for name, n, _js_hole, d in _js_rows(rows, 4, (0, 1, 3)):",
         "for first, in _js_rows(rows, 1, (0,)):",

@@ -25,7 +25,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_num,
     _js_number_is_finite,
     _js_put,
-    _js_sort_keyed,
+    _js_sort_num,
     _js_str,
     _js_strict_eq,
     _js_trunc,
@@ -54,7 +54,7 @@ def _counted(lines):
         if event == "uncommitted":
             i = _js_num(len(kept) - 1)
             while i >= 0:
-                if _js_strict_eq(_js_get(_js_list_at(kept, i), "unit"), _js_get(line, "unit")):
+                if _js_strict_eq(_js_get((kept[i] if type(i) is int and 0 <= i < len(kept) else _js_list_at(kept, i)), "unit"), _js_get(line, "unit")):
                     _js_m_splice(kept, i, 1)
                     break
                 i = _js_num(i - 1)
@@ -75,7 +75,7 @@ def _figure(value):
 
 
 def _lower_median(values):
-    ordered = _js_sort_keyed([*values], lambda a, *_: a, False, lambda a, b, *_: _js_num(_js_num(a) - _js_num(b)))
+    ordered = _js_sort_num([*values], False, lambda a, b, *_: _js_num(_js_num(a) - _js_num(b)))
     return _js_list_at(ordered, _js_floor(_js_div(_js_num(len(ordered) - 1), 2)))
 
 
@@ -99,7 +99,10 @@ def _budget__typed(lines, limit, in_flight):
         cap = _js_get(limit, dim)
         if cap is _JS_UNDEFINED:
             continue
-        _js_put(declared, dim, cap)
+        if type(declared) is list and type(dim) is int and 0 <= dim < len(declared):
+            declared[dim] = cap
+        else:
+            _js_put(declared, dim, cap)
         _js_put(remaining, dim, _js_num(_js_num(_js_num(cap) - _js_num(_js_get(spent, dim))) - _js_num(_js_get(reserved, dim))))
     price = {"tokens": per_unit, "units": 1}
     positive = [d for d in durations if _js_gt(d, 0)]
@@ -128,7 +131,10 @@ def budget(lines, limit, in_flight):
         cap = _js_get(limit, dim)
         if cap is _JS_UNDEFINED:
             continue
-        _js_put(declared, dim, cap)
+        if type(declared) is list and type(dim) is int and 0 <= dim < len(declared):
+            declared[dim] = cap
+        else:
+            _js_put(declared, dim, cap)
         _js_put(remaining, dim, _js_num(_js_num(_js_num(cap) - _js_num(_js_get(spent, dim))) - _js_num(_js_get(reserved, dim))))
     price = {"tokens": per_unit, "units": 1}
     positive = [d for d in durations if _js_gt(d, 0)]

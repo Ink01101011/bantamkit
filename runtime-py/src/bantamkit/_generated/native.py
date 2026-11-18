@@ -127,16 +127,25 @@ class NativeStore(_JsObject):
                 if not (_js_instanceof(_js_caught3, BantamError) or _js_instanceof(_js_caught3, PyOSError)):
                     raise _js_caught3
                 if not _js_is_nullish(skipped):
-                    _js_m_push(skipped, {"file": file, "reason": _js_get(_js_caught3, "message")})
+                    if type(skipped) is list:
+                        skipped.append({"file": file, "reason": _js_get(_js_caught3, "message")})
+                    else:
+                        _js_m_push(skipped, {"file": file, "reason": _js_get(_js_caught3, "message")})
                 continue
             name = _js_get(fact, "name")
-            first = (held._entries.get(name, _JS_UNDEFINED) if type(held) is _JsMap and type(name) is str else _js_m_get(held, name))
+            first = (held._entries.get(name, _JS_UNDEFINED) if type(held) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(held, name))
             if first is not _JS_UNDEFINED:
                 if not _js_is_nullish(skipped):
-                    _js_m_push(skipped, {"file": file, "reason": _js_str(DUPLICATE) + " '" + _js_str(name) + "': " + _js_str(first) + " holds it"})
+                    if type(skipped) is list:
+                        skipped.append({"file": file, "reason": _js_str(DUPLICATE) + " '" + _js_str(name) + "': " + _js_str(first) + " holds it"})
+                    else:
+                        _js_m_push(skipped, {"file": file, "reason": _js_str(DUPLICATE) + " '" + _js_str(name) + "': " + _js_str(first) + " holds it"})
                 continue
-            _js_m_set(held, name, file)
-            if not _js_m_has(shadow, name):
+            if type(held) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) and held._keys is None:
+                held._entries[name] = file
+            else:
+                _js_m_set(held, name, file)
+            if not (name in shadow._entries if type(shadow) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else name in shadow._items if type(shadow) is _JsSet and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_has(shadow, name)):
                 out.append(fact)
         return out
 
@@ -153,7 +162,10 @@ class NativeStore(_JsObject):
             return pool_of([], q, every_row)
         if skipped is not _JS_UNDEFINED:
             for s in _skipped_of(idx):
-                _js_m_push(skipped, s)
+                if type(skipped) is list:
+                    skipped.append(s)
+                else:
+                    _js_m_push(skipped, s)
         got = MemoryStore.poolIndexed(idx, q)
         if got is not None:
             return pool_without(got, shadow)
@@ -196,7 +208,7 @@ def _js_method_NativeStore_listing(self):
         if code == "ENOENT" or code == "ENOTDIR":
             return []
         raise _js_throw(as_py_os_error(_js_caught2, self.root))
-    return [py_join(self.root, n) for n in _js_m_sort([n for n in _js_array("filter", names) if _js_truthy(_js_and(_js_m_endsWith(n, ".md") and n != NATIVE_INDEX, lambda: _is_file(py_join(self.root, n))))], cmp_codepoint)]
+    return [py_join(self.root, n) for n in _js_m_sort([n for n in _js_array("filter", names) if _js_truthy(_js_and((n.endswith(".md") if type(n) is str else _js_m_endsWith(n, ".md")) and n != NATIVE_INDEX, lambda: _is_file(py_join(self.root, n))))], cmp_codepoint)]
 
 
 def _js_method_NativeStore_resolve(self, pool, row):
@@ -214,7 +226,10 @@ def _js_method_NativeStore_lookup(self, name, _stamp=_JS_UNDEFINED, skipped=_JS_
         return None
     if skipped is not _JS_UNDEFINED:
         for s in _skipped_of(idx):
-            _js_m_push(skipped, s)
+            if type(skipped) is list:
+                skipped.append(s)
+            else:
+                _js_m_push(skipped, s)
     if not _js_m_has(_js_invoke(idx, "names"), name):
         return None
     file = _js_invoke(idx, "fileOf", name)

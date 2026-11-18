@@ -253,6 +253,10 @@ def _js_str(value):
     """`String(value)`, as a template literal stringifies a substitution."""
     if isinstance(value, str):
         return value
+    # J90-PF: a plain int a double holds exactly is its own `_js_num`, so `_js_num_str` below
+    # answers `str(value)`; `type(...) is` excludes bool.
+    if type(value) is int and _JS_SAFE_MIN <= value <= _JS_SAFE_MAX:
+        return str(value)
     if value is None:
         return "null"
     if value is _JS_UNDEFINED:
@@ -871,8 +875,9 @@ def _js_outside(method, receiver):
 
 
 def _js_m_has(receiver, key):
-    # J90-P: a `str` key is its own `_js_key`, so the lookup is the dict's.
-    if type(key) is str:
+    # J90-P: a `str` key is its own `_js_key`, so the lookup is the dict's. J90-PF: so is a plain
+    # int a double holds exactly (`_js_key` returns it as it is).
+    if type(key) is str or (type(key) is int and _JS_SAFE_MIN <= key <= _JS_SAFE_MAX):
         kind = type(receiver)
         if kind is _JsMap:
             return key in receiver._entries
@@ -891,8 +896,11 @@ def _js_m_delete(receiver, key):
 
 
 def _js_m_get(receiver, key):
-    # J90-P: `_JsMap.get` inline for a `str` key (its own `_js_key`).
-    if type(receiver) is _JsMap and type(key) is str:
+    # J90-P: `_JsMap.get` inline for a `str` key (its own `_js_key`). J90-PF: and a plain int a
+    # double holds exactly, also its own `_js_key`.
+    if type(receiver) is _JsMap and (
+        type(key) is str or (type(key) is int and _JS_SAFE_MIN <= key <= _JS_SAFE_MAX)
+    ):
         return receiver._entries.get(key, _JS_UNDEFINED)
     if isinstance(receiver, _JsMap):
         return receiver.get(key)
@@ -900,8 +908,13 @@ def _js_m_get(receiver, key):
 
 
 def _js_m_set(receiver, key, value):
-    # J90-P: `_JsMap.set` inline for a `str` key (its own `_js_key`).
-    if type(receiver) is _JsMap and type(key) is str and receiver._keys is None:
+    # J90-P: `_JsMap.set` inline for a `str` key (its own `_js_key`). J90-PF: and a plain int a
+    # double holds exactly, also its own `_js_key` (so `set` would keep nothing in `_keys`).
+    if (
+        type(receiver) is _JsMap
+        and (type(key) is str or (type(key) is int and _JS_SAFE_MIN <= key <= _JS_SAFE_MAX))
+        and receiver._keys is None
+    ):
         receiver._entries[key] = value
         return receiver
     if isinstance(receiver, _JsMap):
@@ -1329,8 +1342,49 @@ def _js_json(value):
     raise TypeError(f"ts2py: JSON.stringify of {type(value).__name__} is outside the subset")
 
 
+_JS_JSON_PLAIN: _Final = frozenset({str, bool, type(None), int, list})
+
+
+def _js_json_plain(values):
+    """J90-PF: whether every value of `values` (a list) is a string, a boolean, null, a safe int
+    (within 2^53) or a list of such, at any depth (64 levels at most, and no list twice in one
+    level, so a list holding itself answers False and each level holds distinct lists). Checked a
+    level at a time over all the values at once, at C speed. For such a
+    value `json.dumps(..., ensure_ascii=False, separators=(",", ":"))` writes `_js_json`'s text
+    but for a lone surrogate, which `_js_json_quote` escapes and `json.dumps` keeps (the caller
+    checks the text for one): the same escapes (`\\"`, `\\\\`, `\\b\\f\\n\\r\\t`, `\\u00xx` for
+    the other controls, lower-case hex), every other character as it is, `true` / `false` /
+    `null`, an int's digits. A float (JS spells numbers its own way), a dict (JS orders an
+    index-like key first), anything else answers False."""
+    for _ in range(64):
+        kinds = set(map(type, values))
+        if not kinds <= _JS_JSON_PLAIN:
+            return False
+        if int in kinds:
+            ints = values if kinds == _JS_INT_ONLY else [v for v in values if type(v) is int]
+            if not (_JS_SAFE_MIN <= min(ints) and max(ints) <= _JS_SAFE_MAX):
+                return False
+        if list not in kinds:
+            return True
+        lists = [v for v in values if type(v) is list]
+        if len(set(map(id, lists))) != len(lists):
+            return False
+        values = list(_js_itertools.chain.from_iterable(lists))
+    return False
+
+
 def _js_json_stringify(value):
     """`JSON.stringify(value)`, byte for byte, for JSON-shaped values (and `undefined`)."""
+    # J90-PF: a list of plain values (`_js_json_plain`) at C speed; a text holding a lone
+    # surrogate (which strict UTF-8 refuses) is `_js_json`'s, which escapes it as JS does.
+    if type(value) is list and _js_json_plain(value):
+        text = _js_jsonlib.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError:
+            pass
+        else:
+            return text
     text = _js_json(value)
     return _JS_UNDEFINED if text is None else text
 
@@ -2698,9 +2752,18 @@ def _js_json_ints_exact(text):
     token and no token of 16 digits or more. A run of 16 digits counts unless what precedes it
     (past a `-` and blanks) is a character no token follows (a letter, a quote): only after `[`,
     `,`, `:` or at the start can a run be a token. Conservative: a string that only looks like
-    a token answers False, which costs the per-token hook, never a wrong number."""
-    if _JS_JSON_NEG_ZERO.search(text) is not None:
-        return False
+    a token answers False, which costs the per-token hook, never a wrong number.
+
+    J90-PF: a `-0` likewise: only one after `[`, `,`, `:` or at the start (past blanks) can be a
+    token; one after any other character is inside a string (`"audit-0"`) or an exponent
+    (`1e-0`, a float token) and never reaches `parse_int`. A hot index head names files and
+    slugs such as `x-0-y`, and one such `-0` sent the whole 180 KB text through the hook."""
+    for match in _JS_JSON_NEG_ZERO.finditer(text):
+        before = match.start() - 1
+        while before >= 0 and text[before] in " \t\n\r":
+            before -= 1
+        if before < 0 or text[before] in "[,:":
+            return False
     data = text.encode("utf-8", "surrogatepass")
     zeros = data.translate(_JS_DIGITS_TO_ZERO)
     at = zeros.find(_JS_SIXTEEN_ZEROS)
@@ -2743,8 +2806,16 @@ def _js_json_parse(text):
         # anywhere, no `-0` token: `_js_json_int`'s test, made once over the raw text, so a string
         # that only looks like such a token costs the per-token hook, never the reverse) takes
         # CPython's own integers; a short one, the per-token hook (cheaper than the scan).
+        # J90-PF: and a text of 513-2048 characters with a comma every eight or fewer (an index
+        # shard: an integer at nearly every comma), which took twice as long through the hook
+        # (the scan costs about 0.17 us and 0.7 ns a character, the hook 0.07 us an integer).
+        # An event line (a few integers among strings, mostly under 512 characters) does not
+        # qualify. Which decoder is a cost only: both read every text the scan admits alike.
         decoder = _JS_JSON_DECODER
-        if len(text) > 2048 and _js_json_ints_exact(text):
+        size = len(text)
+        if (
+            size > 2048 or (size > 512 and text.count(",") * 8 > size)
+        ) and _js_json_ints_exact(text):
             decoder = _JS_JSON_DECODER_INTS
         # J90-P: the cyclic collector off while the decoder only allocates (J68-5 measured a
         # postings shard parse at half the time with it off); back on only if it was on.
@@ -3942,7 +4013,20 @@ def _js_rows(items, n, wanted):
     """J90-P: `for (const [a, b, , d] of items)`, `n` names (holes included) and `wanted` the
     indices named. A list of at least `n` items is its first `n` at once (each `_js_get(item, k)`
     of it is `item[k]`); anything else is read as the general lowering reads it: `_js_get` of each
-    wanted index, in order (a hole is never read)."""
+    wanted index, in order (a hole is never read).
+
+    J90-PF: two names over a plain Map (not a subclass) whose every key is its own tag (`_keys is
+    None`, so not waiting to be settled either): `_JsMap.__iter__`'s own walk, each `[key, value]`
+    pair yielded as a tuple (the loop unpacks it at once, so its type is never seen). The keys are
+    listed at the first item, as `__iter__` lists them, and an entry deleted meanwhile is not
+    visited."""
+    if n == 2 and type(items) is _JsMap and items._keys is None:
+        entries = items._entries
+        for tag in list(entries):
+            value = entries.get(tag, _JS_ABSENT)
+            if value is not _JS_ABSENT:
+                yield tag, value
+        return
     for item in items:
         if type(item) is list and len(item) >= n:
             yield item if len(item) == n else item[:n]
@@ -3968,6 +4052,43 @@ def _js_sort_keyed(items, key, descending, compare):
             items[:] = list(map(items.__getitem__, order))
             return items
     return _js_m_sort(items, compare)
+
+
+def _js_sort_num(items, descending, compare):
+    """J90-PF: `items.sort((a, b) => a - b)` (`descending`: `b - a`), `_js_sort_keyed` with each
+    item its own key. A list of two or more plain ints a double holds exactly is sorted by value:
+    `_js_sort_keyed`'s stable order by key, since items that tie are equal ints and no order of
+    them differs from another. Anything else: `_js_sort_keyed`, as before."""
+    if (
+        type(items) is list
+        and len(items) > 1
+        and set(map(type, items)) == _JS_INT_ONLY
+        and _JS_SAFE_MIN <= min(items)
+        and max(items) <= _JS_SAFE_MAX
+    ):
+        items.sort(reverse=descending is True)
+        return items
+    return _js_sort_keyed(items, _js_sort_self, descending, compare)
+
+
+def _js_sort_self(a, *_):
+    """The key of `_js_sort_num`'s general path: the item itself (`(a, b) => a - b`'s `a`)."""
+    return a
+
+
+def _js_sort_unique(items, compare):
+    """J90-PF: `[...new Set(items)].sort(compare)`, `compare` an adapter whose row promises
+    code-point order (ts2py proved the name; its `_js_codepoint_order` is checked again here, as
+    `_js_m_sort` checks it). A list of `str`s only: its distinct strings in `str` order, which is
+    the general path's answer (`_JsSet` keeps one of each equal string, and `_js_m_sort` sorts a
+    list of `str`s by `<` under such a comparator). Anything else: the general path, as written."""
+    if (
+        type(items) is list
+        and getattr(compare, "_js_codepoint_order", False)
+        and set(map(type, items)) <= _JS_STR_ONLY
+    ):
+        return sorted(set(items))
+    return _js_m_sort([*_JsSet(items)], compare)
 
 
 def _js_sort_lex(items, parts, compare):

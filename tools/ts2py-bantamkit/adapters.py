@@ -725,6 +725,30 @@ def lstat_sync(path, *rest):
     return BigIntStats(st) if bigint else Stats(st)
 
 
+def stat_stamp(path, *_):
+    """`statStamp` (runtime-ts/src/storage/statstamp.ts, J90-PF): `${mtimeNs}:${size}:${ino}` of
+    `statSync(path, {bigint: true})`, the decimals of the three integers `BigIntStats` holds, from
+    the same `os.stat` without building it. The path and the failure are `stat_sync`'s."""
+    st = _os.stat(_node_path(path, "fs.statSync"))
+    return f"{st.st_mtime_ns}:{st.st_size}:{st.st_ino}"
+
+
+def stat_mtime_ns(path, *_):
+    """`statMtimeNs` (runtime-ts/src/storage/statstamp.ts, J90-PF): `statSync(path, {bigint:
+    true}).mtimeNs.toString()`, the decimal of `st_mtime_ns`. The path and the failure are
+    `stat_sync`'s."""
+    return str(_os.stat(_node_path(path, "fs.statSync")).st_mtime_ns)
+
+
+def stat_file(path, *_):
+    """`statFile` (runtime-ts/src/storage/statstamp.ts, J90-PF): `[mtimeNs.toString(),
+    Number(size), isFile()]` of `statSync(path, {bigint: true})`: the decimal of `st_mtime_ns`, the
+    size as the number `Number` makes of its BigInt (`_js_num`: an int up to 2^53, else the nearest
+    double) and `BigIntStats.isFile`'s answer. The path and the failure are `stat_sync`'s."""
+    st = _os.stat(_node_path(path, "fs.statSync"))
+    return [str(st.st_mtime_ns), _js_num(st.st_size), _stat.S_ISREG(st.st_mode)]
+
+
 def fstat_sync(fd, *rest):
     """`fs.fstatSync(fd)`: `os.fstat`."""
     if rest or isinstance(fd, bool) or not isinstance(fd, int):
@@ -1517,7 +1541,12 @@ def parse_native(path, *_):
     when the frontmatter names one of them (`NATIVE_EXTRA_LINE`): what the reference's index read
     them with (`hotindex._secondary`: `load_frontmatter` of the same frontmatter, `_native_meta`),
     `{}` where that refuses. A frontmatter naming neither key is not read twice: its `meta` is
-    `{}`, which nothing reads."""
+    `{}`, which nothing reads.
+
+    J90-PF: and `front`, the frontmatter's text (the second of `split("---\\n", 2)`'s three parts
+    of the file read as `pyReadText` reads it, `""` without them), which the hot index tests for
+    `NATIVE_EXTRA_LINE` instead of reading the file a third time; the TypeScript returns the text
+    it parsed."""
     from ..client import BantamError as _Native
     from ..memory.divergence import parse_fact
 
@@ -1541,6 +1570,7 @@ def parse_native(path, *_):
         "type": stored.type,
         "body": stored.body,
         "meta": meta,
+        "front": front,
     }
 
 

@@ -241,17 +241,17 @@ def _parse_frontmatter__typed(front):
     pos = 0
     while pos < len(_jsu_front):
         blank = _js_re_exec(_JS_RE_1, _js_units_slice(_jsu_front, pos))
-        if _js_truthy(_js_and(blank, lambda: _js_str_len(_js_get(blank, 0)) > 0)):
-            pos = _js_num(pos + _js_str_len(_js_get(blank, 0)))
+        if _js_truthy(_js_and(blank, lambda: _js_str_len((blank[0] if type(blank) is list and 0 < len(blank) else _js_get(blank, 0))) > 0)):
+            pos = _js_num(pos + _js_str_len((blank[0] if type(blank) is list and 0 < len(blank) else _js_get(blank, 0))))
             continue
         key = _js_re_exec(_JS_RE_2, _js_units_slice(_jsu_front, pos, _js_or_value(_js_num(_js_units_index_of(_jsu_front, "\n", pos) + 1), _JS_UNDEFINED)))
         if not _js_truthy(key):
             raise FactParseError("frontmatter line is not a plain \"key:\" mapping entry: " + _js_str(_line__typed(front, pos)))
-        pos = _js_num(pos + _js_str_len(_js_get(key, 0)))
+        pos = _js_num(pos + _js_str_len((key[0] if type(key) is list and 0 < len(key) else _js_get(key, 0))))
         value = _JS_UNDEFINED
         empty = _js_re_exec(_JS_RE_3, _js_units_slice(_jsu_front, pos))
         if (_jsu_front[pos] if type(pos) is int and 0 <= pos < len(_jsu_front) else _js_str_at(front, pos)) == " " and empty is not None:
-            pos = _js_num(pos + _js_str_len(_js_get(empty, 0)))
+            pos = _js_num(pos + _js_str_len((empty[0] if type(empty) is list and 0 < len(empty) else _js_get(empty, 0))))
         if (_jsu_front[pos] if type(pos) is int and 0 <= pos < len(_jsu_front) else _js_str_at(front, pos)) == "\n":
             pos = _js_num(pos + 1)
             gap = _js_str_len(_js_get(_js_re_exec(_JS_RE_4, _js_units_slice(_jsu_front, pos)), 0))
@@ -268,11 +268,11 @@ def _parse_frontmatter__typed(front):
             value, pos = _scan_node__typed(front, pos)
             pos = _skip_trailing_comment__typed(front, pos)
             if pos < len(_jsu_front) and (_jsu_front[pos] if type(pos) is int and 0 <= pos < len(_jsu_front) else _js_str_at(front, pos)) != "\n":
-                raise FactParseError("trailing content after the value of \"" + _js_str(_js_get(key, 1)) + "\": " + _js_str(_line__typed(front, pos)))
+                raise FactParseError("trailing content after the value of \"" + _js_str((key[1] if type(key) is list and 1 < len(key) else _js_get(key, 1))) + "\": " + _js_str(_line__typed(front, pos)))
             pos = _js_num(pos + 1)
         else:
-            raise FactParseError("expected \" \" or end of line after \"" + _js_str(_js_get(key, 1)) + ":\"")
-        entries.append([_js_get(key, 1), value])
+            raise FactParseError("expected \" \" or end of line after \"" + _js_str((key[1] if type(key) is list and 1 < len(key) else _js_get(key, 1))) + ":\"")
+        entries.append([(key[1] if type(key) is list and 1 < len(key) else _js_get(key, 1)), value])
     meta = _js_object_from_entries(entries)
     return _well_formed_meta(meta) if _js_str_includes(front, "\\u") or _js_str_includes(front, "\\U") else meta
 
@@ -284,17 +284,17 @@ def parse_frontmatter(front):
     pos = 0
     while _js_lt(pos, _js_len(front)):
         blank = _js_m_exec(_JS_RE_1, _js_m_slice(front, pos))
-        if _js_truthy(_js_and(blank, lambda: _js_str_len(_js_get(blank, 0)) > 0)):
-            pos = _js_add(pos, _js_str_len(_js_get(blank, 0)))
+        if _js_truthy(_js_and(blank, lambda: _js_str_len((blank[0] if type(blank) is list and 0 < len(blank) else _js_get(blank, 0))) > 0)):
+            pos = _js_add(pos, _js_str_len((blank[0] if type(blank) is list and 0 < len(blank) else _js_get(blank, 0))))
             continue
         key = _js_m_exec(_JS_RE_2, _js_m_slice(front, pos, _js_or_value(_js_num(_js_m_indexOf(front, "\n", pos) + 1), _JS_UNDEFINED)))
         if not _js_truthy(key):
             raise FactParseError("frontmatter line is not a plain \"key:\" mapping entry: " + _js_str(_line(front, pos)))
-        pos = _js_add(pos, _js_str_len(_js_get(key, 0)))
+        pos = _js_add(pos, _js_str_len((key[0] if type(key) is list and 0 < len(key) else _js_get(key, 0))))
         value = _JS_UNDEFINED
         empty = _js_m_exec(_JS_RE_3, _js_m_slice(front, pos))
         if _js_get(front, pos) == " " and empty is not None:
-            pos = _js_add(pos, _js_str_len(_js_get(empty, 0)))
+            pos = _js_add(pos, _js_str_len((empty[0] if type(empty) is list and 0 < len(empty) else _js_get(empty, 0))))
         if _js_get(front, pos) == "\n":
             pos = _js_add(pos, 1)
             gap = _js_str_len(_js_get(_js_m_exec(_JS_RE_4, _js_m_slice(front, pos)), 0))
@@ -311,11 +311,11 @@ def parse_frontmatter(front):
             value, pos = _scan_node(front, pos)
             pos = _skip_trailing_comment(front, pos)
             if _js_lt(pos, _js_len(front)) and _js_get(front, pos) != "\n":
-                raise FactParseError("trailing content after the value of \"" + _js_str(_js_get(key, 1)) + "\": " + _js_str(_line(front, pos)))
+                raise FactParseError("trailing content after the value of \"" + _js_str((key[1] if type(key) is list and 1 < len(key) else _js_get(key, 1))) + "\": " + _js_str(_line(front, pos)))
             pos = _js_add(pos, 1)
         else:
-            raise FactParseError("expected \" \" or end of line after \"" + _js_str(_js_get(key, 1)) + ":\"")
-        entries.append([_js_get(key, 1), value])
+            raise FactParseError("expected \" \" or end of line after \"" + _js_str((key[1] if type(key) is list and 1 < len(key) else _js_get(key, 1))) + ":\"")
+        entries.append([(key[1] if type(key) is list and 1 < len(key) else _js_get(key, 1)), value])
     meta = _js_object_from_entries(entries)
     return _well_formed_meta(meta) if _js_m_includes(front, "\\u") or _js_m_includes(front, "\\U") else meta
 
@@ -354,14 +354,14 @@ def _scan_nested_mapping__typed(front, start):
         text = _js_units_slice(_jsu_front, pos, end)
         _jsu_text = _js_code_units(text)
         m = _js_re_exec(_JS_RE_7, text)
-        if m is None or not _js_strict_eq(indent, -1) and (_js_h1 != indent if type(_js_h1 := _js_len(_js_get(m, 1))) is type(indent) is str else not _js_strict_eq(_js_h1, indent)):
+        if m is None or not _js_strict_eq(indent, -1) and (_js_h1 != indent if type(_js_h1 := _js_len((m[1] if type(m) is list and 1 < len(m) else _js_get(m, 1)))) is type(indent) is str or type(_js_h1) is type(indent) is int and -9007199254740992 <= _js_h1 <= 9007199254740992 and -9007199254740992 <= indent <= 9007199254740992 else not _js_strict_eq(_js_h1, indent)):
             break
-        indent = _js_len(_js_get(m, 1))
-        value, after = _scan_node__typed(text + "\n", _js_str_len(_js_get(m, 0)))
+        indent = _js_len((m[1] if type(m) is list and 1 < len(m) else _js_get(m, 1)))
+        value, after = _scan_node__typed(text + "\n", _js_str_len((m[0] if type(m) is list and 0 < len(m) else _js_get(m, 0))))
         tail = _skip_trailing_comment__typed(text + "\n", after)
         if tail < len(_jsu_text):
-            raise FactParseError("trailing content after the value of \"" + _js_str(_js_get(m, 2)) + "\": " + _js_str(_line__typed(text, tail)))
-        out.append([_js_get(m, 2), value])
+            raise FactParseError("trailing content after the value of \"" + _js_str((m[2] if type(m) is list and 2 < len(m) else _js_get(m, 2))) + "\": " + _js_str(_line__typed(text, tail)))
+        out.append([(m[2] if type(m) is list and 2 < len(m) else _js_get(m, 2)), value])
         any_ = True
         pos = len(_jsu_front) if eol == -1 else _js_num(eol + 1)
     return [_js_object_from_entries(out), pos] if any_ else None
@@ -379,14 +379,14 @@ def _scan_nested_mapping(front, start):
         end = _js_len(front) if eol == -1 else eol
         text = _js_m_slice(front, pos, end)
         m = _js_m_exec(_JS_RE_7, text)
-        if m is None or not _js_strict_eq(indent, -1) and (_js_h2 != indent if type(_js_h2 := _js_len(_js_get(m, 1))) is type(indent) is str else not _js_strict_eq(_js_h2, indent)):
+        if m is None or not _js_strict_eq(indent, -1) and (_js_h2 != indent if type(_js_h2 := _js_len((m[1] if type(m) is list and 1 < len(m) else _js_get(m, 1)))) is type(indent) is str or type(_js_h2) is type(indent) is int and -9007199254740992 <= _js_h2 <= 9007199254740992 and -9007199254740992 <= indent <= 9007199254740992 else not _js_strict_eq(_js_h2, indent)):
             break
-        indent = _js_len(_js_get(m, 1))
-        value, after = _scan_node(_js_add(text, "\n"), _js_str_len(_js_get(m, 0)))
+        indent = _js_len((m[1] if type(m) is list and 1 < len(m) else _js_get(m, 1)))
+        value, after = _scan_node(_js_add(text, "\n"), _js_str_len((m[0] if type(m) is list and 0 < len(m) else _js_get(m, 0))))
         tail = _skip_trailing_comment(_js_add(text, "\n"), after)
         if _js_lt(tail, _js_len(text)):
-            raise FactParseError("trailing content after the value of \"" + _js_str(_js_get(m, 2)) + "\": " + _js_str(_line(text, tail)))
-        out.append([_js_get(m, 2), value])
+            raise FactParseError("trailing content after the value of \"" + _js_str((m[2] if type(m) is list and 2 < len(m) else _js_get(m, 2))) + "\": " + _js_str(_line(text, tail)))
+        out.append([(m[2] if type(m) is list and 2 < len(m) else _js_get(m, 2)), value])
         any_ = True
         pos = _js_len(front) if eol == -1 else _js_num(eol + 1)
     return [_js_object_from_entries(out), pos] if any_ else None
@@ -569,7 +569,10 @@ def _scan_block_scalar__typed(front, pos):
         max_indent = 0
         while (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == " " or (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "\n":
             if (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "\n":
-                _js_m_push(breaks, "\n")
+                if type(breaks) is list:
+                    breaks.append("\n")
+                else:
+                    _js_m_push(breaks, "\n")
                 i = _js_num(i + 1)
             else:
                 i = _js_num(i + 1)
@@ -594,7 +597,7 @@ def _scan_block_scalar__typed(front, pos):
         if line_break != "":
             i = _js_num(i + 1)
         breaks = scan_breaks(indent)
-        if (_js_h3 == indent if type(_js_h3 := _column__typed(front, i)) is type(indent) is str else _js_strict_eq(_js_h3, indent)) and i < len(_jsu_front):
+        if (_js_h3 == indent if type(_js_h3 := _column__typed(front, i)) is type(indent) is str or type(_js_h3) is type(indent) is int and -9007199254740992 <= _js_h3 <= 9007199254740992 and -9007199254740992 <= indent <= 9007199254740992 else _js_strict_eq(_js_h3, indent)) and i < len(_jsu_front):
             if folded and line_break == "\n" and leading_non_space and (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) != " " and (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) != "\t":
                 if _js_strict_eq(_js_len(breaks), 0):
                     chunks.append(" ")
@@ -673,7 +676,10 @@ def _scan_block_scalar(front, pos):
         max_indent = 0
         while _js_get(front, i) == " " or _js_get(front, i) == "\n":
             if _js_get(front, i) == "\n":
-                _js_m_push(breaks, "\n")
+                if type(breaks) is list:
+                    breaks.append("\n")
+                else:
+                    _js_m_push(breaks, "\n")
                 i = _js_add(i, 1)
             else:
                 i = _js_add(i, 1)
@@ -698,7 +704,7 @@ def _scan_block_scalar(front, pos):
         if line_break != "":
             i = _js_add(i, 1)
         breaks = scan_breaks(indent)
-        if (_js_h4 == indent if type(_js_h4 := _column(front, i)) is type(indent) is str else _js_strict_eq(_js_h4, indent)) and _js_lt(i, _js_len(front)):
+        if (_js_h4 == indent if type(_js_h4 := _column(front, i)) is type(indent) is str or type(_js_h4) is type(indent) is int and -9007199254740992 <= _js_h4 <= 9007199254740992 and -9007199254740992 <= indent <= 9007199254740992 else _js_strict_eq(_js_h4, indent)) and _js_lt(i, _js_len(front)):
             if folded and line_break == "\n" and leading_non_space and _js_get(front, i) != " " and _js_get(front, i) != "\t":
                 if _js_strict_eq(_js_len(breaks), 0):
                     chunks.append(" ")
@@ -1007,7 +1013,7 @@ def _scan_quoted(front, pos, quote):
         if _js_ge(i, _js_len(front)):
             raise FactParseError("unterminated " + ("single" if quote == "'" else "double") + "-quoted scalar")
         ch = _js_get(front, i)
-        if (ch == quote if type(ch) is type(quote) is str else _js_strict_eq(ch, quote)):
+        if (ch == quote if type(ch) is type(quote) is str or type(ch) is type(quote) is int and -9007199254740992 <= ch <= 9007199254740992 and -9007199254740992 <= quote <= 9007199254740992 else _js_strict_eq(ch, quote)):
             if quote == "'" and _js_get(front, (i + 1 if type(i) is int and -4503599627370496 <= i <= 4503599627370496 else _js_add(i, 1))) == "'":
                 out.append("'")
                 i = _js_add(i, 2)

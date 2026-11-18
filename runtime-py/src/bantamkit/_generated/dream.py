@@ -69,7 +69,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_spread,
     _js_str,
     _js_str_includes,
-    _js_str_starts_with,
     _js_strict_eq,
     _js_throw,
     _js_truthy,
@@ -157,17 +156,20 @@ def sorted_names(values):
         k = i
     start = _js_max(k, 1)
     while start < n:
-        pivot = _js_list_at(a, start)
+        pivot = (a[start] if type(start) is int and 0 <= start < len(a) else _js_list_at(a, start))
         l = 0
         r = start
         while l < r:
             p = _js_num(l + _js_sar(_js_num(r - l), 1))
-            if _js_truthy(lt(pivot, _js_list_at(a, p))):
+            if _js_truthy(lt(pivot, (a[p] if type(p) is int and 0 <= p < len(a) else _js_list_at(a, p)))):
                 r = p
             else:
                 l = _js_num(p + 1)
         _js_m_copyWithin(a, _js_num(l + 1), l, start)
-        _js_put(a, l, pivot)
+        if type(a) is list and type(l) is int and 0 <= l < len(a):
+            a[l] = pivot
+        else:
+            _js_put(a, l, pivot)
         start = _js_num(start + 1)
     return a
 
@@ -343,7 +345,7 @@ def _claim_slot__typed(block):
     raw_subject, raw_value = _js_destructure(groups, 2)
     subject = py_strip(_js_dispatch(py_strip(raw_subject), "replace", _js_m_replace, _JS_RE_5, ""))
     value = py_strip(raw_value)
-    if subject == "" or not _js_m_test(_SUBJECT_OK, subject) or _js_m_startsWith(value, "//"):
+    if subject == "" or not _js_m_test(_SUBJECT_OK, subject) or (value.startswith("//") if type(value) is str else _js_m_startsWith(value, "//")):
         return None
     return [_js_m_toLowerCase(collapse(subject)), _js_m_toLowerCase(collapse(value))]
 
@@ -359,7 +361,7 @@ def claim_slot(block):
     raw_subject, raw_value = _js_destructure(groups, 2)
     subject = py_strip(_js_dispatch(py_strip(raw_subject), "replace", _js_m_replace, _JS_RE_5, ""))
     value = py_strip(raw_value)
-    if subject == "" or not _js_m_test(_SUBJECT_OK, subject) or _js_m_startsWith(value, "//"):
+    if subject == "" or not _js_m_test(_SUBJECT_OK, subject) or (value.startswith("//") if type(value) is str else _js_m_startsWith(value, "//")):
         return None
     return [_js_m_toLowerCase(collapse(subject)), _js_m_toLowerCase(collapse(value))]
 
@@ -401,7 +403,7 @@ def _absolutise__typed(body, basis, name, layer):
             delta = 0
         else:
             count = py_int_digits(_js_get(match, "digits"))
-            delta = _js_mul(_js_neg(count), 7 if _js_str_starts_with(_js_m_toLowerCase(_js_get(match, "unit")), "week") else 1)
+            delta = _js_mul(_js_neg(count), 7 if _js_m_toLowerCase(_js_get(match, "unit")).startswith("week") else 1)
         resolved = _add_days(ordinal, delta)
         if resolved is None:
             out_of_range.append({"name": name, "layer": layer, "term": _js_get(match, "term"), "resolved": "", "basis": basis})
@@ -439,7 +441,7 @@ def absolutise(body, basis, name, layer):
             delta = 0
         else:
             count = py_int_digits(_js_get(match, "digits"))
-            delta = _js_mul(_js_neg(count), 7 if _js_str_starts_with(_js_m_toLowerCase(_js_get(match, "unit")), "week") else 1)
+            delta = _js_mul(_js_neg(count), 7 if _js_m_toLowerCase(_js_get(match, "unit")).startswith("week") else 1)
         resolved = _add_days(ordinal, delta)
         if resolved is None:
             out_of_range.append({"name": name, "layer": layer, "term": _js_get(match, "term"), "resolved": "", "basis": basis})
@@ -468,7 +470,7 @@ def merge_links(base, other):
         if not _js_truthy(_truthy(link)):
             continue
         key = py_hash_key(link)
-        if _js_m_has(seen, key):
+        if (key in seen._entries if type(seen) is _JsMap and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else key in seen._items if type(seen) is _JsSet and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_has(seen, key)):
             continue
         _js_m_add(seen, key)
         out.append(link)
@@ -512,16 +514,16 @@ def _merge_bodies__typed(base_body, other_body, base_layer, other_layer, base_da
     shared = [subject for subject in [*_js_m_keys(base_slots)] if _js_m_has(other_slots, subject)]
     _js_m_sort(shared, cmp_codepoint)
     for subject in shared:
-        base_index, base_value = _js_destructure((base_slots._entries.get(subject, _JS_UNDEFINED) if type(base_slots) is _JsMap and type(subject) is str else _js_m_get(base_slots, subject)), 2)
-        other_index, other_value = _js_destructure((other_slots._entries.get(subject, _JS_UNDEFINED) if type(other_slots) is _JsMap and type(subject) is str else _js_m_get(other_slots, subject)), 2)
-        if (base_value == other_value if type(base_value) is type(other_value) is str else _js_strict_eq(base_value, other_value)):
+        base_index, base_value = _js_destructure((base_slots._entries.get(subject, _JS_UNDEFINED) if type(base_slots) is _JsMap and (type(subject) is str or type(subject) is int and -9007199254740992 <= subject <= 9007199254740992) else _js_m_get(base_slots, subject)), 2)
+        other_index, other_value = _js_destructure((other_slots._entries.get(subject, _JS_UNDEFINED) if type(other_slots) is _JsMap and (type(subject) is str or type(subject) is int and -9007199254740992 <= subject <= 9007199254740992) else _js_m_get(other_slots, subject)), 2)
+        if (base_value == other_value if type(base_value) is type(other_value) is str or type(base_value) is type(other_value) is int and -9007199254740992 <= base_value <= 9007199254740992 and -9007199254740992 <= other_value <= 9007199254740992 else _js_strict_eq(base_value, other_value)):
             continue
         if _js_gt(cmp_codepoint(other_date, base_date), 0):
             _js_m_add(drop_base, base_index)
-            superseded.append({"subject": subject, "kept": collapse(_js_list_at(other_blocks, other_index)), "keptLayer": other_layer, "keptDate": other_date, "lost": collapse(_js_list_at(base_blocks, base_index)), "lostLayer": base_layer, "lostDate": base_date})
+            superseded.append({"subject": subject, "kept": collapse((other_blocks[other_index] if type(other_index) is int and 0 <= other_index < len(other_blocks) else _js_list_at(other_blocks, other_index))), "keptLayer": other_layer, "keptDate": other_date, "lost": collapse((base_blocks[base_index] if type(base_index) is int and 0 <= base_index < len(base_blocks) else _js_list_at(base_blocks, base_index))), "lostLayer": base_layer, "lostDate": base_date})
         else:
             _js_m_add(drop_other, other_index)
-            superseded.append({"subject": subject, "kept": collapse(_js_list_at(base_blocks, base_index)), "keptLayer": base_layer, "keptDate": base_date, "lost": collapse(_js_list_at(other_blocks, other_index)), "lostLayer": other_layer, "lostDate": other_date})
+            superseded.append({"subject": subject, "kept": collapse((base_blocks[base_index] if type(base_index) is int and 0 <= base_index < len(base_blocks) else _js_list_at(base_blocks, base_index))), "keptLayer": base_layer, "keptDate": base_date, "lost": collapse((other_blocks[other_index] if type(other_index) is int and 0 <= other_index < len(other_blocks) else _js_list_at(other_blocks, other_index))), "lostLayer": other_layer, "lostDate": other_date})
     seen = _JsSet()
     out = []
     def _js_fn3(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_):
@@ -577,16 +579,16 @@ def merge_bodies(base_body, other_body, base_layer, other_layer, base_date, othe
     shared = [subject for subject in [*_js_m_keys(base_slots)] if _js_m_has(other_slots, subject)]
     _js_m_sort(shared, cmp_codepoint)
     for subject in shared:
-        base_index, base_value = _js_destructure((base_slots._entries.get(subject, _JS_UNDEFINED) if type(base_slots) is _JsMap and type(subject) is str else _js_m_get(base_slots, subject)), 2)
-        other_index, other_value = _js_destructure((other_slots._entries.get(subject, _JS_UNDEFINED) if type(other_slots) is _JsMap and type(subject) is str else _js_m_get(other_slots, subject)), 2)
-        if (base_value == other_value if type(base_value) is type(other_value) is str else _js_strict_eq(base_value, other_value)):
+        base_index, base_value = _js_destructure((base_slots._entries.get(subject, _JS_UNDEFINED) if type(base_slots) is _JsMap and (type(subject) is str or type(subject) is int and -9007199254740992 <= subject <= 9007199254740992) else _js_m_get(base_slots, subject)), 2)
+        other_index, other_value = _js_destructure((other_slots._entries.get(subject, _JS_UNDEFINED) if type(other_slots) is _JsMap and (type(subject) is str or type(subject) is int and -9007199254740992 <= subject <= 9007199254740992) else _js_m_get(other_slots, subject)), 2)
+        if (base_value == other_value if type(base_value) is type(other_value) is str or type(base_value) is type(other_value) is int and -9007199254740992 <= base_value <= 9007199254740992 and -9007199254740992 <= other_value <= 9007199254740992 else _js_strict_eq(base_value, other_value)):
             continue
         if _js_gt(cmp_codepoint(other_date, base_date), 0):
             _js_m_add(drop_base, base_index)
-            superseded.append({"subject": subject, "kept": collapse(_js_list_at(other_blocks, other_index)), "keptLayer": other_layer, "keptDate": other_date, "lost": collapse(_js_list_at(base_blocks, base_index)), "lostLayer": base_layer, "lostDate": base_date})
+            superseded.append({"subject": subject, "kept": collapse((other_blocks[other_index] if type(other_index) is int and 0 <= other_index < len(other_blocks) else _js_list_at(other_blocks, other_index))), "keptLayer": other_layer, "keptDate": other_date, "lost": collapse((base_blocks[base_index] if type(base_index) is int and 0 <= base_index < len(base_blocks) else _js_list_at(base_blocks, base_index))), "lostLayer": base_layer, "lostDate": base_date})
         else:
             _js_m_add(drop_other, other_index)
-            superseded.append({"subject": subject, "kept": collapse(_js_list_at(base_blocks, base_index)), "keptLayer": base_layer, "keptDate": base_date, "lost": collapse(_js_list_at(other_blocks, other_index)), "lostLayer": other_layer, "lostDate": other_date})
+            superseded.append({"subject": subject, "kept": collapse((base_blocks[base_index] if type(base_index) is int and 0 <= base_index < len(base_blocks) else _js_list_at(base_blocks, base_index))), "keptLayer": base_layer, "keptDate": base_date, "lost": collapse((other_blocks[other_index] if type(other_index) is int and 0 <= other_index < len(other_blocks) else _js_list_at(other_blocks, other_index))), "lostLayer": other_layer, "lostDate": other_date})
     seen = _JsSet()
     out = []
     def _js_fn6(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_):
@@ -682,8 +684,8 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
     both_keys = [key for key in [*_js_m_keys(by_project)] if _js_m_has(by_profile, key)]
     for name in _sorted_names__typed([_js_get(_js_m_get(by_project, key), "name") for key in both_keys]):
         key = py_hash_key(name)
-        here = (by_project._entries.get(key, _JS_UNDEFINED) if type(by_project) is _JsMap and type(key) is str else _js_m_get(by_project, key))
-        there = (by_profile._entries.get(key, _JS_UNDEFINED) if type(by_profile) is _JsMap and type(key) is str else _js_m_get(by_profile, key))
+        here = (by_project._entries.get(key, _JS_UNDEFINED) if type(by_project) is _JsMap and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_get(by_project, key))
+        there = (by_profile._entries.get(key, _JS_UNDEFINED) if type(by_profile) is _JsMap and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_get(by_profile, key))
         destination = py_join(_js_get(profile, "root"), "archive", _js_str(py_text(name)) + ".md")
         if _js_truthy(py_lexists(destination)):
             refused.append([name, _js_str(destination) + " already exists; refusing to overwrite an earlier " + "archived copy — restore or remove it and run again"])
@@ -716,13 +718,16 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
         created_candidates = _js_m_filter([_js_coalesce_value(_js_get(here, "created"), None), _js_coalesce_value(_js_get(there, "created"), None)], lambda _js_a0=_JS_UNDEFINED, *_: _truthy(_js_a0))
         recalled_candidates = _js_m_filter([_js_get(here, "last_recalled"), _js_get(there, "last_recalled")], lambda _js_a0=_JS_UNDEFINED, *_: _truthy(_js_a0))
         survivor = {**_js_spread(here), "description": description, "body": body, "links": links, "created": _py_min(created_candidates) if len(created_candidates) > 0 else None, "last_recalled": _py_max(recalled_candidates) if len(recalled_candidates) > 0 else None, "keywords": union_keywords(_js_coalesce_value(_js_get(here, "keywords"), []), _js_coalesce_value(_js_get(there, "keywords"), [])), **_js_spread(_union_extra(_js_coalesce_value(_js_get(here, "extra"), []), _js_coalesce_value(_js_get(there, "extra"), [])))}
-        _js_m_set(planned, key, survivor)
+        if type(planned) is _JsMap and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) and planned._keys is None:
+            planned._entries[key] = survivor
+        else:
+            _js_m_set(planned, key, survivor)
         consumed.append(name)
         merged.append({"name": name, "kind": kind, "jaccard": jaccard(tokens(_js_str(py_text(_js_get(here, "name"))) + " " + _js_str(py_text(_js_get(here, "description")))), tokens(_js_str(py_text(_js_get(there, "name"))) + " " + _js_str(py_text(_js_get(there, "description"))))), "survivorLayer": PROJECT_LAYER, "consumedLayer": PROFILE_LAYER, "bodyBefore": buffer_byte_length(_js_get(here, "body"), "utf8"), "bodyAfter": buffer_byte_length(body, "utf8"), "blocksAdded": added, "superseded": records})
     project_only = [key for key in [*_js_m_keys(by_project)] if not _js_m_has(by_profile, key)]
     for name in _sorted_names__typed([_js_get(_js_m_get(by_project, key), "name") for key in project_only]):
         key = py_hash_key(name)
-        fact = (by_project._entries.get(key, _JS_UNDEFINED) if type(by_project) is _JsMap and type(key) is str else _js_m_get(by_project, key))
+        fact = (by_project._entries.get(key, _JS_UNDEFINED) if type(by_project) is _JsMap and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_get(by_project, key))
         basis = py_mtime_date(project_path(name))
         body, resolved_hits, unresolved_hits = absolutise(_js_get(fact, "body"), basis, name, PROJECT_LAYER)
         _js_m_push(hits, *resolved_hits)
@@ -759,7 +764,7 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
     fact_bytes_before = _js_add(sum(_js_m_values(project_sizes)), sum(_js_m_values(profile_sizes)))
     fact_bytes_after = _js_num(_js_num(fact_bytes_before) - _js_num(sum([_js_m_get(profile_sizes, py_hash_key(n)) for n in consumed])))
     for key, fact in _js_rows(planned, 2, (0, 1)):
-        fact_bytes_after = _js_num(fact_bytes_after + _js_num(_js_num(bytes(format_fact(fact))) - _js_num((project_sizes._entries.get(key, _JS_UNDEFINED) if type(project_sizes) is _JsMap and type(key) is str else _js_m_get(project_sizes, key)))))
+        fact_bytes_after = _js_num(fact_bytes_after + _js_num(_js_num(bytes(format_fact(fact))) - _js_num((project_sizes._entries.get(key, _JS_UNDEFINED) if type(project_sizes) is _JsMap and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_get(project_sizes, key)))))
     rewritten = _sorted_names__typed([_js_get(fact, "name") for fact in [*_js_m_values(planned)]])
     all_superseded = []
     for merge in merged:

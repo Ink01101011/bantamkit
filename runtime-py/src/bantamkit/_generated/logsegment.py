@@ -216,9 +216,9 @@ def _drain__typed(p, keep, offset, stale_ms, poll_ms):
         if not _js_m_startsWith(name, prefix):
             continue
         full = path_join(dir, name)
-        if _js_m_endsWith(name, ".writing"):
+        if (name.endswith(".writing") if type(name) is str else _js_m_endsWith(name, ".writing")):
             waiting.append(full)
-        elif _js_m_endsWith(name, ".keep") and full != keep:
+        elif (name.endswith(".keep") if type(name) is str else _js_m_endsWith(name, ".keep")) and full != keep:
             _js_caught6 = None
             try:
                 if _js_num(now - _js_num(_js_get(stat_sync(full), "mtimeMs"))) > stale_ms:
@@ -261,9 +261,9 @@ def _drain(p, keep, offset, stale_ms, poll_ms):
         if not _js_m_startsWith(name, prefix):
             continue
         full = path_join(dir, name)
-        if _js_m_endsWith(name, ".writing"):
+        if (name.endswith(".writing") if type(name) is str else _js_m_endsWith(name, ".writing")):
             waiting.append(full)
-        elif _js_m_endsWith(name, ".keep") and (full != keep if type(full) is type(keep) is str else not _js_strict_eq(full, keep)):
+        elif (name.endswith(".keep") if type(name) is str else _js_m_endsWith(name, ".keep")) and (full != keep if type(full) is type(keep) is str or type(full) is type(keep) is int and -9007199254740992 <= full <= 9007199254740992 and -9007199254740992 <= keep <= 9007199254740992 else not _js_strict_eq(full, keep)):
             _js_caught8 = None
             try:
                 if _js_gt(_js_num(now - _js_num(_js_get(stat_sync(full), "mtimeMs"))), stale_ms):

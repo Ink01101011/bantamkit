@@ -2130,9 +2130,16 @@ impl<'s> Lowerer<'s> {
                 }
                 other => {
                     self.statement_call = matches!(other, Expression::CallExpression(_));
-                    let value = self.expr(other);
+                    // J90-PF: the call's statement form first; else `expr`'s own (`hot`).
+                    let value = self.expr_inner(other);
                     self.statement_call = false;
-                    out.push(format!("{p}{}", value.code));
+                    match self.hot_stmt(&value.code, &p) {
+                        Some(lines) => out.extend(lines),
+                        None => {
+                            let value = self.hot(value);
+                            out.push(format!("{p}{}", value.code));
+                        }
+                    }
                 }
             },
             Statement::VariableDeclaration(v) => self.var_decl(v, indent, out),
@@ -3468,10 +3475,11 @@ impl<'s> Lowerer<'s> {
                 let object = self.expr(&m.object);
                 let key = self.expr(&m.expression);
                 let value = self.expr(&a.right);
-                out.push(format!(
-                    "{p}_js_put({}, {}, {})",
-                    object.code, key.code, value.code
-                ));
+                let code = format!("_js_put({}, {}, {})", object.code, key.code, value.code);
+                match self.hot_stmt(&code, &p) {
+                    Some(lines) => out.extend(lines),
+                    None => out.push(format!("{p}{code}")),
+                }
             }
             AssignmentTarget::ArrayAssignmentTarget(t) if op.is_none() => {
                 self.array_assignment(t, &a.right, indent, out);
@@ -3644,6 +3652,8 @@ impl<'s> Lowerer<'s> {
         };
         let arity = match helper {
             "_js_m_get" | "_js_strict_eq" | "_js_add" => 2,
+            // J90-PF: `m.has(k)`, a proven list read by an index, `xs.push(x)` of one item.
+            "_js_m_has" | "_js_list_at" | "_js_m_push" => 2,
             _ => return value,
         };
         if args.len() != arity || (negate && helper != "_js_strict_eq") {
@@ -3656,9 +3666,15 @@ impl<'s> Lowerer<'s> {
         // never take it), and the first is never a literal: the guard tests no literal's type.
         let literal = |a: &str| simple_operand(a) && !is_name(a);
         let second = &args[1];
+        // J90-PF: an index literal is a non-negative int under 16 digits (its own type and range).
+        let index_literal = |a: &str| is_int_literal(a) && !a.starts_with('-') && a.len() < 16;
         let literal_ok = match helper {
-            "_js_m_get" => !literal(second) || is_str_literal(second),
+            "_js_m_get" | "_js_m_has" => {
+                !literal(second) || is_str_literal(second) || index_literal(second)
+            }
             "_js_strict_eq" => !literal(second),
+            "_js_list_at" => !literal(second) || index_literal(second),
+            "_js_m_push" => true,
             _ => {
                 !literal(second)
                     || (is_int_literal(second) && second.trim_start_matches('-').len() < 16)
@@ -3666,6 +3682,11 @@ impl<'s> Lowerer<'s> {
         };
         let first = args[0].clone();
         if literal(&first) || !literal_ok {
+            return value;
+        }
+        // J90-PF: `_js_list_at`'s guard tests no receiver, and `xs.append(x) or len(xs)` reads
+        // the receiver again after the item: each must be a name.
+        if matches!(helper, "_js_list_at" | "_js_m_push") && !is_name(&first) {
             return value;
         }
         // `type(t := x)`: an assignment expression may stand alone as a call's argument.
@@ -3681,24 +3702,58 @@ impl<'s> Lowerer<'s> {
         // An addend the fast arm accepts lies within half the safe range (`_JS_SAFE_MAX / 2`), so
         // the exact sum of two is itself a double's exact int and `_js_num` would return it as is.
         const HALF: &str = "4503599627370496";
+        // J90-PF: the ints a double holds exactly (`_JS_SAFE_MIN` / `_JS_SAFE_MAX`): each is its own
+        // `_js_key` and compares by value under `===`.
+        const SAFE: &str = "9007199254740992";
         let a = &name;
         let code = match helper {
-            "_js_m_get" => {
+            "_js_m_get" | "_js_m_has" => {
                 let k = &args[1];
-                let key_test = if is_str_literal(k) {
+                // J90-PF: a key that is its own `_js_key`: a string, or a safe int (was: strings).
+                let key_test = if is_str_literal(k) || index_literal(k) {
                     String::new()
                 } else {
-                    format!(" and type({k}) is str")
+                    format!(
+                        " and (type({k}) is str or type({k}) is int and -{SAFE} <= {k} <= {SAFE})"
+                    )
                 };
-                format!(
-                    "({a}._entries.get({k}, _JS_UNDEFINED) if type({bind}) is _JsMap{key_test} else _js_m_get({a}, {k}))"
-                )
+                if helper == "_js_m_get" {
+                    format!(
+                        "({a}._entries.get({k}, _JS_UNDEFINED) if type({bind}) is _JsMap{key_test} else _js_m_get({a}, {k}))"
+                    )
+                } else {
+                    // `has` of a Set too: its items are keyed by the same `_js_key` tags.
+                    format!(
+                        "({k} in {a}._entries if type({bind}) is _JsMap{key_test} else {k} in {a}._items if type({a}) is _JsSet{key_test} else _js_m_has({a}, {k}))"
+                    )
+                }
             }
             "_js_strict_eq" => {
                 let b = &args[1];
                 let (op, not) = if negate { ("!=", "not ") } else { ("==", "") };
+                // J90-PF: and two safe ints (the helper's second branch), compared by value.
                 format!(
-                    "({a} {op} {b} if type({bind}) is type({b}) is str else {not}_js_strict_eq({a}, {b}))"
+                    "({a} {op} {b} if type({bind}) is type({b}) is str or type({a}) is type({b}) is int and -{SAFE} <= {a} <= {SAFE} and -{SAFE} <= {b} <= {SAFE} else {not}_js_strict_eq({a}, {b}))"
+                )
+            }
+            "_js_list_at" => {
+                // J90-PF: a proven list read at an int index inside it: the element (the helper's
+                // own first branch).
+                let i = &args[1];
+                let i_test = if index_literal(i) {
+                    format!("{i} < len({a})")
+                } else {
+                    format!("type({i}) is int and 0 <= {i} < len({a})")
+                };
+                format!("({a}[{i}] if {i_test} else _js_list_at({a}, {i}))")
+            }
+            "_js_m_push" => {
+                // J90-PF: a list's push of one item is its append, and answers the new length
+                // (the helper's own first branch). The item is a name or a literal, so reading the
+                // receiver again for its length reads the same list.
+                let x = &args[1];
+                format!(
+                    "({a}.append({x}) or len({a}) if type({a}) is list else _js_m_push({a}, {x}))"
                 )
             }
             _ => {
@@ -3717,6 +3772,75 @@ impl<'s> Lowerer<'s> {
             code,
             prec: ATOM,
             ..value
+        }
+    }
+
+    /// J90-P6 / J90-PF: where a guarded inline expansion may be written: a loop body of a
+    /// function, outside a comprehension element.
+    fn hot_here(&self) -> bool {
+        !self.scopes.is_empty() && self.hot_comp == 0 && self.breaks.contains(&BreakTarget::Loop)
+    }
+
+    /// J90-PF: guarded inline expansion of a helper call that stands as a statement in a loop
+    /// body of a function (RULES.md, *J90-PF rules*; where `hot` applies): `m.set(k, v)`,
+    /// `xs.push(x)` and `xs[i] = v` are each written as an `if` whose first arm is the helper's
+    /// own first branch under a guard at least as strict and whose `else` is the unchanged call.
+    /// The receiver, key and value of `set` and of a store must each be a name or a literal (read
+    /// again in the arm with no code run in between); a push's one item may be anything:
+    /// `xs.append(x)` reads `xs` before it evaluates `x`, as JS reads the receiver first, and only
+    /// one arm runs. The result is discarded, as the statement discards the call's.
+    fn hot_stmt(&self, code: &str, p: &str) -> Option<Vec<String>> {
+        if !self.hot_here() {
+            return None;
+        }
+        let (helper, args) = split_call(code)?;
+        let name = |a: &str| is_name(a) && !matches!(a, "True" | "False" | "None");
+        let index_literal = |a: &str| is_int_literal(a) && !a.starts_with('-') && a.len() < 16;
+        const SAFE: &str = "9007199254740992";
+        let q = format!("{p}    ");
+        match (helper, args.as_slice()) {
+            ("_js_m_set", [m, k, v]) if name(m) && simple_value(v) => {
+                let key_test = if is_str_literal(k) || index_literal(k) {
+                    String::new()
+                } else if name(k) {
+                    format!(
+                        " and (type({k}) is str or type({k}) is int and -{SAFE} <= {k} <= {SAFE})"
+                    )
+                } else {
+                    return None;
+                };
+                Some(vec![
+                    format!("{p}if type({m}) is _JsMap{key_test} and {m}._keys is None:"),
+                    format!("{q}{m}._entries[{k}] = {v}"),
+                    format!("{p}else:"),
+                    format!("{q}{code}"),
+                ])
+            }
+            ("_js_m_push", [xs, _]) if name(xs) => {
+                let item = &args[1];
+                Some(vec![
+                    format!("{p}if type({xs}) is list:"),
+                    format!("{q}{xs}.append({item})"),
+                    format!("{p}else:"),
+                    format!("{q}{code}"),
+                ])
+            }
+            ("_js_put", [xs, i, v]) if name(xs) && simple_operand(v) => {
+                let i_test = if index_literal(i) {
+                    format!("{i} < len({xs})")
+                } else if name(i) {
+                    format!("type({i}) is int and 0 <= {i} < len({xs})")
+                } else {
+                    return None;
+                };
+                Some(vec![
+                    format!("{p}if type({xs}) is list and {i_test}:"),
+                    format!("{q}{xs}[{i}] = {v}"),
+                    format!("{p}else:"),
+                    format!("{q}{code}"),
+                ])
+            }
+            _ => None,
         }
     }
 
@@ -4055,7 +4179,28 @@ impl<'s> Lowerer<'s> {
                 if object.is_list {
                     return Py::atom(format!("_js_list_at({}, {})", object.code, key.code));
                 }
-                let read = Py::atom(format!("_js_get({}, {})", object.code, key.code));
+                // J90-PF: inside a loop body, a read by a key proven a number, of a receiver and a
+                // key that are names: the list's element when the receiver is a list and the key
+                // an int index inside it (`_js_get`'s own branch for that pair), else `_js_get`.
+                let index_literal =
+                    literal_index.is_some() && is_int_literal(&key.code) && key.code.len() < 16;
+                let read = if key.is_num
+                    && self.hot_here()
+                    && is_name(&object.code)
+                    && (is_name(&key.code) || index_literal)
+                {
+                    let (o, k) = (&object.code, &key.code);
+                    let k_test = if index_literal {
+                        format!("{k} < len({o})")
+                    } else {
+                        format!("type({k}) is int and 0 <= {k} < len({o})")
+                    };
+                    Py::atom(format!(
+                        "({o}[{k}] if type({o}) is list and {k_test} else _js_get({o}, {k}))"
+                    ))
+                } else {
+                    Py::atom(format!("_js_get({}, {})", object.code, key.code))
+                };
                 // J87: element 0 of what `exec` returned is the matched `str` (reading it from
                 // `null` is the TypeError JS raises too).
                 if object.is_match
@@ -5042,6 +5187,16 @@ impl<'s> Lowerer<'s> {
                         args[0].code
                     )));
                 }
+                if as_statement {
+                    // J90-PF: several items: `_js_m_push`'s own `extend` of them, in order (the
+                    // receiver is read first, then each item, as JS reads them).
+                    let items: Vec<String> = args.iter().map(|a| a.code.clone()).collect();
+                    return Some(Py::atom(format!(
+                        "{}.extend(({},))",
+                        receiver.at(ATOM),
+                        items.join(", ")
+                    )));
+                }
                 Some(returned(Ret::Num, format!("_js_m_push({})", all(args))))
             }
             "includes" if receiver.is_list && one_str && (receiver.pure || args[0].pure) => {
@@ -5105,6 +5260,38 @@ impl<'s> Lowerer<'s> {
                             if l.value.as_str().is_some_and(|v| !v.contains(['$', '\\']))) =>
             {
                 Some(returned(Ret::Str, format!("_js_re_replace({})", all(args))))
+            }
+            // J90-PF: `s.endsWith(lit)` / `s.startsWith(lit)`, `lit` an ASCII string literal and
+            // the one argument: Python's own `endswith` / `startswith` on a `str` (an ASCII unit
+            // is its own code point, and no surrogate unit equals one, so comparing the last or
+            // first code units is comparing those code points), else the helper. A receiver that
+            // is not a proven `str` must be a name, read twice.
+            "endsWith" | "startsWith"
+                if args.len() == 1
+                    && matches!(call.arguments.first().and_then(|a| a.as_expression()).map(strip),
+                        Some(Expression::StringLiteral(l)) if l.value.as_str().is_some_and(str::is_ascii))
+                    && (receiver.is_str || is_name(&receiver.code)) =>
+            {
+                let py = if method == "endsWith" {
+                    "endswith"
+                } else {
+                    "startswith"
+                };
+                let lit = &args[0].code;
+                if receiver.is_str {
+                    Some(Py::boolean(
+                        format!("{}.{py}({lit})", receiver.at(ATOM)),
+                        ATOM,
+                    ))
+                } else {
+                    let r = &receiver.code;
+                    Some(Py::boolean(
+                        format!(
+                            "({r}.{py}({lit}) if type({r}) is str else _js_m_{method}({r}, {lit}))"
+                        ),
+                        ATOM,
+                    ))
+                }
             }
             "startsWith" if receiver.is_str && one_str => Some(returned(
                 Ret::Bool,
@@ -5477,14 +5664,26 @@ impl<'s> Lowerer<'s> {
                     };
                 }
                 if let Some((arrow, key, descending)) = keyed {
-                    let key = self.key_lambda(arrow, key);
-                    let code = format!(
-                        "_js_sort_keyed({}, {}, {}, {})",
-                        receiver.code,
-                        key,
-                        if descending { "True" } else { "False" },
-                        args[0].code
+                    // J90-PF: `(a, b) => a - b` (or `b - a`): the item is its own key, so a list
+                    // of safe ints sorts by value (`_js_sort_num`), else `_js_sort_keyed` as before.
+                    let identity = matches!(
+                        (strip(key), &arrow.params.items[0].pattern),
+                        (Expression::Identifier(k), BindingPattern::BindingIdentifier(p))
+                            if k.name == p.name
                     );
+                    let flag = if descending { "True" } else { "False" };
+                    let code = if identity {
+                        format!(
+                            "_js_sort_num({}, {}, {})",
+                            receiver.code, flag, args[0].code
+                        )
+                    } else {
+                        let key = self.key_lambda(arrow, key);
+                        format!(
+                            "_js_sort_keyed({}, {}, {}, {})",
+                            receiver.code, key, flag, args[0].code
+                        )
+                    };
                     let result = returned(Ret::List, code);
                     return if receiver.top {
                         result.with_fact(None)
@@ -5507,6 +5706,29 @@ impl<'s> Lowerer<'s> {
                         parts.join(", "),
                         args[0].code
                     );
+                    let result = returned(Ret::List, code);
+                    return if receiver.top {
+                        result.with_fact(None)
+                    } else {
+                        result
+                    };
+                }
+                // J90-PF: `[...new Set(xs)].sort(cmp)`, `cmp` an adapter whose row promises
+                // code-point order (not a local) and `Set` the builtin: `_js_sort_unique(xs, cmp)`,
+                // which answers `sorted(set(xs))` for a list of `str`s and the general lowering's
+                // own `_js_m_sort([*_JsSet(xs)], cmp)` for anything else.
+                if method == "sort"
+                    && !class_method
+                    && !spread
+                    && args.len() == 1
+                    && simple_operand(&args[0].code)
+                    && matches!(c.arguments[0].as_expression().map(strip),
+                        Some(Expression::Identifier(id))
+                            if self.codepoint_fns.contains(id.name.as_str())
+                                && !self.is_scoped(id.name.as_str()))
+                    && let Some(inner) = self.set_spread(&m.object, &receiver.code)
+                {
+                    let code = format!("_js_sort_unique({inner}, {})", args[0].code);
                     let result = returned(Ret::List, code);
                     return if receiver.top {
                         result.with_fact(None)
@@ -5875,6 +6097,58 @@ impl<'s> Lowerer<'s> {
 
     /// J90-P: `lambda <a>, *_: <k(a)>`, `k(a)` lowered in a scope of the comparator's first
     /// parameter alone (as the comparator's own lowering binds it).
+    /// J90-PF: the lowered `xs` of an array literal `[...new Set(xs)]` (one spread element, `Set`
+    /// the builtin, one plain argument) whose lowering `code` is exactly `[*_JsSet(<xs>)]`; None
+    /// for any other array or text.
+    fn set_spread(&self, object: &Expression<'_>, code: &str) -> Option<String> {
+        let Expression::ArrayExpression(array) = strip(object) else {
+            return None;
+        };
+        let [ArrayExpressionElement::SpreadElement(spread)] = array.elements.as_slice() else {
+            return None;
+        };
+        let Expression::NewExpression(n) = strip(&spread.argument) else {
+            return None;
+        };
+        let builtin = matches!(strip(&n.callee), Expression::Identifier(id)
+            if id.name == "Set" && !self.is_local("Set") && !self.classes.contains_key("Set"));
+        if !builtin
+            || n.arguments.len() != 1
+            || matches!(n.arguments[0], Argument::SpreadElement(_))
+        {
+            return None;
+        }
+        let inner = code.strip_prefix("[*_JsSet(")?.strip_suffix(")]")?;
+        // The text between is one balanced expression (no `), (` splitting it into two).
+        let mut depth = 0i32;
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        for ch in inner.chars() {
+            if let Some(q) = quote {
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == q {
+                    quote = None;
+                }
+                continue;
+            }
+            match ch {
+                '"' | '\'' => quote = Some(ch),
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+        }
+        (depth == 0 && quote.is_none() && !inner.is_empty()).then(|| inner.to_string())
+    }
+
     fn key_lambda(&mut self, arrow: &ArrowFunctionExpression<'_>, key: &Expression<'_>) -> String {
         let BindingPattern::BindingIdentifier(id) = &arrow.params.items[0].pattern else {
             unreachable!("keyed_comparator matched a plain parameter")
@@ -8283,6 +8557,20 @@ fn simple_operand(code: &str) -> bool {
         || is_int_literal(code)
         || is_float_literal(code)
         || is_str_literal(code)
+}
+
+/// J90-PF: a value a statement expansion may store after its guard: a `simple_operand`, or a list
+/// display of them (`[row]`), whose evaluation reads names and runs no code.
+fn simple_value(code: &str) -> bool {
+    if simple_operand(code) {
+        return true;
+    }
+    let Some(inner) = code.strip_prefix('[').and_then(|c| c.strip_suffix(']')) else {
+        return false;
+    };
+    !inner.trim().is_empty()
+        && !inner.contains(['[', ']', '(', ')', '"', '\''])
+        && inner.split(',').all(|item| simple_operand(item.trim()))
 }
 
 /// A Python name, never a keyword.

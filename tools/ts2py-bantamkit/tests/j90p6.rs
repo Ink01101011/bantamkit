@@ -82,11 +82,12 @@ const NODE_FUZZ: &str = "1ed50fec2823aa9f";
 fn expansions_answer_like_node() {
     let modules = compiled();
     let code = &modules[0].code;
-    // The three expansions are what the probe exercised.
+    // The three expansions are what the probe exercised (J90-PF widened the key test to a safe
+    // int and `===` to two safe ints: tests/j90pf.rs).
     for form in [
-        "._entries.get(k, _JS_UNDEFINED) if type(m) is _JsMap and type(k) is str else _js_m_get(m, k))",
-        "(a == b if type(a) is type(b) is str else _js_strict_eq(a, b))",
-        "(a != b if type(a) is type(b) is str else not _js_strict_eq(a, b))",
+        "._entries.get(k, _JS_UNDEFINED) if type(m) is _JsMap and (type(k) is str or type(k) is int and -9007199254740992 <= k <= 9007199254740992) else _js_m_get(m, k))",
+        "(a == b if type(a) is type(b) is str or type(a) is type(b) is int and -9007199254740992 <= a <= 9007199254740992 and -9007199254740992 <= b <= 9007199254740992 else _js_strict_eq(a, b))",
+        "(a != b if type(a) is type(b) is str or type(a) is type(b) is int and -9007199254740992 <= a <= 9007199254740992 and -9007199254740992 <= b <= 9007199254740992 else not _js_strict_eq(a, b))",
         "(x + y if type(x) is int and type(y) is int and -4503599627370496 <= y <= 4503599627370496 and -4503599627370496 <= x <= 4503599627370496 else _js_add(x, y))",
         "(s + 1 if type(s) is int and -4503599627370496 <= s <= 4503599627370496 else _js_add(s, 1))",
     ] {

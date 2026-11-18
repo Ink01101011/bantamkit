@@ -70,7 +70,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_str_at,
     _js_str_includes,
     _js_str_slice,
-    _js_str_starts_with,
     _js_strict_eq,
     _js_truthy,
     _js_typeof,
@@ -185,7 +184,7 @@ def _analyze_scalar(chars):
     trailing_break = False
     break_space = False
     space_break = False
-    if _js_str_starts_with(scalar, "---") or _js_str_starts_with(scalar, "..."):
+    if scalar.startswith("---") or scalar.startswith("..."):
         block_indicators = True
         flow_indicators = True
     preceded_by_whitespace = True
@@ -194,7 +193,7 @@ def _analyze_scalar(chars):
     previous_break = False
     index = 0
     while index < len(chars):
-        ch = _js_list_at(chars, index)
+        ch = (chars[index] if type(index) is int and 0 <= index < len(chars) else _js_list_at(chars, index))
         if index == 0:
             if _js_m_includes("#,[]{}&*!|>'\"%@`", ch):
                 flow_indicators = True
@@ -356,7 +355,7 @@ class _Emitter(_JsObject):
         start = 0
         end = 0
         while _js_le(end, _js_len(chars)):
-            ch = _js_get(chars, end) if _js_lt(end, _js_len(chars)) else None
+            ch = (chars[end] if type(chars) is list and type(end) is int and 0 <= end < len(chars) else _js_get(chars, end)) if _js_lt(end, _js_len(chars)) else None
             if spaces:
                 if ch != " ":
                     if _js_truthy(_js_and_value(_js_num(start + 1) == end and _js_gt(self.column, self.bestWidth), split)):
@@ -368,7 +367,7 @@ class _Emitter(_JsObject):
                     start = end
             elif breaks:
                 if ch is None or not _is_break(ch):
-                    if _js_get(chars, start) == "\n":
+                    if (chars[start] if type(chars) is list and type(start) is int and 0 <= start < len(chars) else _js_get(chars, start)) == "\n":
                         self.writeLineBreak()
                     for br in _js_m_slice(chars, start, end):
                         self.writeLineBreak(br)
@@ -394,7 +393,7 @@ class _Emitter(_JsObject):
         start = 0
         end = 0
         while _js_le(end, _js_len(chars)):
-            ch = _js_get(chars, end) if _js_lt(end, _js_len(chars)) else None
+            ch = (chars[end] if type(chars) is list and type(end) is int and 0 <= end < len(chars) else _js_get(chars, end)) if _js_lt(end, _js_len(chars)) else None
             cp = -1 if ch is None else _js_m_codePointAt(ch, 0)
             must_escape = ch is None or _js_m_includes("\"\\\u0085\u2028\u2029\ufeff", ch) or not (_js_ge(cp, 32) and _js_le(cp, 126) or _js_ge(cp, 160) and _js_le(cp, 55295) or _js_ge(cp, 57344) and _js_le(cp, 65533))
             if must_escape:
@@ -403,7 +402,7 @@ class _Emitter(_JsObject):
                     start = end
                 if ch is not None:
                     data = _JS_UNDEFINED
-                    rep = (_ESCAPE_REPLACEMENTS._entries.get(cp, _JS_UNDEFINED) if type(_ESCAPE_REPLACEMENTS) is _JsMap and type(cp) is str else _js_m_get(_ESCAPE_REPLACEMENTS, cp))
+                    rep = (_ESCAPE_REPLACEMENTS._entries.get(cp, _JS_UNDEFINED) if type(_ESCAPE_REPLACEMENTS) is _JsMap and (type(cp) is str or type(cp) is int and -9007199254740992 <= cp <= 9007199254740992) else _js_m_get(_ESCAPE_REPLACEMENTS, cp))
                     if rep is not _JS_UNDEFINED:
                         data = _js_add("\\", rep)
                     elif _js_le(cp, 255):
@@ -422,7 +421,7 @@ class _Emitter(_JsObject):
                 self.writeIndent()
                 self.whitespace = False
                 self.indention = False
-                if _js_get(chars, start) == " ":
+                if (chars[start] if type(chars) is list and type(start) is int and 0 <= start < len(chars) else _js_get(chars, start)) == " ":
                     self.push("\\")
             end = _js_num(end + 1)
         self.writeIndicator("\"", False)
@@ -467,7 +466,7 @@ def _js_method__Emitter_writeSingleQuoted(self, chars, split):
     start = 0
     end = 0
     while _js_le(end, _js_len(chars)):
-        ch = _js_get(chars, end) if _js_lt(end, _js_len(chars)) else None
+        ch = (chars[end] if type(chars) is list and type(end) is int and 0 <= end < len(chars) else _js_get(chars, end)) if _js_lt(end, _js_len(chars)) else None
         if spaces:
             if ch is None or ch != " ":
                 if _js_truthy(_js_and(_js_and(_js_and_value(_js_num(start + 1) == end and _js_gt(self.column, self.bestWidth), split), lambda: start != 0), lambda: not _js_strict_eq(end, _js_len(chars)))):
@@ -477,7 +476,7 @@ def _js_method__Emitter_writeSingleQuoted(self, chars, split):
                 start = end
         elif breaks:
             if ch is None or not _is_break(ch):
-                if _js_get(chars, start) == "\n":
+                if (chars[start] if type(chars) is list and type(start) is int and 0 <= start < len(chars) else _js_get(chars, start)) == "\n":
                     self.writeLineBreak()
                 for br in _js_m_slice(chars, start, end):
                     self.writeLineBreak(br)
@@ -733,9 +732,9 @@ def _construct_int(raw):
         value = _js_str_slice(value, 1)
     if value == "0":
         return _JsBigInt(0)
-    if _js_str_starts_with(value, "0b"):
+    if value.startswith("0b"):
         return _js_mul(sign, _js_bigint("0b" + _js_str_slice(value, 2)))
-    if _js_str_starts_with(value, "0x"):
+    if value.startswith("0x"):
         return _js_mul(sign, _js_bigint("0x" + _js_str_slice(value, 2)))
     if _js_str_at(value, 0) == "0":
         return _js_mul(sign, _js_bigint("0o" + _js_str_slice(value, 1)))

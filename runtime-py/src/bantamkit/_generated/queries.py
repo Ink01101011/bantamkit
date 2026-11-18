@@ -37,7 +37,6 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_m_join,
     _js_m_keys,
     _js_m_map,
-    _js_m_push,
     _js_m_set,
     _js_m_sort,
     _js_m_test,
@@ -213,7 +212,7 @@ class _CountsView(_JsObject):
     def at(self, t):
         i = 0
         while _js_lt(i, _js_len(self.flat)):
-            if (_js_h1 == t if type(_js_h1 := _js_get(self.flat, i)) is type(t) is str else _js_strict_eq(_js_h1, t)):
+            if (_js_h1 == t if type(_js_h1 := _js_get(self.flat, i)) is type(t) is str or type(_js_h1) is type(t) is int and -9007199254740992 <= _js_h1 <= 9007199254740992 and -9007199254740992 <= t <= 9007199254740992 else _js_strict_eq(_js_h1, t)):
                 return i
             i = _js_num(i + 2)
         return -1
@@ -293,13 +292,13 @@ def _cached__typed(p, sha):
         entry = _js_get(facts, name)
         if not isinstance(entry, list) or len(entry) != 2:
             return None
-        dl = _js_list_at(entry, 0)
-        flat = _js_list_at(entry, 1)
+        dl = (entry[0] if 0 < len(entry) else _js_list_at(entry, 0))
+        flat = (entry[1] if 1 < len(entry) else _js_list_at(entry, 1))
         if not _is_count(dl) or not isinstance(flat, list) or _js_mod(len(flat), 2) != 0:
             return None
         i = 0
         while i < len(flat):
-            if not isinstance(_js_list_at(flat, i), str) or not _is_count(_js_list_at(flat, _js_num(i + 1))):
+            if not isinstance((flat[i] if type(i) is int and 0 <= i < len(flat) else _js_list_at(flat, i)), str) or not _is_count(_js_list_at(flat, _js_num(i + 1))):
                 return None
             i = _js_num(i + 2)
         _js_m_set(out, name, [_CountsView(flat), (dl + 0 if type(dl) is int and -4503599627370496 <= dl <= 4503599627370496 else _js_add(dl, 0))])
@@ -328,13 +327,13 @@ def _cached(p, sha):
         entry = _js_get(facts, name)
         if not isinstance(entry, list) or len(entry) != 2:
             return None
-        dl = _js_list_at(entry, 0)
-        flat = _js_list_at(entry, 1)
+        dl = (entry[0] if 0 < len(entry) else _js_list_at(entry, 0))
+        flat = (entry[1] if 1 < len(entry) else _js_list_at(entry, 1))
         if not _is_count(dl) or not isinstance(flat, list) or _js_mod(len(flat), 2) != 0:
             return None
         i = 0
         while i < len(flat):
-            if not isinstance(_js_list_at(flat, i), str) or not _is_count(_js_list_at(flat, _js_num(i + 1))):
+            if not isinstance((flat[i] if type(i) is int and 0 <= i < len(flat) else _js_list_at(flat, i)), str) or not _is_count(_js_list_at(flat, _js_num(i + 1))):
                 return None
             i = _js_num(i + 2)
         _js_m_set(out, name, [_CountsView(flat), (dl + 0 if type(dl) is int and -4503599627370496 <= dl <= 4503599627370496 else _js_add(dl, 0))])
@@ -375,7 +374,7 @@ def _sidecar_entries(raw):
         _js_caught6 = _js_catch(_js_error6)
     if _js_caught6 is not None:
         return _JsMap()
-    if _js_m_endsWith(text, ",\"v\":1}") or _js_m_endsWith(text, "{\"v\":1}"):
+    if (text.endswith(",\"v\":1}") if type(text) is str else _js_m_endsWith(text, ",\"v\":1}")) or (text.endswith("{\"v\":1}") if type(text) is str else _js_m_endsWith(text, "{\"v\":1}")):
         doc = _JS_UNDEFINED
         _js_caught7 = None
         try:
@@ -396,7 +395,10 @@ def _sidecar_entries(raw):
                     continue
                 qs = _js_get(entry, "queries")
                 if isinstance(qs, list) and len(qs) > 0 and _js_every_string(qs):
-                    _js_m_set(out, name, qs)
+                    if type(out) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) and out._keys is None:
+                        out._entries[name] = qs
+                    else:
+                        _js_m_set(out, name, qs)
             return out
     return _entries_of(_doc_of_bytes(raw))
 
@@ -451,7 +453,7 @@ def dump_terms(facts, sha):
 def _flat_terms(counts):
     out = []
     for t in _js_m_sort([*_js_dispatch(counts, "keys", _js_m_keys)], lambda _js_a0=_JS_UNDEFINED, _js_a1=_JS_UNDEFINED, *_: _by_codepoint(_js_a0, _js_a1)):
-        _js_m_push(out, {"t": "str", "v": t}, _py_int(_js_dispatch(counts, "get", _js_m_get, t)))
+        out.extend(({"t": "str", "v": t}, _py_int(_js_dispatch(counts, "get", _js_m_get, t)),))
     return out
 
 
@@ -502,7 +504,7 @@ def _layer_terms__typed(home, root):
             pass
     out = _JsMap()
     for n, row in _js_rows(facts, 2, (0, 1)):
-        _js_m_set(out, n, [_js_get(row, 1), _js_get(row, 0)])
+        _js_m_set(out, n, [(row[1] if type(row) is list and 1 < len(row) else _js_get(row, 1)), (row[0] if type(row) is list and 0 < len(row) else _js_get(row, 0))])
     return out
 
 
@@ -543,7 +545,7 @@ def layer_terms(home, root):
             pass
     out = _JsMap()
     for n, row in _js_rows(facts, 2, (0, 1)):
-        _js_m_set(out, n, [_js_get(row, 1), _js_get(row, 0)])
+        _js_m_set(out, n, [(row[1] if type(row) is list and 1 < len(row) else _js_get(row, 1)), (row[0] if type(row) is list and 0 < len(row) else _js_get(row, 0))])
     return out
 
 
@@ -596,11 +598,14 @@ def _write_entries__typed(p, entries):
         facts = _JsMap()
         for name, held in _js_rows(_js_get(_js_dispatch(doc, "get", _js_m_get, "facts"), "v"), 2, (0, 1)):
             if not _js_truthy(_js_dispatch(entries, "has", _js_m_has, name)):
-                _js_m_set(facts, name, held)
+                if type(facts) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) and facts._keys is None:
+                    facts._entries[name] = held
+                else:
+                    _js_m_set(facts, name, held)
         _js_m_set(doc, "facts", {"t": "dict", "v": facts})
         for name, entry in _js_rows(entries, 2, (0, 1)):
             if entry is not None:
-                _js_m_set(facts, name, {"t": "dict", "v": _JsMap([["queries", {"t": "list", "v": [{"t": "str", "v": x} for x in _js_array("map", _js_get(entry, 0))]}], ["sha", {"t": "str", "v": _js_get(entry, 1)}]])})
+                _js_m_set(facts, name, {"t": "dict", "v": _JsMap([["queries", {"t": "list", "v": [{"t": "str", "v": x} for x in _js_array("map", (entry[0] if type(entry) is list and 0 < len(entry) else _js_get(entry, 0)))]}], ["sha", {"t": "str", "v": (entry[1] if type(entry) is list and 1 < len(entry) else _js_get(entry, 1))}]])})
         tmp = path_join(path_dirname(p), _js_str(path_basename(p)) + "." + _js_str(process_pid()) + ".tmp")
         _js_caught20 = None
         try:
@@ -643,11 +648,14 @@ def write_entries(p, entries):
         facts = _JsMap()
         for name, held in _js_rows(_js_get(_js_dispatch(doc, "get", _js_m_get, "facts"), "v"), 2, (0, 1)):
             if not _js_truthy(_js_dispatch(entries, "has", _js_m_has, name)):
-                _js_m_set(facts, name, held)
+                if type(facts) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) and facts._keys is None:
+                    facts._entries[name] = held
+                else:
+                    _js_m_set(facts, name, held)
         _js_m_set(doc, "facts", {"t": "dict", "v": facts})
         for name, entry in _js_rows(entries, 2, (0, 1)):
             if entry is not None:
-                _js_m_set(facts, name, {"t": "dict", "v": _JsMap([["queries", {"t": "list", "v": [{"t": "str", "v": x} for x in _js_array("map", _js_get(entry, 0))]}], ["sha", {"t": "str", "v": _js_get(entry, 1)}]])})
+                _js_m_set(facts, name, {"t": "dict", "v": _JsMap([["queries", {"t": "list", "v": [{"t": "str", "v": x} for x in _js_array("map", (entry[0] if type(entry) is list and 0 < len(entry) else _js_get(entry, 0)))]}], ["sha", {"t": "str", "v": (entry[1] if type(entry) is list and 1 < len(entry) else _js_get(entry, 1))}]])})
         tmp = path_join(path_dirname(p), _js_str(path_basename(p)) + "." + _js_str(process_pid()) + ".tmp")
         _js_caught24 = None
         try:

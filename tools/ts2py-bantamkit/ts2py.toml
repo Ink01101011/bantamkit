@@ -457,7 +457,28 @@ module = "runtime-ts/src/storage/nativefact.ts"
 name = "parseNative"
 py_name = "parse_native"
 kind = "function"
-why = "Python is the reference, by ruling (#228, docs/porting.md: the hot index over a native fact only PyYAML reads): `parseNative` is `divergence.parse_fact` for the native shape (its doc comment), so the adapter is that function, answering the name, description, type and body it read as the object the TypeScript returns, and its `MemoryValidationError` restated as the adapter's `BantamError` with the same message, so a compiled `catch` sees it. J90-2 (#316 G4): moved with the function to `storage/nativefact.ts`, and `meta` is now carried, because the generated hot index reads a native file's `links` / `tags` from it: it is what the reference's index read them with (`_secondary`: `load_frontmatter` of the same frontmatter, `{}` where that refuses), each mapping a dict, each list a list, each string or null itself and any other scalar opaque (`factcodec._Opaque`: not a string to `strList`, its `str()` to `pyText`), so `links` / `tags` read as the reference's `[str(x) for x in links]` / `_str_list` read them. `--suite storage-index` (the #228 ruling and the agreeing block-mapping fact), `recall-strings`, `skill-layer` and `hooks` compare the reads."
+why = "Python is the reference, by ruling (#228, docs/porting.md: the hot index over a native fact only PyYAML reads): `parseNative` is `divergence.parse_fact` for the native shape (its doc comment), so the adapter is that function, answering the name, description, type and body it read as the object the TypeScript returns, and its `MemoryValidationError` restated as the adapter's `BantamError` with the same message, so a compiled `catch` sees it. J90-2 (#316 G4): moved with the function to `storage/nativefact.ts`, and `meta` is now carried, because the generated hot index reads a native file's `links` / `tags` from it: it is what the reference's index read them with (`_secondary`: `load_frontmatter` of the same frontmatter, `{}` where that refuses), each mapping a dict, each list a list, each string or null itself and any other scalar opaque (`factcodec._Opaque`: not a string to `strList`, its `str()` to `pyText`), so `links` / `tags` read as the reference's `[str(x) for x in links]` / `_str_list` read them. `--suite storage-index` (the #228 ruling and the agreeing block-mapping fact), `recall-strings`, `skill-layer` and `hooks` compare the reads. J90-PF (#316 G4): and `front`, the frontmatter's text, the middle part of `split('---\\n', 2)` of the file as `pyReadText` reads it (`pySplit` is `str.split`), which the hot index tests for `NATIVE_EXTRA_LINE` where it read the file a third time."
+
+[[adapter]]
+module = "runtime-ts/src/storage/statstamp.ts"
+name = "statStamp"
+py_name = "stat_stamp"
+kind = "function"
+why = "Node builtin (#316 G4, J90-PF): `statStamp(p)` is `${st.mtimeNs}:${st.size}:${st.ino}` of `fs.statSync(p, {bigint: true})`, the three fields the hot index keys its held head on, as one string. The adapter is `os.stat` (symlinks followed, as the `statSync` row) and the decimal of `st_mtime_ns`, `st_size` and `st_ino`, which is what `BigIntStats`' three BigInts print (each the integer exactly); the path reaches the OS as `statSync`'s does (`_node_path`), and a failure is the same OSError. Pinned in `tests/j90pf.rs` against `BigIntStats` over files, a directory, a symlink and missing paths."
+
+[[adapter]]
+module = "runtime-ts/src/storage/statstamp.ts"
+name = "statMtimeNs"
+py_name = "stat_mtime_ns"
+kind = "function"
+why = "Node builtin (#316 G4, J90-PF): `statMtimeNs(p)` is `fs.statSync(p, {bigint: true}).mtimeNs.toString()`, the directory stamp the hot index compares on every refresh. The adapter is the decimal of `os.stat(p).st_mtime_ns` (symlinks followed), the integer that BigInt is; the path and the failure as the `statStamp` row. Pinned with it in `tests/j90pf.rs`."
+
+[[adapter]]
+module = "runtime-ts/src/storage/statstamp.ts"
+name = "statFile"
+py_name = "stat_file"
+kind = "function"
+why = "Node builtin (#316 G4, J90-PF): `statFile(p)` is `[st.mtimeNs.toString(), Number(st.size), st.isFile()]` of `fs.statSync(p, {bigint: true})`, what the hot index's listing reads of each file. The adapter is `os.stat` (symlinks followed): the decimal of `st_mtime_ns`, `_js_num(st_size)` (what `Number` of that BigInt is: the int up to 2^53, the nearest double past it) and `S_ISREG(st_mode)` (`BigIntStats.isFile`); the path and the failure as the `statStamp` row. Pinned with it in `tests/j90pf.rs`."
 
 [[adapter]]
 module = "runtime-ts/src/memory/pyyaml.ts"
