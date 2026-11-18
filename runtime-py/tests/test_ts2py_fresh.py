@@ -262,7 +262,7 @@ def _cargo() -> str | None:
 def _ts2py(cargo: str, *args: str) -> None:
     cmd = [cargo, "run", "-q", "--release", "--manifest-path", "tools/ts2py/Cargo.toml", "--",
            "--config", "tools/ts2py-bantamkit/ts2py.toml", *args]
-    got = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True)
+    got = subprocess.run(cmd, cwd=REPO, capture_output=True, encoding="utf-8", errors="replace")
     assert got.returncode == 0, f"ts2py failed ({' '.join(args[:3])} ...):\n{got.stderr[-4000:]}"
 
 
