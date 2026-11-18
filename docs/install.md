@@ -133,6 +133,19 @@ gated by the conformance suites run against each — and only speed differs: mea
 arm64 in J90-P7/P7B (`docs/porting.md`), the compiled build is at or below the hand-written
 Python of 9c6bc181 on every measured path, 3.11–3.14.
 
+**Where the compiled wheel puts its extensions.** Beside each of those `.py` files, and one more
+at the top of site-packages: mypyc's shared library for the whole group,
+`<hash>__mypyc.cpython-3XX-<platform>.so`, which every compiled module imports by that top-level
+name. It is in the wheel's `RECORD`, so pip installs, upgrades and removes it with the package.
+Measured (J90-RF2, a cp312 wheel built from this tree into a fresh venv): the package imports and
+serves from an empty directory with all 23 modules compiled; `pip install --upgrade` to a build
+whose module set differs (so its library has another hash) removed the old library and installed
+the new one; a downgrade swapped them back; `pip uninstall` removed it. A copy of the
+`bantamkit/` directory alone, without that library, cannot import its compiled modules: nothing
+in bantamkit copies or moves the installed package (`--update` runs `pip install --upgrade`, and
+the kept install under `~/.bantamkit/mcp` is the npm package), but a hand-made copy must take the
+library too.
+
 **Which one am I running?** `build_identity` (an MCP tool) answers `compiled`:
 `mypyc (23 compiled, 1 interpreted)` for a platform wheel, `none (0 compiled, 24 interpreted)`
 for the pure wheel or a checkout. The Node server answers the same field

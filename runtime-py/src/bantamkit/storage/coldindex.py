@@ -28,7 +28,9 @@ from bantamkit._generated._ts2py_runtime import _JsError, _JsMap
 class _no_gc:
     """J90-PF (#316 G4): the cyclic collector off while a write only allocates (a segment's rows
     and tables), as the hot index's `refresh` runs; back on only if it was on. Python-only, as
-    `hotindex.no_gc` is (docs/porting.md): no answer changes."""
+    `hotindex.no_gc` is (docs/porting.md): no answer changes. Kept by the owner's decision of
+    2026-11-18, with its cost (faster writes, a deferred collection on the caller's next call,
+    larger pauses, higher peak RSS): docs/porting.md, *after J90-PF2*, "Decision"."""
 
     __slots__ = ("enabled",)
 

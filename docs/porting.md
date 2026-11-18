@@ -3068,6 +3068,31 @@ total, all modules, `-g0` + `strip -x`, raw / zip -9: cp311 8,414,344 / 2,209,45
 `mypy_extensions` is not needed at run time (the runtime falls back to an identity decorator).
 Compile time, all modules: about 35 s per interpreter on this machine.
 
+**The compiled gate is one command (J90-RF2).** `tools/release/compiled-gate.sh --python <py>`
+makes a scratch worktree of HEAD (or `--rev`) with its own venv and Node build, builds the
+compiled wheel there (`BANTAMKIT_MYPYC=1`, or takes `--wheel`), unpacks its extensions beside the
+worktree's `.py` files (mypyc's group library `<hash>__mypyc.<suffix>` beside `bantamkit/`, where
+the wheel puts it), and refuses to go on unless every module of the compile set imports from an
+extension and `build_identity` says `mypyc (23 compiled, 1 interpreted)`. It then runs pytest and
+`--all` in the worktree with a `sitecustomize` in its venv that records, at the exit of every
+Python process, where each `bantamkit._generated` module was loaded from, and fails if any
+process loaded one from a `.py` in the tree under test or none loaded a compiled one. HOME is a
+scratch directory throughout; the worktree is removed at the end (`--keep` keeps it). Its checks
+are `tools/release/compiled_gate.py`, pinned by `runtime-py/tests/test_compiled_gate.py`.
+
+Why: the compiled runs J90-PF and J90-PF2 reported green were `PYTHONPATH=<compiled tree> node
+run.mjs --all`, and every reference script puts `<checkout>/runtime-py/src` first on `sys.path`,
+so they loaded the `.py` files. Run for real (J90-RR, 3.12, the `.so` files in-tree) the compiled
+build was red: six errors in `test_build_identity`, 12 `cli` failures in `--all` and a dead
+`version` server per fixture, because those copy `bantamkit/` into a scratch tree and left the group library behind (each copy
+now takes it, `tools/conformance/lib/pypackage.mjs`, so a copy is the same build as the checkout);
+four `test_conformance_harness_resilience` failures, a different cause (the rig named
+`<repo>/.venv/bin/python`, which that tree lacked; it now uses the running interpreter); and
+`version` then left `run.mjs` with an unsettled promise, so Node exited 13 with no FAIL line and
+the suites after it never ran (a suite that does not settle is now one red suite, and a run that
+dies inside a suite prints a FAIL line naming it). A real install is not affected: the group
+library is in the wheel's `RECORD` (`docs/install.md`, *Compiled wheels*).
+
 ### The compiled build's last three losses closed (#316 G4, J90-P7B)
 
 J90-P7's compiled build lost full refresh (all four interpreters), cold query (3.11, 3.14) and the
@@ -3438,6 +3463,23 @@ per path, median). Each comparison is with the collector off around `refresh` ag
 The cold index keeps its `gc.disable()` around `add` / `compact`. On this bench the collections it
 defers land in no later path. With the collector left on there, 3.14 compaction took 52.5 ms
 against 50.7 (n = 7).
+
+**Decision (the owner, 2026-11-18): the collector stays off around `ColdIndex.add` / `compact`,
+and this is its cost.** J90-RR measured it on this branch against the same code with `_no_gc`
+made a no-op, interleaved, n = 9 pure and n = 7 compiled (`gc_rr.py`, `gcdrive.py` in J90-RR's
+scratch; quoted from J90-RR, not rerun in J90-RF2). No answer changes either way.
+
+- **Gained: the writes are faster.** Compaction −2.7 ms pure 3.12, −4.5 ms compiled 3.12, −18 ms
+  compiled 3.14. Over a long-lived server loop (30 rounds of add + query + recall, compaction every
+  10) the total time is the same or better.
+- **Paid: the caller's next operation runs the deferred collection.** A recall after a compaction
+  +1.3 ms pure 3.12 (9.17 against 7.84) and +1.4 ms compiled 3.12; a recall after an add +1.75 ms
+  compiled 3.14 (9.92 against 8.17). The worst single collector pause is larger: 16.4 against
+  11.6 ms pure 3.12, 23.2 against 18.1 ms compiled 3.12, 16.9 against 7.5 ms compiled 3.14. Peak
+  RSS is higher: +7 MB pure 3.12, +17.6 MB pure 3.14, +17 MB compiled 3.12, about 0 compiled 3.14.
+- **Why this differs from the hot index**, where J90-PF2 removed the same wrapper: there it saved
+  no time and only moved the cost to later operations; here the write itself gets faster and the
+  total does not get worse.
 
 **Measured and not taken.**
 
