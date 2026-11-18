@@ -1092,7 +1092,12 @@ alone could not see either. Since #315 (J86-3) that covers EVERY generated file:
 flags above, and `committed/coverage` lists `_generated/` so a committed file without a fresh
 compile (or the reverse) is red. Proved red once: a line appended to the committed `pyyaml.py`
 and a stray `_generated/stray.py` failed `committed/pyyaml.py` and `committed/coverage` (2 of
-452 cases).
+452 cases). Since J90-RF (F2) the pytest file makes the same body compare when cargo is present (on PATH
+or at `~/.cargo/bin/cargo`): it runs the five commands into a scratch directory and compares every
+committed module byte for byte (`test_generated_body_is_what_ts2py_writes[<module>]`), so a
+hand-edited body is refused by both gates, as CLAUDE.md says; without cargo those 26 tests skip
+with that reason and the header tests still run. Proved red on a hand edit of
+`_generated/retention.py` whose header still matched (1 failed, 72 passed).
 
 **Python-side behaviour changes, all toward Node.** The hand-written planner disagreed with the
 TypeScript on 8 fixture cases, which J85-2 carried as `ruling:` cases (`KNOWN_LEGACY_FINDINGS`,

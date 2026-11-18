@@ -103,10 +103,11 @@ adapter module (`adapters.py`, the source of `_ts2py_adapters.py`), the census
 under stay in `tools/ts2py/RULES.md`.
 
 The output is deterministic: on an unchanged tree these five commands rewrite the same bytes. Two
-gates refuse a stale or hand-edited file: `runtime-py/tests/test_ts2py_fresh.py` (each module's
-`source-sha256` header against its TypeScript, no Rust needed) and
-`node tools/conformance/run.mjs --suite ts2py`, which recompiles everything and byte-compares it
-with the committed files. Each Python module keeps its public API through a hand-written shim
+gates refuse a stale or hand-edited file: `runtime-py/tests/test_ts2py_fresh.py` and
+`node tools/conformance/run.mjs --suite ts2py`. Both recompile everything and byte-compare it with
+the committed files, so a hand-edited body is refused even when its header still matches. The
+pytest file also checks each module's `source-sha256` header against its TypeScript, which needs no
+Rust; on a machine without cargo it runs only that check and skips the byte compare, saying so. Each Python module keeps its public API through a hand-written shim
 beside it; see [Architecture → Generated modules](architecture.md#generated-modules-where-they-sit)
 and [Porting → Generated modules](porting.md).
 

@@ -17,9 +17,18 @@ Every `.py` in the directory must be one of those, so a generated module committ
 sit outside this gate. Behaviour, not just freshness, is gated by
 `node tools/conformance/run.mjs --suite ts2py` (which also recompiles every committed file and
 compares it byte for byte) and `--suite ts2py-codec`.
+
+The header names the TypeScript, not the body: a hand-edited body keeps its header. So when cargo
+is present (on PATH or at `~/.cargo/bin/cargo`) this file also compiles every module again with
+the five regenerate commands, into a scratch directory, and compares each committed file with it
+byte for byte, as `--suite ts2py`'s F4 compare does (J90-RF F2). Without cargo that test is skipped
+and says so; the header tests above still run.
 """
 
 import hashlib
+import os
+import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -225,3 +234,87 @@ def test_the_gate_goes_red_on_a_changed_source(module, tmp_path):
     changed.write_bytes(source.read_bytes() + b"\n")
     carried, wanted = source_header(GENERATED / module, changed)
     assert carried != wanted
+
+
+# ------------------------------------------------------------ J90-RF F2: the body, byte for byte
+
+# The sources of each ts2py call, as the regenerate commands above (and `--suite ts2py`) give them.
+_CODEC = ["runtime-ts/src/memory/pyyaml.ts", "runtime-ts/src/memory/factfile.ts"]
+_G1_G4 = [
+    f"runtime-ts/src/{m}.ts"
+    for m in (
+        "pricing", "jobbudget", "storage/logsegment", "eventlog", "tokenledger", "memory/usage",
+        "memory/retrieval", "memory/store", "memory/native", "memory/queries", "memory/layers",
+        "memory/dream", "memory/component", "storage/lock", "storage/hotindex", "storage/coldindex",
+        "storage/retention", "storage/tiers", "storage/index",
+    )
+]
+
+
+def _cargo() -> str | None:
+    found = shutil.which("cargo")
+    if found:
+        return found
+    home = Path(os.path.expanduser("~")) / ".cargo" / "bin" / "cargo"
+    return str(home) if home.is_file() else None
+
+
+def _ts2py(cargo: str, *args: str) -> None:
+    cmd = [cargo, "run", "-q", "--release", "--manifest-path", "tools/ts2py/Cargo.toml", "--",
+           "--config", "tools/ts2py-bantamkit/ts2py.toml", *args]
+    got = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True)
+    assert got.returncode == 0, f"ts2py failed ({' '.join(args[:3])} ...):\n{got.stderr[-4000:]}"
+
+
+@pytest.fixture(scope="module")
+def fresh_emit(tmp_path_factory) -> Path:
+    """Every generated module compiled again now, with the flags the committed ones were made by."""
+    cargo = _cargo()
+    if cargo is None:
+        pytest.skip("cargo not found (PATH, ~/.cargo/bin): the body compare needs ts2py; the "
+                    "source-sha256 header tests still ran")
+    out = tmp_path_factory.mktemp("ts2py-fresh")
+    rt = ["--runtime-module", "._ts2py_runtime"]
+    _ts2py(cargo, "runtime-ts/src/workplan.ts", "-o", str(out / "workplan.py"), *rt)
+    _ts2py(cargo, *_CODEC, "--out-dir", str(out), *rt)
+    _ts2py(cargo, *_G1_G4, "--out-dir", str(out), *rt)
+    _ts2py(cargo, "--emit-runtime", str(out / "_ts2py_runtime.py"))
+    _ts2py(cargo, "--emit-adapters", str(out / "_ts2py_adapters.py"))
+    return out
+
+
+def test_fresh_emit_covers_every_generated_file(fresh_emit):
+    made = {p.name for p in fresh_emit.glob("*.py")}
+    assert made == set(MODULES) | SUPPORT, (
+        f"ts2py wrote {sorted(made)}; the committed set is {sorted(set(MODULES) | SUPPORT)}"
+    )
+
+
+def _body_differs(committed: Path, fresh: Path) -> str | None:
+    have, want = committed.read_bytes(), fresh.read_bytes()
+    if have == want:
+        return None
+    a, b = have.split(b"\n"), want.split(b"\n")
+    pairs = enumerate(zip(a, b, strict=False))
+    line = next((i for i, (x, y) in pairs if x != y), min(len(a), len(b)))
+    return (f"{committed.name} differs from what ts2py writes now at line {line + 1} "
+            f"({len(have)} bytes committed, {len(want)} fresh)")
+
+
+@pytest.mark.parametrize("module", sorted(set(MODULES) | SUPPORT))
+def test_generated_body_is_what_ts2py_writes(module, fresh_emit):
+    # A hand-edited body keeps its source-sha256 header, so the header test above cannot see it.
+    differs = _body_differs(GENERATED / module, fresh_emit / module)
+    assert differs is None, f"bantamkit/_generated/{differs}; {REGENERATE}"
+
+
+def test_the_body_compare_goes_red_on_a_hand_edit(fresh_emit, tmp_path):
+    # The comparison itself, proved able to fail: the committed retention module with one line of
+    # its body changed (its header untouched) differs from the fresh emit.
+    edited = tmp_path / "retention.py"
+    text = (GENERATED / "retention.py").read_text(encoding="utf-8")
+    assert "return " in text
+    edited.write_text(text.replace("return ", "return  ", 1), encoding="utf-8", newline="")
+    carried, wanted = source_header(edited, MODULES["retention.py"])
+    assert carried == wanted
+    assert _body_differs(edited, fresh_emit / "retention.py") is not None
