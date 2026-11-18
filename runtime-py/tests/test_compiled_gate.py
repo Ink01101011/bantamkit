@@ -179,6 +179,9 @@ def test_the_logger_runs_from_a_pth_file_in_a_site_directory(tmp_path: Path, mon
         "m = types.ModuleType('bantamkit._generated.zz_pth_probe'); m.__file__ = '/x/zz.py'\n"
         "sys.modules[m.__name__] = m\n"
     )
-    subprocess.run([sys.executable, "-c", program], check=True)
+    # `-I -S`: no site directory of this interpreter, so the gate's own logger (when this test
+    # runs inside the compiled gate, it is already installed under the same name) is not the one
+    # the `.pth` line imports.
+    subprocess.run([sys.executable, "-I", "-S", "-c", program], check=True)
     rec = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
     assert rec["modules"] == {"bantamkit._generated.zz_pth_probe": "/x/zz.py"}
