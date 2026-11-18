@@ -236,6 +236,9 @@ def tag(k):
     if isinstance(k, int) and not -(2**53) <= k <= 2**53:
         return float(k)
     return k
+def stored(k):
+    # J90-RF2: a Map stores +0 for a -0 key (ECMA-262 Map.prototype.set), so the model does too.
+    return 0 if isinstance(k, float) and k == 0 and math.copysign(1.0, k) < 0 else k
 for _ in range(N):
     m = R._JsMap([[r.choice(["a", "b", "1"]), j] for j in range(r.randint(0, 3))] if r.random() < 0.5 else None)
     if r.random() < 0.3:
@@ -253,7 +256,7 @@ for _ in range(N):
             if tag(k) in model:
                 model[tag(k)][1] = v
             else:
-                model[tag(k)] = [k, v]
+                model[tag(k)] = [stored(k), v]
         elif op == 1:
             same("delete", R._js_m_delete(m, k), model.pop(tag(k), None) is not None)
         elif op == 2:
@@ -266,6 +269,8 @@ for _ in range(N):
 # 5. `_js_get`, `_js_truthy`, `_js_len`, `_js_key`, `_js_m_add`: the reordered tests answer as before.
 ANY = VALS + KEYS + [[], ["x"], {}, {"a": 1, "constructor": 2}, "length", "constructor", "toString", 3, -1, 2.0]
 def key_old(k):
+    if isinstance(k, float) and k == 0 and math.copysign(1.0, k) < 0:
+        return 0  # J90-RF2: -0 is the key 0
     if isinstance(k, bool):
         return (R._JsMap, k)
     if isinstance(k, float) and k != k:
