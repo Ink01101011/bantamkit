@@ -1007,9 +1007,15 @@ def _j90_index(d: Path) -> dict:
     root, home = bed("stale", "facts", facts[:2])
     opened = f"from bantamkit.storage import hotindex as h; x = h.HotIndex({str(root)!r}, 'facts', {str(home)!r})"
 
+    # J90-RF2: the child imports THIS checkout's package, as the Node side imports this checkout's
+    # dist by absolute URL. With no path set it imported whatever `sys.executable` had installed:
+    # nothing on a bare `--python` (the suite died "reference script failed (exit 1)"), and another
+    # checkout's source from a worktree that borrows that checkout's venv.
+    child_env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[3] / "runtime-py" / "src")}
+
     def other(body: str) -> str:
         return subprocess.run([sys.executable, "-c", f"{opened}\n{body}"], check=True, capture_output=True,
-                              text=True, encoding="utf-8").stdout.strip()
+                              text=True, encoding="utf-8", env=child_env).stdout.strip()
 
     h.HotIndex(root, "facts", home).refresh("full")
     (root / "facts" / "beta.md").write_text(_J90_FACT.format(n="beta", d="beta words another process wrote"),
