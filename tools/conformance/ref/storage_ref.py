@@ -1001,6 +1001,28 @@ def _j90_index(d: Path) -> dict:
     beta = moved.doc("beta")
     out["tail"] = {"again": again, "spaced": spaced, "respelled": respelled, "patched": line2() != canon,
                    "beta": beta["description"] if beta else None}
+    # J90-RF (F1): the reuse is keyed on the text this process wrote, not the path (lib/storage_j90.mjs).
+    import subprocess
+
+    root, home = bed("stale", "facts", facts[:2])
+    opened = f"from bantamkit.storage import hotindex as h; x = h.HotIndex({str(root)!r}, 'facts', {str(home)!r})"
+
+    def other(body: str) -> str:
+        return subprocess.run([sys.executable, "-c", f"{opened}\n{body}"], check=True, capture_output=True,
+                              text=True, encoding="utf-8").stdout.strip()
+
+    h.HotIndex(root, "facts", home).refresh("full")
+    (root / "facts" / "beta.md").write_text(_J90_FACT.format(n="beta", d="beta words another process wrote"),
+                                           encoding="utf-8", newline="\n")
+    other("x.refresh('full')")
+    a = h.HotIndex(root, "facts", home)
+    a_refresh = a.refresh("full")
+    reader = json.loads(other(
+        "import json\nd = lambda: (x.doc('beta') or {}).get('description')\nbefore = d()\n"
+        "r = x.refresh('fast')\nprint(json.dumps([before, r, d()]))"
+    ))
+    a_beta = a.doc("beta")
+    out["stale"] = {"a_refresh": a_refresh, "a_beta": a_beta["description"] if a_beta else None, "reader": reader}
     # J90-2: a source through a dangling symlink and one through a live symlink (lib/storage_j90.mjs).
     (d / "links" / "real").mkdir(parents=True)
     os.symlink("missing-target", d / "links" / "dangle")

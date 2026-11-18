@@ -8,6 +8,7 @@
  *
  * A raise is the answer `{ raised: <class>, msg: <sentence> }` on both sides.
  */
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -183,6 +184,25 @@ async function index(runtimeTs, d) {
     writeFileSync(join(root, 'facts', 'beta.md'), FACT('beta', 'beta words moved'), 'utf8');
     const moved = full();
     out.tail = { again, spaced, respelled, patched: line2() !== canon, beta: moved.doc('beta')?.description ?? null };
+  }
+  // J90-RF (F1): the reuse is keyed on the TEXT this process wrote, not on the path. Process A writes
+  // the second line T; another process writes T2 at the same path (a fact moved); A refreshes full
+  // and finds nothing moved since T2, so it writes T2 again, never its own stale T. A new reader in
+  // a third process is then served T2's doc (red under "reuse whenever this path was ever written").
+  [root, home] = bed('stale', 'facts', facts.slice(0, 2));
+  {
+    const mod = JSON.stringify(pathToFileURL(join(runtimeTs, 'dist', 'storage', 'hotindex.js')).href);
+    const open = `const h = await import(${mod}); const x = new h.HotIndex(${JSON.stringify(root)}, 'facts', ${JSON.stringify(home)});`;
+    const other = (body) => execFileSync(process.execPath, ['--input-type=module', '-e', `${open} ${body}`], { encoding: 'utf8' }).trim();
+    new h.HotIndex(root, 'facts', home).refresh('full');
+    writeFileSync(join(root, 'facts', 'beta.md'), FACT('beta', 'beta words another process wrote'), 'utf8');
+    other("x.refresh('full');");
+    const a = new h.HotIndex(root, 'facts', home);
+    const aRefresh = a.refresh('full');
+    const reader = JSON.parse(other(
+      "const d = () => x.doc('beta')?.description ?? null; const before = d(); const r = x.refresh('fast'); console.log(JSON.stringify([before, r, d()]));",
+    ));
+    out.stale = { a_refresh: aRefresh, a_beta: a.doc('beta')?.description ?? null, reader };
   }
   // J90-2: a source through a symlink whose target is missing (`dangle`), and one through a live
   // symlink (`live` -> `real`). What the index names it by: its realpath's last part, and whether
@@ -588,6 +608,14 @@ export function j90Cases(section, { py, nd, dirs }) {
     lit('J90-P7B a write reuses the second line only when this process wrote that text', {
       again: true, spaced: true, respelled: true, patched: true, beta: 'beta words moved',
     }, py.tail, nd.tail);
+    // J90-RF (F1): red on both sides when `completeTail` reuses whatever this process last wrote at
+    // the path (`WROTE_TAIL.has`) instead of only the text it wrote: A writes its stale line back and
+    // a new reader in a third process is served the old doc with a fresh head.
+    const STALE = 'beta words another process wrote';
+    same('J90-RF a full refresh after another process wrote the index writes that process\'s line, never its own older one', py.stale, nd.stale);
+    lit('J90-RF a full refresh after another process wrote the index: a new reader is served the newer doc', {
+      a_refresh: 'fresh', a_beta: STALE, reader: [STALE, 'fresh', STALE],
+    }, py.stale, nd.stale);
     same('J90-2 a source through a live symlink is named by its target on both sides', py.symlinks.live, nd.symlinks.live);
     lit('a source through a live symlink', ['real', true], py.symlinks.live, nd.symlinks.live);
   } else if (section === 'cold') {
