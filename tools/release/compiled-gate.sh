@@ -21,8 +21,8 @@
 #   4. before anything runs, a probe from an empty directory: `bantamkit` comes from the
 #      worktree, every module of the compile set imports from an extension file, and
 #      `build_identity` answers `mypyc (N compiled, 1 interpreted)`;
-#   5. pytest (`runtime-py/tests`) and `--all`, in the worktree, with a `sitecustomize` in the
-#      worktree venv that appends, at the exit of EVERY Python process on that interpreter, where
+#   5. pytest (`runtime-py/tests`) and `--all`, in the worktree, with a load logger (a `.pth` file) in
+#      the worktree venv that appends, at the exit of EVERY Python process on that interpreter, where
 #      each loaded `bantamkit._generated` module came from;
 #   6. after both: any compile-set module loaded from a `.py` under the worktree's runtime-py/src
 #      fails the gate, and so does a run in which no process loaded a compiled module at all.
@@ -137,7 +137,7 @@ step "probe: the modules under test load from extension files"
 # is needed and a suite that scrubs its children's environment is still recorded.
 LOADLOG="$WORK/loads.jsonl"
 : >"$LOADLOG"
-"$VPY" "$CHECK" sitecustomize "$LOADLOG" || fail "could not install the load logger"
+"$VPY" "$CHECK" logger "$LOADLOG" || fail "could not install the load logger"
 
 STATUS=0
 if [ "$ONLY" != all ]; then

@@ -3074,7 +3074,7 @@ compiled wheel there (`BANTAMKIT_MYPYC=1`, or takes `--wheel`), unpacks its exte
 worktree's `.py` files (mypyc's group library `<hash>__mypyc.<suffix>` beside `bantamkit/`, where
 the wheel puts it), and refuses to go on unless every module of the compile set imports from an
 extension and `build_identity` says `mypyc (23 compiled, 1 interpreted)`. It then runs pytest and
-`--all` in the worktree with a `sitecustomize` in its venv that records, at the exit of every
+`--all` in the worktree with a load logger in its venv (a `.pth` file) that records, at the exit of every
 Python process, where each `bantamkit._generated` module was loaded from, and fails if any
 process loaded one from a `.py` in the tree under test or none loaded a compiled one. HOME is a
 scratch directory throughout; the worktree is removed at the end (`--keep` keeps it). Its checks

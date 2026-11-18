@@ -2,7 +2,7 @@
 
     compiled_gate.py unpack WHEEL SRC     put the wheel's extensions into SRC (a runtime-py/src)
     compiled_gate.py probe SRC            the compile set imports from extension files under SRC
-    compiled_gate.py sitecustomize LOG    write the load logger into this interpreter's site
+    compiled_gate.py logger LOG           install the load logger in this interpreter's site
     compiled_gate.py loads LOG SRC        judge the load log written during pytest and --all
 
 Each exits 0 when its property holds and 1 with the reason otherwise. Run them with the gate's
@@ -84,7 +84,7 @@ def probe(src: Path) -> str:
     return f"{len(want)} of {len(want)} compile-set modules from extensions; compiled = {field}"
 
 
-SITECUSTOMIZE = '''\
+LOGGER = '''\
 # tools/release/compiled_gate.py (J90-RF2): record where bantamkit._generated modules were loaded
 # from, at the exit of every process on this interpreter. Silent on any failure.
 import atexit as _atexit
@@ -106,12 +106,25 @@ _atexit.register(_bk_compiled_gate_record)
 '''
 
 
-def sitecustomize(log: Path) -> str:
-    path = Path(sysconfig.get_paths()["purelib"]) / "sitecustomize.py"
-    if path.exists():
-        raise SystemExit(f"{path} already exists; the gate's venv must be its own")
-    path.write_text(SITECUSTOMIZE.replace("__LOG__", repr(str(log)), 1), encoding="utf-8")
-    return f"load logger at {path}"
+LOGGER_NAME = "_bk_compiled_gate"
+
+
+def logger(log: Path) -> str:
+    """A module and a `.pth` line that imports it, in the venv's site-packages.
+
+    Not `sitecustomize.py`: only the first one on `sys.path` is imported, and Homebrew's CPython
+    3.14 ships its own in the standard library directory, ahead of the venv's (measured: the
+    first 3.14 gate recorded 0 processes, and failed on it). `site` runs every `import` line of
+    every `.pth` file in each site directory, whatever else the interpreter ships.
+    """
+    site = Path(sysconfig.get_paths()["purelib"])
+    module, pth = site / f"{LOGGER_NAME}.py", site / f"{LOGGER_NAME}.pth"
+    for path in (module, pth):
+        if path.exists():
+            raise SystemExit(f"{path} already exists; the gate's venv must be its own")
+    module.write_text(LOGGER.replace("__LOG__", repr(str(log)), 1), encoding="utf-8")
+    pth.write_text(f"import {LOGGER_NAME}\n", encoding="utf-8")
+    return f"load logger at {pth}"
 
 
 def loads(log: Path, src: Path) -> str:
@@ -155,7 +168,7 @@ def main(argv: list[str]) -> int:
     commands = {
         "unpack": lambda a: unpack(Path(a[0]), Path(a[1])),
         "probe": lambda a: probe(Path(a[0])),
-        "sitecustomize": lambda a: sitecustomize(Path(a[0])),
+        "logger": lambda a: logger(Path(a[0])),
         "loads": lambda a: loads(Path(a[0]), Path(a[1])),
     }
     if not argv or argv[0] not in commands:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 import zipfile
 from importlib.machinery import EXTENSION_SUFFIXES
@@ -149,7 +150,7 @@ def test_the_load_logger_records_where_generated_modules_came_from(
     namespace: dict[str, object] = {}
     registered = []
     monkeypatch.setattr("atexit.register", registered.append)
-    exec(gate.SITECUSTOMIZE.replace("__LOG__", repr(str(log)), 1), namespace)
+    exec(gate.LOGGER.replace("__LOG__", repr(str(log)), 1), namespace)
     fake = type(sys)("bantamkit._generated.zz_gate_probe")
     fake.__file__ = f"/somewhere/zz_gate_probe{SUFFIX}"
     monkeypatch.setitem(sys.modules, fake.__name__, fake)
@@ -157,3 +158,27 @@ def test_the_load_logger_records_where_generated_modules_came_from(
     registered[0]()
     rec = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
     assert rec["modules"][fake.__name__] == fake.__file__
+
+
+def test_the_logger_runs_from_a_pth_file_in_a_site_directory(tmp_path: Path, monkeypatch) -> None:
+    """J90-RF2: a `.pth` line, not `sitecustomize.py`, which Homebrew's 3.14 already ships.
+
+    The first 3.14 gate recorded 0 processes because the interpreter's own `sitecustomize` was
+    imported instead. A fresh interpreter that adds the directory as a site dir must record.
+    """
+    site = tmp_path / "site"
+    site.mkdir()
+    log = tmp_path / "loads.jsonl"
+    monkeypatch.setattr(gate.sysconfig, "get_paths", lambda: {"purelib": str(site)})
+    gate.logger(log)
+    with pytest.raises(SystemExit, match="already exists"):
+        gate.logger(log)
+    program = (
+        "import site, sys, types\n"
+        f"site.addsitedir({str(site)!r})\n"
+        "m = types.ModuleType('bantamkit._generated.zz_pth_probe'); m.__file__ = '/x/zz.py'\n"
+        "sys.modules[m.__name__] = m\n"
+    )
+    subprocess.run([sys.executable, "-c", program], check=True)
+    rec = json.loads(log.read_text(encoding="utf-8").splitlines()[-1])
+    assert rec["modules"] == {"bantamkit._generated.zz_pth_probe": "/x/zz.py"}
