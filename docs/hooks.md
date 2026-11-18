@@ -297,6 +297,56 @@ and `UserPromptSubmit` fired **twice on both sides**. The control is why that nu
 anything: the same probe driven through `claude mcp list` fires **nothing** on either side and
 would have "passed" vacuously.
 
+**AMENDED 2026-11-18 (0.40.1): the host keeps the key on a `/hooks` edit and drops it on other
+writes.** Measured on Claude Code 2.1.327 in a scratch `CLAUDE_CONFIG_DIR` holding one marked
+hook: `claude plugin marketplace add <dir>` re-serialised `settings.json` and the hook came back
+as `{type, command, timeout}`, the marker gone; `plugin install`, `disable` and `enable` left it
+gone. `--install-hooks` compared the marker, so after any such write a correct install read as
+"not matching": it asked for consent to write back seven entries that differed from the file's
+by that key alone, and with no terminal that is **exit 2 — the exit a stale command gets**, so a
+caller could not tell the two apart. Seen on a real settings file: the `.hooks` diff across the
+rewrite it then asked for was seven added `"bantamkit": "hook"` lines and nothing else.
+
+Since 0.40.1 the already-installed test leaves the marker out on both sides. Command, timeout,
+matcher and order are still compared, so an entry whose command names another install still
+does not match. The marker is still written, and it is still what claims an entry on a path
+that never says `bantamkit`.
+
+**Ownership gained one arm for the same reason (0.40.1).** An entry with no marker used to be
+ours only through the two legacy spellings, which need the command to name bantamkit. On an
+install path that does not, an entry the host had stripped named nobody: `--install-hooks`
+added seven beside it and `--remove-hooks` reported none — the J62-22 defect, reached through
+the host instead of through us. Which keys the host keeps was measured, on 2.1.327, with a
+schema-valid file: it rewrote the `hooks` object from its parsed form and kept `type`,
+`command`, `if`, `shell`, `timeout`, `statusMessage`, `once` and `async` on a hook, and nothing
+else on the hook or on the block around it. No key of ours survives there. (With a `hooks`
+object its schema rejects, the same write left every key in place.)
+
+So the third arm reads the one field the host must keep verbatim: **a marker-less command hook
+is ours when its command is, to the byte, the command this install writes.** Equality, not a
+substring — another tool's `--hook` is not claimed, and neither is an entry another install of
+ours wrote. `--install-hooks` compares against the command it is about to write.
+`--remove-hooks` now reads this install's command for that test alone: it still prints no
+`command:` line, it never runs npm (on an `npx` cache the arm is off, and the kept install's
+path names us anyway), and a command that cannot be worked out turns the arm off rather than
+refusing the removal.
+
+**What is still not rescued.** A stripped entry at a neutral path whose install has since
+**moved**: nothing in it names us and its command is no longer ours, so it stays until it is
+deleted by hand — the seven-event block whose command ends in `--hook` and carries no
+`"bantamkit"` key. An npm install is not affected, because its path holds
+`node_modules/bantamkit-mcp`.
+
+`has_bantamkit_hooks` / `hasBantamkitHooks`, the observation the capability tiers ask, takes the
+same arm, so `storage: … hooks on` stays true for stripped entries of the install that is
+answering. It is an answer about that install: a server started from an `npx` cache, or one
+whose command cannot be worked out, reads the entry alone as before.
+
+The gate is `hook-ownership-neutral-stripped`: the neutral copy of `dist/`, installed, stripped,
+checked with no terminal, reinstalled, stripped again, removed. Before the arm the port read
+`{checkExit: 2, observedWhileStripped: false, entriesAfterReinstall: 14, removalFoundThem:
+false}` against the reference's `{0, true, 7, true}`.
+
 **Nothing already on disk was orphaned by the change.** An entry written by
 `tools/hooks/install.mjs` — the shape in real settings files today — names
 `bantamkit-hook.mjs` in its **filename**, so it is recognised whatever the checkout is called,

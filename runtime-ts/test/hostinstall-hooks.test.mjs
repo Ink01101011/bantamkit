@@ -175,6 +175,58 @@ test('a second identical install changes nothing, says so, and never asks', asyn
   });
 });
 
+/**
+ * What the host does to our entries on a settings write of its own (0.40.1). MEASURED on Claude
+ * Code 2.1.327 in a scratch CLAUDE_CONFIG_DIR: `claude plugin marketplace add` re-serialised
+ * `settings.json` and the `"bantamkit": "hook"` key was gone from the hook object, with `type`,
+ * `command` and `timeout` kept. `mutate` lets a case change something else in the same pass.
+ */
+function asTheHostRewritesIt(path, mutate = () => {}) {
+  const doc = readJson(path);
+  for (const entries of Object.values(doc.hooks)) {
+    for (const entry of entries) {
+      for (const hook of entry.hooks) {
+        delete hook.bantamkit;
+        mutate(hook);
+      }
+    }
+  }
+  writeFileSync(path, `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
+  return readFileSync(path);
+}
+
+test('0.40.1: entries the host took the marker off still match — no terminal, no question, no write', async () => {
+  await withHome(async (h) => {
+    const path = h.claudeSettingsPath();
+    h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
+    const before = asTheHostRewritesIt(path);
+    assert.ok(!before.toString('utf8').includes('"bantamkit"'), 'the fixture still carries a marker');
+    const report = h.installHooks({
+      ...CHECKOUT,
+      tell: () => assert.fail('a no-op install printed a plan'),
+      ask: null,
+    });
+    assert.equal(report, `bantamkit hooks are already installed in ${path} and match`);
+    assert.deepEqual(readFileSync(path), before);
+    assert.deepEqual(backupsIn(path), []);
+  });
+});
+
+for (const [label, mutate] of [
+  ['a command that is not this install’s', (hook) => (hook.command = hook.command.replace(/ --hook$/, '.old --hook'))],
+  ['a timeout that is not ours', (hook) => (hook.timeout = 99)],
+]) {
+  test(`0.40.1: a marker-less entry with ${label} does NOT match and still needs consent`, async () => {
+    await withHome(async (h) => {
+      const path = h.claudeSettingsPath();
+      h.installHooks({ ...CHECKOUT, tell: () => {}, ask: () => true });
+      const before = asTheHostRewritesIt(path, mutate);
+      assert.throws(() => h.installHooks({ ...CHECKOUT, tell: () => {}, ask: null }), h.HookConsentUnavailable);
+      assert.deepEqual(readFileSync(path), before);
+    });
+  });
+}
+
 test('--yes writes with no terminal at all and never asks', async () => {
   await withHome(async (h) => {
     const path = h.claudeSettingsPath();

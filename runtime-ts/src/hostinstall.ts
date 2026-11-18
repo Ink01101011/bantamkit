@@ -791,9 +791,57 @@ function isLegacyOurs(hook: PyDict): boolean {
   return command.includes('bantamkit-hook') || command === '--hook' || command.endsWith(' --hook');
 }
 
-/** ONE inner hook object: ours by marker, or by one of the two legacy spellings. */
-function isOurHook(hook: PyValue): boolean {
-  return hook.t === 'dict' && (hook.v.has(HOOK_MARKER_KEY) || isLegacyOurs(hook));
+/**
+ * A marker-less entry whose command is, to the byte, the one THIS install writes (0.40.1).
+ *
+ * THE MARKER IS NOT ENOUGH ANY MORE, because the host removes it. Measured on Claude Code
+ * 2.1.327 with a schema-valid `settings.json` in a scratch `CLAUDE_CONFIG_DIR`: one `claude
+ * plugin marketplace add` rewrote the `hooks` object from its parsed form, and every key the
+ * host's schema does not name was gone from both the block and the hook object. What came back
+ * was `type`, `command`, `if`, `shell`, `timeout`, `statusMessage`, `once` and `async`. No key
+ * of ours survives there, so on an install path that never says `bantamkit` a stripped entry
+ * named nobody: `--install-hooks` added seven beside it and `--remove-hooks` reported none,
+ * which is J62-22 reached through the host.
+ *
+ * THE COMMAND IS THE ONE FIELD THE HOST MUST KEEP VERBATIM, so it is what this arm reads.
+ * Equality, not a substring: `own` is `hookCommand(...)` over this install's own command, the
+ * string this process would write, and an entry is claimed only when its command is that
+ * string. Another tool's `--hook` is not claimed, and neither is an entry a different install
+ * of ours wrote.
+ *
+ * `own` IS `null` WHEN THE CALLER HAS NO COMMAND TO COMPARE, and then this arm claims nothing:
+ * `isOurs(entry)` with one argument answers exactly as it did before 0.40.1.
+ *
+ * WHAT IT CANNOT RESCUE: a stripped entry at a neutral path whose install has since MOVED.
+ * Nothing in such an entry names us and its command is no longer ours. `docs/hooks.md` says so.
+ */
+function isExactlyOurs(hook: PyDict, own: string | null): boolean {
+  return own !== null && strAt(hook, 'type') === 'command' && strAt(hook, 'command') === own;
+}
+
+/**
+ * The command this install writes, for `--remove-hooks`' ownership test; `null` on any failure.
+ *
+ * Removal still does not need to know what a host should launch. It reads this only to
+ * recognise an entry the host has stripped ({@link isExactlyOurs}), and NOTHING HERE RUNS npm:
+ * on an `npx` cache the answer is `null`, because the kept install `thisCommand` would make
+ * lives under `node_modules/bantamkit-mcp` and its entries name us already. A shape that cannot
+ * be determined is `null` too. A failure here must never stand between an operator and the
+ * ability to undo, so the removal goes on with the entry-local tests alone.
+ */
+function ownHookCommand(options: CommandOptions): string | null {
+  try {
+    const shape = (options.shape ?? ((): string => currentInstall().shape))();
+    if (shape === 'ephemeral') return null;
+    return hookCommand(process.execPath, [fileURLToPath(new URL('./cli.js', import.meta.url))]);
+  } catch {
+    return null;
+  }
+}
+
+/** ONE inner hook object: ours by marker, by a legacy spelling, or by its exact command. */
+function isOurHook(hook: PyValue, own: string | null = null): boolean {
+  return hook.t === 'dict' && (hook.v.has(HOOK_MARKER_KEY) || isLegacyOurs(hook) || isExactlyOurs(hook, own));
 }
 
 /**
@@ -810,12 +858,15 @@ function isOurHook(hook: PyValue): boolean {
  *
  * Ownership is now a property of the ENTRY and of nothing else: our marker, or one of the two
  * shapes we wrote before the marker existed. Where any binary lives is not consulted.
+ *
+ * AMENDED 0.40.1: one arm does consult it. With `own` given, an entry whose command equals it
+ * exactly is ours too ({@link isExactlyOurs}), because the host removes the marker.
  */
-function isOurs(entry: PyValue): boolean {
+function isOurs(entry: PyValue, own: string | null = null): boolean {
   if (entry.t !== 'dict') return false;
   const hooks = entry.v.get('hooks');
   if (hooks === undefined || hooks.t !== 'list') return false;
-  return hooks.v.some(isOurHook);
+  return hooks.v.some((hook) => isOurHook(hook, own));
 }
 
 /**
@@ -829,11 +880,11 @@ function isOurs(entry: PyValue): boolean {
  * every other key it had; and a block left with no hooks at all is `null`, because
  * `{"matcher": ..., "hooks": []}` is an artefact nobody wrote.
  */
-function withoutOurs(entry: PyValue): [PyValue | null, number] {
-  if (!isOurs(entry) || entry.t !== 'dict') return [entry, 0];
+function withoutOurs(entry: PyValue, own: string | null = null): [PyValue | null, number] {
+  if (!isOurs(entry, own) || entry.t !== 'dict') return [entry, 0];
   const hooks = entry.v.get('hooks');
   if (hooks === undefined || hooks.t !== 'list') return [entry, 0];
-  const kept = hooks.v.filter((hook) => !isOurHook(hook));
+  const kept = hooks.v.filter((hook) => !isOurHook(hook, own));
   const removed = hooks.v.length - kept.length;
   if (kept.length === 0) return [null, removed];
   const trimmed = pyDict(entry.v);
@@ -869,11 +920,14 @@ function readHooks(path: string, data: PyDict): HookTable {
  * it. A block is dropped only when taking ours out of it leaves it empty (`withoutOurs`).
  *
  * Events outside the seven are not read, not reordered and not removed.
+ *
+ * `own` is this install's command for {@link isExactlyOurs}, or `null` to leave that arm off.
  */
 function plannedHooks(
   current: HookTable,
   command: string,
   remove: boolean,
+  own: string | null = null,
 ): { hooks: HookTable; touched: string[]; removed: number } {
   const hooks: HookTable = new Map(current);
   const touched: string[] = [];
@@ -883,7 +937,7 @@ function plannedHooks(
     const kept: PyValue[] = [];
     let removedHere = 0;
     for (const entry of before) {
-      const [trimmed, count] = withoutOurs(entry);
+      const [trimmed, count] = withoutOurs(entry, own);
       removedHere += count;
       if (trimmed !== null) kept.push(trimmed);
     }
@@ -898,6 +952,49 @@ function plannedHooks(
     else hooks.delete(event);
   }
   return { hooks, touched, removed };
+}
+
+/**
+ * `table` as the idempotence test reads it: every hook object WITHOUT the ownership marker.
+ *
+ * THE HOST TAKES THE MARKER OFF, so its absence cannot be a reason to rewrite (0.40.1). The note
+ * on {@link HOOK_MARKER_KEY} measured `/hooks` edits on Claude Code 2.1.278, which put unknown
+ * keys back. A settings write that is not a `/hooks` edit does not. MEASURED on 2.1.327 in a
+ * scratch `CLAUDE_CONFIG_DIR` holding one marked hook: `claude plugin marketplace add <dir>`
+ * re-serialised `settings.json` and the hook came back as `{type, command, timeout}`, the marker
+ * gone. Comparing the marker made every such file "not matching": `--install-hooks` then asked
+ * for consent to write back seven entries that differed from the file's by this key alone, and
+ * with no terminal that is exit 2 on an install that is correct — the same exit a stale command
+ * gets, so a caller could not tell the two apart.
+ *
+ * THE COMMAND, THE TIMEOUT, THE MATCHER AND THE ORDER ARE STILL COMPARED. Only the key whose
+ * value is never read is left out, on both sides, so a stale path still fails to match.
+ *
+ * THIS DOES NOT MAKE A MARKER-LESS ENTRY OURS. Whose it is stays {@link isOurHook}'s question,
+ * and an entry with no marker is claimed only through {@link isLegacyOurs}.
+ */
+function withoutMarkers(table: HookTable): PyValue {
+  const bare = (hook: PyValue): PyValue => {
+    if (hook.t !== 'dict' || !hook.v.has(HOOK_MARKER_KEY)) return hook;
+    const copy = pyDict(hook.v);
+    copy.v.delete(HOOK_MARKER_KEY);
+    return copy;
+  };
+  const stripped: HookTable = new Map();
+  for (const [event, entries] of table) {
+    stripped.set(
+      event,
+      entries.map((entry) => {
+        if (entry.t !== 'dict') return entry;
+        const hooks = entry.v.get('hooks');
+        if (hooks === undefined || hooks.t !== 'list') return entry;
+        const copy = pyDict(entry.v);
+        copy.v.set('hooks', { t: 'list', v: hooks.v.map(bare) });
+        return copy;
+      }),
+    );
+  }
+  return asPyValue(stripped);
 }
 
 const EVENT_NAMES = HOOK_EVENTS.map(([event]) => event).join(' ');
@@ -956,7 +1053,8 @@ function removalPlan(path: string, events: readonly string[], entries: number): 
  *      overwritten;
  *   3. ALREADY-INSTALLED-AND-MATCHING RETURNS HERE, before the gate. There is no write to
  *      consent to, so a second `--install-hooks` is a no-op at exit 0 whether or not anybody
- *      is at a terminal, which is what makes it safe in a setup script;
+ *      is at a terminal, which is what makes it safe in a setup script. "Matching" is read
+ *      without the ownership marker, which the host removes (`withoutMarkers`, 0.40.1);
  *   4. print the plan, then the gate;
  *   5. dated backup, then one atomic write.
  *
@@ -970,9 +1068,10 @@ export function installHooks(options: HookOptions = {}): string {
   const path = claudeSettingsPath();
   const data = readConfig(path);
   const current = readHooks(path, data);
-  const { hooks } = plannedHooks(current, rendered, false);
+  const { hooks } = plannedHooks(current, rendered, false, rendered);
 
-  if (dumpJson(asPyValue(hooks), { sortKeys: true }) === dumpJson(asPyValue(current), { sortKeys: true })) {
+  // The marker is left out of this comparison, and `withoutMarkers` says why (0.40.1).
+  if (dumpJson(withoutMarkers(hooks), { sortKeys: true }) === dumpJson(withoutMarkers(current), { sortKeys: true })) {
     return `bantamkit hooks are already installed in ${path} and match`;
   }
 
@@ -1025,6 +1124,10 @@ export function installHooks(options: HookOptions = {}): string {
  *   3. print the plan, then the gate;
  *   4. dated backup, then one atomic write.
  *
+ * AMENDED 0.40.1: this install's command IS now read, through `ownHookCommand`, and only to
+ * recognise an entry the host stripped the marker from. It never runs npm and a failure there
+ * is `null`, never a refusal. The paragraph below is otherwise as it was written.
+ *
  * `thisCommand` IS STILL NOT CALLED. Removal does not need to know what a host should launch,
  * and calling it would put an `npx` cache's kept install between an operator and the ability
  * to undo. That is also why the plan this prints has no `command:` line.
@@ -1033,7 +1136,7 @@ export function removeHooks(options: HookOptions = {}): string {
   const path = claudeSettingsPath();
   const data = readConfig(path);
   const current = readHooks(path, data);
-  const { hooks, touched, removed: entries } = plannedHooks(current, '', true);
+  const { hooks, touched, removed: entries } = plannedHooks(current, '', true, ownHookCommand(options));
 
   if (touched.length === 0) return `no bantamkit hooks are installed in ${path}`;
 
@@ -1074,12 +1177,18 @@ export function removeHooks(options: HookOptions = {}): string {
  * touch (not JSON, not an object, a `hooks` of the wrong shape, unreadable, not UTF-8) answers
  * false rather than throwing. A missing tier is silent, never an error. The reference's
  * `has_bantamkit_hooks`; its `read_text` refuses bytes that are not UTF-8, so this does too.
+ *
+ * AMENDED 0.40.1: an entry the host stripped the marker from is seen here too, by the same
+ * exact-command arm the two flags use ({@link isExactlyOurs}). The command compared is this
+ * process's own, so the answer is about THIS install: on an `npx` cache, or when the command
+ * cannot be worked out, the arm is off and the answer is the entry-local one.
  */
 export function hasBantamkitHooks(path: string): boolean {
+  const own = ownHookCommand({});
   try {
     if (existsSync(path)) new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(readFileSync(path));
     const hooks = readHooks(path, readConfig(path));
-    for (const entries of hooks.values()) if (entries.some(isOurs)) return true;
+    for (const entries of hooks.values()) if (entries.some((entry) => isOurs(entry, own))) return true;
     return false;
   } catch {
     return false;

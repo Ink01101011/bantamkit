@@ -83,7 +83,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 
 export const name = 'hooks';
@@ -1159,6 +1159,67 @@ export async function run(ctx) {
     );
   }
 
+  // ====================== --install-hooks after the HOST took the marker off: STILL A MATCH
+  //
+  // 0.40.1. Claude Code 2.1.327 re-serialises `settings.json` on a write of its own (measured:
+  // `claude plugin marketplace add`) and drops the `"bantamkit": "hook"` key from the hook
+  // object. The entries are otherwise the ones each runtime wrote, so a second `--install-hooks`
+  // with no terminal and no `--yes` must be the exit-0 no-op, not the exit-2 refusal. The
+  // differential is satisfied by two runtimes that both refuse, so exit and bytes are also
+  // pinned per side against a literal.
+  {
+    const id = 'install-hooks-marker-stripped';
+    const cwd = join(root, id, 'cwd');
+    mkdirSync(cwd, { recursive: true });
+    const homes = { py: home(id, 'py'), node: home(id, 'node') };
+    const settings = (h) => join(h, '.claude', 'settings.json');
+    runPy(ctx, { argv: ['--install-hooks', '--yes'], cwd, home: homes.py });
+    runNode(ctx, { argv: ['--install-hooks', '--yes'], cwd, home: homes.node });
+    const strip = (h) => {
+      const doc = JSON.parse(readFileSync(settings(h), 'utf8'));
+      let stripped = 0;
+      for (const entries of Object.values(doc.hooks ?? {})) {
+        for (const entry of entries) {
+          for (const hook of entry.hooks ?? []) {
+            if ('bantamkit' in hook) stripped += 1;
+            delete hook.bantamkit;
+          }
+        }
+      }
+      writeFile(settings(h), `${JSON.stringify(doc, null, 2)}\n`);
+      return { stripped, bytes: readFileSync(settings(h), 'utf8') };
+    };
+    const before = { py: strip(homes.py), node: strip(homes.node) };
+    const py = runPy(ctx, { argv: ['--install-hooks'], cwd, home: homes.py });
+    const nd = runNode(ctx, { argv: ['--install-hooks'], cwd, home: homes.node });
+    const mask = (buf, h) => dec(buf).split(h).join('<HOME>');
+    cases.push({
+      name: 'install-hooks-marker-stripped: the same report, on the same stream, with the same exit code',
+      kind: 'json',
+      expected: { stdout: mask(py.stdout, homes.py), stderr: mask(py.stderr, homes.py), exit: py.exit },
+      actual: { stdout: mask(nd.stdout, homes.node), stderr: mask(nd.stderr, homes.node), exit: nd.exit },
+    });
+    const side = (h, run, was) => ({
+      strippedFirst: was.stripped,
+      exit: run.exit,
+      stdout: mask(run.stdout, h),
+      fileUnchanged: readFileSync(settings(h), 'utf8') === was.bytes,
+    });
+    cases.push(
+      ...literalCases(
+        side(homes.py, py, before.py),
+        side(homes.node, nd, before.node),
+        'install-hooks-marker-stripped: exit 0, the match sentence, the file byte-unchanged, against a literal',
+        {
+          strippedFirst: 7,
+          exit: 0,
+          stdout: 'bantamkit hooks are already installed in <HOME>/.claude/settings.json and match\n',
+          fileUnchanged: true,
+        },
+      ),
+    );
+  }
+
 
   // ================================================ --remove-hooks: THE SAME GATE, BOTH WAYS
   //
@@ -1785,6 +1846,98 @@ export async function run(ctx) {
             entriesAfterRemoval: 0,
             removalFoundThem: true,
           }),
+        );
+
+        // ------------------- the same neutral tree AFTER THE HOST TOOK THE MARKER OFF (0.40.1)
+        //
+        // The case above holds only while the marker is in the file, and Claude Code 2.1.327
+        // removes it on a settings write of its own (`install-hooks-marker-stripped` carries
+        // the measurement). At a neutral path that left the port's entries naming nobody: a
+        // reinstall added seven beside them and a removal found none — the defect above,
+        // reached through the host. What claims them now is the entry's command being, to the
+        // byte, the one this install writes.
+        //
+        // THE ORDER IS THE MEASUREMENT: install, strip, a check with no terminal and no
+        // `--yes`, a reinstall, strip again, remove. Before the fix the port's row read
+        // `checkExit: 2`, `observedWhileStripped: 'false'`, `entriesAfterReinstall: 14`,
+        // `removalFoundThem: false`.
+        const stripHomes = { py: home(`${id}-neutral-stripped`, 'py'), node: home(`${id}-neutral-stripped`, 'node') };
+        const stripMarkers = (h) => {
+          const doc = JSON.parse(readFileSync(settings(h), 'utf8'));
+          for (const entries of Object.values(doc.hooks ?? {})) {
+            for (const entry of entries) for (const hook of entry.hooks ?? []) delete hook.bantamkit;
+          }
+          writeFile(settings(h), `${JSON.stringify(doc, null, 2)}\n`);
+        };
+        const sides = {
+          py: (argv) => runPy(ctx, { argv, cwd, home: stripHomes.py }),
+          node: (argv) => runNode(ctx, { argv, cwd, home: stripHomes.node, cli: neutralCli }),
+        };
+        // The observation the capability tiers ask (`hookTier`), from the SAME install: the
+        // port's is imported out of the neutral copy, so the command it compares is the one
+        // that copy wrote. Asked while the entries are stripped and before they are removed.
+        const observed = {
+          py: (h) =>
+            spawnSync(
+              String(ctx.python),
+              ['-c', 'import sys; from pathlib import Path; from bantamkit.hostinstall import has_bantamkit_hooks as f; print("true" if f(Path(sys.argv[1])) else "false")', settings(h)],
+              { encoding: 'utf8', timeout: 120_000 },
+            ).stdout.trim(),
+          node: (h) =>
+            spawnSync(
+              process.execPath,
+              [
+                '--input-type=module',
+                '-e',
+                `const m = await import(${JSON.stringify(pathToFileURL(join(neutralRoot, 'dist', 'hostinstall.js')).href)}); console.log(String(m.hasBantamkitHooks(process.argv[1])));`,
+                settings(h),
+              ],
+              { encoding: 'utf8', timeout: 120_000 },
+            ).stdout.trim(),
+        };
+        const strippedShape = (side) => {
+          const h = stripHomes[side];
+          sides[side](['--install-hooks', '--yes']);
+          stripMarkers(h);
+          const check = sides[side](['--install-hooks']);
+          const reinstall = sides[side](['--install-hooks', '--yes']);
+          const afterReinstall = entriesIn(h);
+          stripMarkers(h);
+          const seen = observed[side](h);
+          const remove = sides[side](['--remove-hooks', '--yes']);
+          return {
+            checkExit: check.exit,
+            observedWhileStripped: seen,
+            reinstallExit: reinstall.exit,
+            entriesAfterReinstall: afterReinstall,
+            removeExit: remove.exit,
+            entriesAfterRemoval: entriesIn(h),
+            removalFoundThem: !dec(remove.stdout).includes('no bantamkit hooks are installed'),
+          };
+        };
+        const strippedPy = strippedShape('py');
+        const strippedNode = strippedShape('node');
+        cases.push({
+          name: 'hook-ownership-neutral-stripped: the host took the marker off — the same answer whatever the tree is called',
+          kind: 'json',
+          expected: strippedPy,
+          actual: strippedNode,
+        });
+        cases.push(
+          ...literalCases(
+            strippedPy,
+            strippedNode,
+            'hook-ownership-neutral-stripped: still a match, still seven, then none, against a literal',
+            {
+              checkExit: 0,
+              observedWhileStripped: 'true',
+              reinstallExit: 0,
+              entriesAfterReinstall: 7,
+              removeExit: 0,
+              entriesAfterRemoval: 0,
+              removalFoundThem: true,
+            },
+          ),
         );
       }
     }
