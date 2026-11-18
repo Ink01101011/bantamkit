@@ -263,18 +263,14 @@ class HotIndex:
     def refresh(self, mode: Literal["fast", "full"] = "fast") -> Result:
         if mode not in ("fast", "full"):
             raise ValueError(f"unknown refresh mode: {mode!r}")
-        # J90-PF (#316 G4): a refresh only allocates (a build's docs, rows and tables; a patch's),
-        # so the collector is off for it, as for the parses `no_gc` wraps: the generated index
-        # makes every posting row a tracked list where 9c6bc181 made untracked tuples, and the
-        # collector's passes over them were 18-21 ms of a 14-source build (docs/porting.md).
-        # `no_gc` inline: the context manager's own cost (about 2 us) was half a held refresh.
-        enabled = gc.isenabled()
-        gc.disable()
-        try:
-            return self._js.refresh(mode)
-        finally:
-            if enabled:
-                gc.enable()
+        # J90-PF2 (#316 G4): NOT run with the collector off. J90-PF did, and it only moved the
+        # collector's work: the allocation counts kept rising while it was off, so the young and
+        # middle collections the refresh owed ran in whatever came next (the compiled 3.12 open
+        # path paid a 2.6 ms middle collection), and the full one a build triggers ran in the next
+        # retention pass instead (9-11 ms there against 2-4); the collector's total over the bench
+        # and the sum of its paths were the same or worse (docs/porting.md, *after J90-PF2*). The
+        # JSON parses inside a refresh still run with it off, as 9c6bc181's did (`_js_json_parse`).
+        return self._js.refresh(mode)
 
     def parse_file(
         self, path: Path | str, mtime_ns: str, size: int

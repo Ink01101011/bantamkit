@@ -348,3 +348,33 @@ def test_a_head_replaced_with_the_same_mtime_and_size_is_reloaded(tmp_path):
     assert now.st_ino != st.st_ino
     hi.refresh("fast")
     assert hi.doc("a")["description"] == "first fact BBBB"
+
+
+def test_a_refresh_leaves_the_collector_on(tmp_path):
+    """J90-PF2 (#316 G4): `refresh` does not switch the cyclic collector off. J90-PF did, and it
+    only moved the collections a refresh owed into the caller's next operation (docs/porting.md,
+    *after J90-PF2*); the JSON parses inside it still run with it off, as 9c6bc181's did."""
+    import gc
+
+    _fact(tmp_path / "s", "a", "release tag")
+    hi = HotIndex(tmp_path / "s", "facts", tmp_path / "home")
+    seen = []
+
+    class Spy:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def refresh(self, mode):
+            seen.append(gc.isenabled())
+            return self.inner.refresh(mode)
+
+    hi._js = Spy(hi._js)
+    was = gc.isenabled()
+    gc.enable()
+    try:
+        assert hi.refresh("fast") == "rebuilt"
+        assert hi.refresh("full") == "fresh"
+    finally:
+        if not was:
+            gc.disable()
+    assert seen == [True, True]

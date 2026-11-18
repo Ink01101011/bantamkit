@@ -3312,7 +3312,8 @@ profiler charged the collector's passes to whatever allocated next):
   atomic values that it untracks; the collector's passes over them were 18-21 ms of the 14-source
   build (measured with `gc.disable()` around the whole run: pure 435 -> 417 ms, hand 375 -> 376).
   The hot index shim's `refresh` and the cold index shim's `add` / `compact` now run with it off
-  (inline, re-enabled only if it was on), as `no_gc` already did for the parses.
+  (inline, re-enabled only if it was on), as `no_gc` already did for the parses. (J90-PF2 took
+  the hot index's back out: it moved the collections instead of saving them; *after J90-PF2*.)
 - *The build* (TS respellings): `write` reuses the text `derive` printed each table's fingerprint
   from (`dumpIndex` of `{fingerprint, terms}` is the fingerprint's member, then the terms' own text);
   a native file is read twice, not three times (`parseNative` hands back the `front` it split); a
@@ -3408,6 +3409,134 @@ scan: 7x slower than the translate-and-find it would replace. `array('q', ...)` 
   notes](https://github.com/python/cpython/blob/main/InternalDocs/garbage_collector.md) (a young
   collection runs when allocations minus deallocations pass `threshold0`; tuples whose contents are
   untracked can be untracked, a list is always tracked).
+
+### The pure build against the hand-written Python, after J90-PF2 (#316 G4)
+
+**The collector is on again for a hot index refresh** (`storage/hotindex.py`; pinned by
+`test_a_refresh_leaves_the_collector_on`, which fails on the J90-PF shim). J90-PF wrapped
+`HotIndex.refresh` in `gc.disable()`. That saved no collector work. It only moved the work to
+later operations. While the collector is off, CPython still counts allocations against
+`threshold0` and still counts young collections against `threshold1` ([gc
+module](https://docs.python.org/3/library/gc.html), *set_threshold*). The collections a refresh
+owed therefore ran in whatever operation the caller ran next.
+
+This was measured with a `gc.callbacks` timer on each bench path (n = 5, interleaved; collector ms
+per path, median). Each comparison is with the collector off around `refresh` against on:
+
+- **Compiled, 3.12.** The open path paid for a 2.6 ms middle-generation collection. The J90-PF
+  wheel's open path took 7.51 ms; without that shim change it took 5.05 ms. The build's full
+  collection (about 6 ms) was not saved either: it ran in the retention pass instead, which spent
+  10.7 ms of collector time against 4.0.
+- **Pure, 3.12.** The build spent 2.1 ms in the collector against 8.2, and the retention pass
+  spent 9.1 ms against 2.4. Over the whole run, the collector took 119.3 ms against 115.6. The sum
+  of all path medians was 2755.8 ms against 2753.2.
+- **Pure, 3.14.** The interpreter was 3.14.5, whose collector is again 3.13's generational one
+  ([gc module](https://docs.python.org/3/library/gc.html), *Changed in version 3.14.5*). Over the
+  whole run, the collector took 108.4 ms against 102.6. The sum of the paths was 2660.0 ms against
+  2666.8.
+
+The cold index keeps its `gc.disable()` around `add` / `compact`. On this bench the collections it
+defers land in no later path. With the collector left on there, 3.14 compaction took 52.5 ms
+against 50.7 (n = 7).
+
+**Measured and not taken.**
+
+- **`gc.freeze()` / `gc.unfreeze()` at the end of a refresh.** This would reset the young count,
+  but only by moving every object the process tracks, including the caller's, into the permanent
+  generation and then back into the oldest. The [gc module](https://docs.python.org/3/library/gc.html)
+  and the change it came from ([Instagram's copy-on-write
+  fix](https://instagram-engineering.com/copy-on-write-friendly-python-garbage-collection-ad6ed5233ddf),
+  [bpo-31558](https://bugs.python.org/issue31558)) describe it as a process-wide tool to call
+  before `fork()`. A library should not change that for its host. `unfreeze` would also release
+  objects the host had frozen itself.
+- **A `Counter`-backed tally adapter for the derive's per-field token counts.** It made `derive`
+  slower: 88 ms against 84 (3.14, phase timer). Of the build's 27,000 tokens, 25,000 occur once in
+  their field. The `Map` the tally returns and the walk over it cost more than the counting saved.
+- **`encoded.set(t, encodeSegments(r))` written through a local**, so that ts2py writes the
+  statement `set` inline: no change (80.6 against 80.5 ms, micro, 3.14).
+- **`encodeSegments` as an indexed loop:** 6.3 ms against 4.7 over the 8,285 calls of a real build.
+
+**Measured** (`bench/drive.py` with a scratch HOME; n = 9 interleaved fresh processes per side;
+median [min..max] ms; macOS arm64).
+
+- **Load:** average 2.6 at the start and 3.4 at the end. An editor's language servers were running;
+  no other suite was.
+- **Sides:** hand = 9c6bc181, pure = this tree, comp = this tree's mypyc wheel.
+- **Verdict:** each median against hand's range on the same version.
+
+| Path | 3.12 hand | 3.12 pure | 3.12 comp | 3.14 hand | 3.14 pure | 3.14 comp | verdict pure / comp, 3.12; 3.14 |
+|---|---|---|---|---|---|---|---|
+| import | 90.4 [88.2..145.5] | 93.6 | 94.8 | 84.4 [82.0..111.8] | 87.6 | 87.8 | in / in; in / in |
+| hot cold build | 398.5 [394.2..431.3] | 415.0 [405.7..439.5] | 363.9 | 384.2 [380.0..402.7] | **402.8** [399.5..417.9] | 360.5 | in (median +4.1%) / under; **over (+4.9%)** / under |
+| hot open + query | 5.82 [4.5..6.3] | 5.39 | 4.85 | 5.33 [4.3..5.9] | 5.18 | 4.63 | in / in; in / in |
+| hot held query x20 | 5.37 [5.0..5.6] | 5.26 | 3.76 | 5.33 [4.9..5.6] | 5.02 | 3.71 | in / under; in / under |
+| hot full refresh | 14.74 [14.4..17.1] | 15.31 | 14.66 | 14.87 [14.0..15.6] | 15.09 | 13.83 | in / in; in / under |
+| cold build | 84.36 [83.9..87.8] | 83.98 | 46.11 | 79.78 [78.6..90.0] | 80.31 | 50.10 | in / under; in / under |
+| cold query x20 | 36.03 | 20.09 | 12.98 | 30.30 | 20.05 | 13.28 | under / under; under / under |
+| cold compact with keep | 51.00 [50.5..54.0] | 51.91 | 33.07 | 49.13 [48.1..66.2] | 50.07 | 35.11 | in / under; in / under |
+| retention run | 1236.1 | 1205.2 | 937.3 | 1179.1 | 1167.5 | 936.4 | under / under; under / under |
+| tier lines x5 | 1417.4 | 776.6 | 705.9 | 1522.7 | 752.8 | 710.2 | under / under; under / under |
+| first `memory_save` | 32.19 | 30.53 | 23.64 | 31.62 | 29.57 | 23.65 | under / under; under / under |
+| #204 bar recall p50 | 8.22 | 7.76 | 7.66 | 7.61 | 7.27 | 7.61 | under / under; under / in |
+
+**Against earlier wheels:**
+
+- **The J90-PF wheel, same run.** Open + query took 7.10 ms on 3.12 (4.85 now) and 5.73 ms on 3.14
+  (4.63 now). Its other paths were within this wheel's spread.
+- **The J90-RF wheel, an earlier run (n = 7).** Its 3.12 open path took 5.62 ms against 4.68 for
+  this shim, so J90-PF's unexplained 0.9 ms does not reproduce.
+- **Node.** No TypeScript changed, so Node is unchanged: the 14-source build took 182.8, 188.0 and
+  189.1 ms (best of 7, three runs).
+
+**What is still over: the pure 14-source hot build.** On 3.14 it is over hand's range. On 3.12 it is
+inside only because hand's range reaches its 431 ms outlier.
+
+*Where the time goes.* Phase timers on 3.14, best of 6:
+
+| Phase | hand (ms) | pure (ms) |
+|---|---|---|
+| parse | 213 | 223 |
+| derive | 70 | 83 |
+| write | 67 | 62 |
+| total | 360 | 378 |
+
+The parse runs the same shared code (603 against 619 ms under cProfile), so the gap is in
+`derive`. A micro of `derive` alone (best of 15, 3.14), stubbing one piece at a time:
+
+| `derive` micro | hand (ms) | pure (ms) |
+|---|---|---|
+| as written | 68.4 | 79.1 |
+| tokenizing stubbed | 23.9 | 43.3 |
+| fingerprints also stubbed | 16.5 | 32.3 |
+| `encodeSegments` also stubbed | 13.7 | 26.6 |
+
+The 13 ms left after those stubs is the loop's own per-operation guards:
+
+- The same loop with every guard dropped (as if every type were proven) took 21.1 ms against 32.1
+  and built the same postings.
+- Dropping only the receiver tests ts2py could prove today (a `const` bound to `new Map()` or to an
+  array literal) bought about 1 ms.
+- An inline per-row test in place of `_js_rows`, for `for (const [i, a, b, c] of rows)` over a
+  proven list, bought 0.7 ms of `encodeSegments`' 4.7.
+
+This is the gap J90-PF and J90-P6 already named. PEP 659's adaptive specialization
+([PEP 659](https://peps.python.org/pep-0659/)) already type-tests every dict read, list store and
+int add inside the interpreter. Each Python-level guard in the generated code is extra work that
+hand-written code does not do. mypyc compiles those operations to C
+([performance tips](https://mypyc.readthedocs.io/en/latest/performance_tips_and_tricks.html)),
+which is why the compiled build is 7-10% under hand on this path.
+
+*The smallest change that would close it: element and return type facts in ts2py.* For example,
+`tokenizeV2` returns a list of `str` (every push is a slice of a `str`), `tfs` holds only rows the
+loop built itself, and a `for (let i = 0; i < n; i += 1)` counter is a safe int. With those facts
+the derive loop could drop its key, receiver and index tests.
+
+- **Estimated gain:** the bound above, about 11 ms of a 14-source build (2.7%). That would bring
+  3.14 to about 392 ms, inside hand's range.
+- **Estimated cost:** an interprocedural fact pass in `lower.rs`, with its own soundness proof for
+  each fact (a `Map` reached from outside the module may hold kept keys; a list may be pushed a
+  non-`str`). Judging by the size of `types.rs` and of J90-PF's rules, that is a unit of its own,
+  not a single rule.
 
 ## Concurrency
 
