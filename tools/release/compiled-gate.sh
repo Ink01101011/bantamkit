@@ -50,6 +50,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CHECK="$SCRIPT_DIR/compiled_gate.py"
 
 PY="" WHEEL="" REV="HEAD" WORK="" KEEP=0 ONLY=""
 while [ $# -gt 0 ]; do
@@ -121,29 +122,7 @@ fi
 echo "   wheel: $WHEEL"
 
 step "unpacking its extensions into the worktree"
-"$VPY" - "$WHEEL" "$WT/runtime-py/src" <<'PY' || fail "the wheel is not a compiled build for this interpreter"
-import sys, zipfile
-from importlib.machinery import EXTENSION_SUFFIXES
-from pathlib import Path
-
-wheel, src = sys.argv[1], Path(sys.argv[2])
-suffix = EXTENSION_SUFFIXES[0]
-gen = src / "bantamkit" / "_generated"
-want = sorted(p.stem for p in gen.glob("*.py") if p.stem not in ("__init__", "_ts2py_adapters"))
-with zipfile.ZipFile(wheel) as z:
-    exts = [n for n in z.namelist() if n.endswith(tuple(EXTENSION_SUFFIXES))]
-    groups = [n for n in exts if "/" not in n and "__mypyc." in n]
-    mods = sorted(n.rsplit("/", 1)[1].split(".", 1)[0] for n in exts if n.startswith("bantamkit/_generated/"))
-    wrong = [n for n in exts if not n.endswith(suffix)]
-    if wrong:
-        sys.exit(f"extensions built for another interpreter (this one loads *{suffix}): {wrong[:3]}")
-    if len(groups) != 1 or mods != want:
-        sys.exit(f"expected {len(want)} compiled modules and one group library, got {len(mods)} and "
-                 f"{groups}; missing {sorted(set(want) - set(mods))}")
-    for n in exts:
-        z.extract(n, src)
-print(f"   unpacked {len(mods)} module extensions and {groups[0]}")
-PY
+"$VPY" "$CHECK" unpack "$WHEEL" "$WT/runtime-py/src" || fail "the wheel is not a compiled build of $SHA for this interpreter"
 
 step "Node build"
 (cd "$WT/runtime-ts" && npm ci --no-audit --no-fund >"$LOGS/npm-ci.log" 2>&1 && npm run build >"$LOGS/npm-build.log" 2>&1) \
@@ -151,60 +130,14 @@ step "Node build"
 
 step "probe: the modules under test load from extension files"
 (cd "$WORK/empty" && env BANTAMKIT_RETENTION=off BANTAMKIT_SKILL_AUDIT=off BANTAMKIT_SKILL_AUTO=off \
-  "$VPY" - "$WT/runtime-py/src" <<'PY') || fail "the probe found pure modules where extensions should be"
-import importlib, sys
-from importlib.machinery import EXTENSION_SUFFIXES
-from pathlib import Path
-
-src = Path(sys.argv[1]).resolve()
-import bantamkit
-import bantamkit.mcpserver as server
-
-assert Path(bantamkit.__file__).resolve().is_relative_to(src), f"bantamkit from {bantamkit.__file__}"
-gen = src / "bantamkit" / "_generated"
-want = sorted(p.stem for p in gen.glob("*.py") if p.stem not in ("__init__", "_ts2py_adapters"))
-pure = []
-for stem in want:
-    f = importlib.import_module(f"bantamkit._generated.{stem}").__file__ or ""
-    if not (f.endswith(tuple(EXTENSION_SUFFIXES)) and Path(f).resolve().is_relative_to(src)):
-        pure.append(f"{stem}: {f}")
-assert not pure, "loaded from source, not an extension: " + "; ".join(pure)
-groups = [m.__file__ for n, m in sys.modules.items() if n.endswith("__mypyc")]
-assert groups and Path(groups[0]).resolve().parent == src, f"group library {groups}"
-field = server.build_identity()["compiled"]
-assert field == f"mypyc ({len(want)} compiled, 1 interpreted)", field
-print(f"   {len(want)} of {len(want)} compile-set modules from extensions; compiled = {field}")
-PY
+  "$VPY" "$CHECK" probe "$WT/runtime-py/src") || fail "the probe found modules under test that are not extensions"
 
 # The load log: every Python process on the worktree venv's interpreter records, at exit, where
 # its `bantamkit._generated` modules came from. Written into the venv, so no environment variable
 # is needed and a suite that scrubs its children's environment is still recorded.
 LOADLOG="$WORK/loads.jsonl"
 : >"$LOADLOG"
-"$VPY" - "$LOADLOG" <<'PY'
-import sys, sysconfig
-from pathlib import Path
-
-body = '''# compiled-gate.sh (J90-RF2): record where bantamkit._generated modules were loaded from.
-import atexit as _atexit
-
-
-def _bk_compiled_gate_record():
-    try:
-        import json, os, sys
-        mods = {n: getattr(m, "__file__", None) for n, m in list(sys.modules.items())
-                if n.startswith("bantamkit._generated.")}
-        if mods:
-            with open(LOG, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps({"pid": os.getpid(), "modules": mods}) + "\\n")
-    except Exception:
-        pass
-
-
-_atexit.register(_bk_compiled_gate_record)
-'''.replace("LOG", repr(sys.argv[1]), 1)
-Path(sysconfig.get_paths()["purelib"], "sitecustomize.py").write_text(body, encoding="utf-8")
-PY
+"$VPY" "$CHECK" sitecustomize "$LOADLOG" || fail "could not install the load logger"
 
 STATUS=0
 if [ "$ONLY" != all ]; then
@@ -219,44 +152,7 @@ if [ "$ONLY" != pytest ]; then
 fi
 
 step "load check over $(wc -l <"$LOADLOG" | tr -d ' ') recorded processes"
-"$VPY" - "$LOADLOG" "$WT/runtime-py/src" <<'PY' || STATUS=1
-import json, sys
-from importlib.machinery import EXTENSION_SUFFIXES
-from pathlib import Path
-
-log, src = Path(sys.argv[1]), Path(sys.argv[2]).resolve()
-skip = {"bantamkit._generated._ts2py_adapters", "bantamkit._generated.__init__"}
-procs = in_tree = compiled_loads = 0
-pure_in_tree, elsewhere = [], {"compiled": 0, "pure": 0}
-for line in log.read_text(encoding="utf-8").splitlines():
-    rec = json.loads(line)
-    procs += 1
-    touched = False
-    for name, f in rec["modules"].items():
-        if name in skip or not f:
-            continue
-        ext = f.endswith(tuple(EXTENSION_SUFFIXES))
-        if Path(f).resolve().is_relative_to(src):
-            touched = True
-            if ext:
-                compiled_loads += 1
-            else:
-                pure_in_tree.append(f"pid {rec['pid']}: {name} from {f}")
-        else:
-            elsewhere["compiled" if ext else "pure"] += 1
-    in_tree += touched
-print(f"   {procs} processes recorded; {in_tree} loaded the worktree's modules: {compiled_loads} "
-      f"module loads from extensions, {len(pure_in_tree)} from .py")
-print(f"   outside the worktree (a test's own copy): {elsewhere['compiled']} compiled, "
-      f"{elsewhere['pure']} pure module loads")
-if pure_in_tree:
-    print("FAIL: compiled-set modules were loaded from source in the tree under test:")
-    for p in pure_in_tree[:20]:
-        print(f"   {p}")
-    sys.exit(1)
-if compiled_loads == 0:
-    sys.exit("FAIL: no process loaded a compiled module; the gate measured nothing")
-PY
+"$VPY" "$CHECK" loads "$LOADLOG" "$WT/runtime-py/src" || STATUS=1
 
 if [ "$STATUS" = 0 ]; then
   echo "compiled-gate.sh: PASS ($SHA, $("$VPY" -c 'import sys; print(sys.version.split()[0])'), logs in $LOGS)"
