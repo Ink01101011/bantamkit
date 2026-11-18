@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from bantamkit._generated import hotindex as _g
-from bantamkit._generated._ts2py_runtime import _JsError
+from bantamkit._generated._ts2py_runtime import _JsError, _JsMap
 
 from .. import stdlib312 as _stdlib312
 
@@ -102,7 +102,13 @@ def no_gc() -> Iterator[None]:
 
 
 def _dict(m: Any) -> dict[str, Any]:
-    """A Map the generated index answers, as the dict the Python surface answers."""
+    """A Map the generated index answers, as the dict the Python surface answers.
+
+    J90-PF: a plain Map (not a subclass) whose every key is its own tag (`_keys is None`: not
+    waiting to be settled, none kept apart) holds that dict already, in order: `dict(m)` of its
+    `[key, value]` pairs builds the same one."""
+    if type(m) is _JsMap and m._keys is None:
+        return dict(m._entries)
     return dict(m)
 
 
@@ -257,7 +263,18 @@ class HotIndex:
     def refresh(self, mode: Literal["fast", "full"] = "fast") -> Result:
         if mode not in ("fast", "full"):
             raise ValueError(f"unknown refresh mode: {mode!r}")
-        return self._js.refresh(mode)
+        # J90-PF (#316 G4): a refresh only allocates (a build's docs, rows and tables; a patch's),
+        # so the collector is off for it, as for the parses `no_gc` wraps: the generated index
+        # makes every posting row a tracked list where 9c6bc181 made untracked tuples, and the
+        # collector's passes over them were 18-21 ms of a 14-source build (docs/porting.md).
+        # `no_gc` inline: the context manager's own cost (about 2 us) was half a held refresh.
+        enabled = gc.isenabled()
+        gc.disable()
+        try:
+            return self._js.refresh(mode)
+        finally:
+            if enabled:
+                gc.enable()
 
     def parse_file(
         self, path: Path | str, mtime_ns: str, size: int

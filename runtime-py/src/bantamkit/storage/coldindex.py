@@ -15,6 +15,7 @@ still count the files a query opens by spying on `builtins.open`.
 
 from __future__ import annotations
 
+import gc
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -22,6 +23,23 @@ from typing import Any
 
 from bantamkit._generated import coldindex as _g
 from bantamkit._generated._ts2py_runtime import _JsError, _JsMap
+
+
+class _no_gc:
+    """J90-PF (#316 G4): the cyclic collector off while a write only allocates (a segment's rows
+    and tables), as the hot index's `refresh` runs; back on only if it was on. Python-only, as
+    `hotindex.no_gc` is (docs/porting.md): no answer changes."""
+
+    __slots__ = ("enabled",)
+
+    def __enter__(self) -> None:
+        self.enabled = gc.isenabled()
+        gc.disable()
+
+    def __exit__(self, *_: object) -> None:
+        if self.enabled:
+            gc.enable()
+
 
 COLD_VERSION = _g.COLD_VERSION
 ColdIndexError = _g.ColdIndexError
@@ -120,12 +138,14 @@ class ColdIndex:
     def add(self, docs: dict[str, dict[str, Any]]) -> str:
         """A new immutable segment holding `docs`; its terms merged into the shards. Its id
         (`addDocs` in the TypeScript)."""
-        return self._js.addDocs(_JsMap([[name, doc] for name, doc in docs.items()]))
+        with _no_gc():
+            return self._js.addDocs(_JsMap([[name, doc] for name, doc in docs.items()]))
 
     def compact(self, keep: Callable[[dict[str, Any]], bool] | None = None) -> str | None:
         """Every segment merged into one (newest version of each name). `None` when already one;
         `keep(doc)` (Retention) drops every name whose newest doc it refuses."""
-        return self._js.compact(keep)
+        with _no_gc():
+            return self._js.compact(keep)
 
     def reset(self) -> None:
         """Empty the index: every file this module writes is removed."""
