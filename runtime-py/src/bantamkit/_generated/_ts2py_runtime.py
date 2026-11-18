@@ -608,6 +608,12 @@ def _js_key(key):
     kind = type(key)
     if kind is str or (kind is int and _JS_SAFE_MIN <= key <= _JS_SAFE_MAX):
         return key
+    if kind is float:
+        if key != key:
+            return (_JsMap, "NaN")
+        if key == 0.0 and _js_math.copysign(1.0, key) < 0.0:
+            return 0
+        return key
     if isinstance(key, bool):
         return (_JsMap, key)
     if isinstance(key, float) and key != key:
@@ -662,7 +668,9 @@ class _JsMap:
             self._settle()
         tag = _js_key(key)
         entries = self._entries
-        if tag is not key and tag not in entries:
+        if tag is not key and type(tag) is int:
+            key = tag
+        elif tag is not key and tag not in entries:
             if self._keys is None:
                 self._keys = {}
             self._keys[tag] = key
@@ -712,7 +720,8 @@ class _JsSet:
         return _js_key(item) in self._items
 
     def add(self, item):
-        self._items.setdefault(_js_key(item), item)
+        tag = _js_key(item)
+        self._items.setdefault(tag, tag if tag is not item and type(tag) is int else item)
         return self
 
     def delete(self, item):

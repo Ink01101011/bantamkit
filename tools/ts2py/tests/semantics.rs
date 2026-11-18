@@ -82,6 +82,93 @@ print(json.dumps(m.probe(data), ensure_ascii=False, separators=(",", ":")))
     assert_eq!(String::from_utf8(run.stdout).unwrap().trim_end(), expected);
 }
 
+/// J90-RF2: a Map or Set keyed by `-0` stores `+0` (ECMA-262 `Map.prototype.set` / `Set.prototype.add`:
+/// "If key is -0, set key to +0"), so `[...m.keys()]` gives `0`; generated Python gave `-0` until
+/// `_js_key` mapped `-0.0` to `0` and `set` / `add` stored that tag. `-0` from `JSON.parse`, a literal
+/// and arithmetic; set first, set second, the constructors, a loop's `set` (the J90-PF fast arm's
+/// fallback), `delete` then `set`. The expected line is Node's output for the same source
+/// (`node` 26 running the probe as TypeScript, input `{"zero": 0}`).
+const NEG_ZERO_KEYS: &str = r#"
+const sign = (k: unknown): string => (typeof k === 'number' ? String(1 / k) : String(k));
+
+export function probe(input: any): string[] {
+  const z: number = JSON.parse('-0');
+  const lit = -0;
+  const mul = input.zero * -1;
+  const out: string[] = [];
+  out.push([sign(z), sign(lit), sign(mul)].join(','));
+  const a = new Map<unknown, string>();
+  a.set(z, 'neg');
+  out.push([...a.keys()].map(sign).join(','));
+  a.set(0, 'pos');
+  out.push([...a].map((e) => `${sign(e[0])}=${e[1]}`).join(','));
+  const b = new Map<unknown, string>();
+  b.set(0, 'pos');
+  b.set(z, 'neg');
+  out.push([...b].map((e) => `${sign(e[0])}=${e[1]}`).join(','));
+  out.push(String(a.has(0)) + String(a.has(z)) + String(b.get(z)) + String(a.size));
+  const c = new Map<unknown, string>([[z, 'x'], [mul, 'y']]);
+  out.push([...c.keys()].map(sign).join(','));
+  const s = new Set<unknown>([z, mul]);
+  s.add(lit);
+  out.push([...s].map(sign).join(',') + '/' + String(s.size));
+  const t = new Set<unknown>();
+  t.add(z);
+  t.add(0);
+  out.push([...t].map(sign).join(',') + String(t.has(0)) + String(t.has(z)));
+  const loop = new Map<unknown, number>();
+  const ks: unknown[] = [z, 'k', 1, mul];
+  for (const k of ks) {
+    loop.set(k, 1);
+  }
+  out.push([...loop.keys()].map(sign).join(','));
+  const d = new Map<unknown, string>();
+  d.set(z, 'neg');
+  d.delete(0);
+  d.set(z, 'again');
+  out.push([...d.keys()].map(sign).join(',') + String(d.size));
+  return out;
+}
+"#;
+
+#[test]
+fn a_map_or_set_keyed_by_negative_zero_stores_positive_zero() {
+    let module = ts2py::compile(NEG_ZERO_KEYS, "negzero.ts", &ts2py::Options::default())
+        .unwrap_or_else(|lines| panic!("-0 probe refused:\n{}", lines.join("\n")));
+    assert!(
+        module.contains("loop._entries[k] = 1"),
+        "the probe no longer reaches the loop's guarded `set` arm"
+    );
+    let dir = std::env::temp_dir().join(format!("ts2py-negzero-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("negzero.py");
+    std::fs::write(&path, module).unwrap();
+    let driver = r#"
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("z", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(json.dumps(m.probe({"zero": 0}), separators=(",", ":")))
+"#;
+    let python = std::env::var("TS2PY_PYTHON").unwrap_or_else(|_| "python3".to_string());
+    let run = Command::new(&python)
+        .arg("-c")
+        .arg(driver)
+        .arg(&path)
+        .output()
+        .unwrap_or_else(|err| panic!("{}", python_missing(&python, &err)));
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let expected = concat!(
+        r#"["-Infinity,-Infinity,-Infinity","Infinity","Infinity=pos","Infinity=neg","truetrueneg1","#,
+        r#""Infinity","Infinity/1","Infinitytruetrue","Infinity,k,1","Infinity1"]"#,
+    );
+    assert_eq!(String::from_utf8(run.stdout).unwrap().trim_end(), expected);
+}
+
 #[test]
 fn type_only_syntax_is_erased() {
     let source = r#"

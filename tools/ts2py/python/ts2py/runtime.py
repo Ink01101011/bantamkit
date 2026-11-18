@@ -718,11 +718,23 @@ def _js_key(key):
     `true` and `1` are different Map keys in JS and equal ones in Python, so a bool is tagged; NaN
     equals NaN; an array or object is keyed by identity. A tuple never appears as a JS value, so
     the tags cannot collide with a real key.
+
+    J90-RF2: `-0` is the key `0`. SameValueZero already finds one under the other (Python's
+    `-0.0 == 0`), but a Map or Set also STORES `+0` for a `-0` key (ECMA-262 `Map.prototype.set`
+    and `Set.prototype.add`, step "If key is -0, set key to +0"), so `[...m.keys()]` gives `0`.
+    The tag of `-0.0` is the int `0`, and `set` / `add` store the tag as the key whenever the tag
+    is an int that is not the key itself (only `-0.0` gives one).
     """
     # J90-P: a `str` is its own key, and so is a plain int a double holds exactly (`_js_num`
     # returns it unchanged); `type(...) is` excludes bool and every subclass.
     kind = type(key)
     if kind is str or (kind is int and _JS_SAFE_MIN <= key <= _JS_SAFE_MAX):
+        return key
+    if kind is float:
+        if key != key:
+            return (_JsMap, "NaN")
+        if key == 0.0 and _js_math.copysign(1.0, key) < 0.0:
+            return 0
         return key
     if isinstance(key, bool):
         return (_JsMap, key)
@@ -791,7 +803,11 @@ class _JsMap:
             self._settle()
         tag = _js_key(key)
         entries = self._entries
-        if tag is not key and tag not in entries:
+        if tag is not key and type(tag) is int:
+            # J90-RF2: `-0.0`, whose tag `0` is the key JS stores. Nothing goes in `_keys`, and a
+            # key `0.0` the dict already holds stays its key (it prints as `0` too).
+            key = tag
+        elif tag is not key and tag not in entries:
             if self._keys is None:
                 self._keys = {}
             self._keys[tag] = key
@@ -848,7 +864,9 @@ class _JsSet:
         return _js_key(item) in self._items
 
     def add(self, item):
-        self._items.setdefault(_js_key(item), item)
+        tag = _js_key(item)
+        # J90-RF2: a `-0.0` item is stored as `0`, its tag (the only int tag that is not the item).
+        self._items.setdefault(tag, tag if tag is not item and type(tag) is int else item)
         return self
 
     def delete(self, item):
