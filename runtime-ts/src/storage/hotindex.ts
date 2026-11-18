@@ -247,15 +247,27 @@ export function decodeSegments(names: ArrayLike<string>, seg: unknown): Posting[
 
 /** `[id, tf_name, tf_description, tf_keywords]` rows, ids ascending, as segments. */
 export function encodeSegments(rows: ReadonlyArray<readonly [number, number, number, number]>): number[] {
+  // The open run held in locals and pushed when it ends (#316 G4, J90-RF): the same runs as
+  // comparing each row with the last five numbers pushed, without reading them back.
   const out: number[] = [];
+  let start = 0;
+  let count = 0;
+  let ta = 0;
+  let tb = 0;
+  let tc = 0;
   for (const [i, a, b, c] of rows) {
-    const m = out.length;
-    if (m > 0 && out[m - 5]! + out[m - 4]! === i && out[m - 3] === a && out[m - 2] === b && out[m - 1] === c) {
-      out[m - 4] = out[m - 4]! + 1;
+    if (count > 0 && start + count === i && ta === a && tb === b && tc === c) {
+      count += 1;
     } else {
-      out.push(i, 1, a, b, c);
+      if (count > 0) out.push(start, count, ta, tb, tc);
+      start = i;
+      count = 1;
+      ta = a;
+      tb = b;
+      tc = c;
     }
   }
+  if (count > 0) out.push(start, count, ta, tb, tc);
   return out;
 }
 
@@ -1221,62 +1233,65 @@ export class HotIndex {
       words.push(new Map());
     }
     const df = new Map<string, number>();
+    // term -> its shard, memoized per derive. Read inline (no closure per term): `Map.get` in a
+    // loop is the one call ts2py expands to the dict read (#316 G4, J90-RF).
     const at = new Map<string, number>();
-    const shardAt = (t: string): number => {
-      let i = at.get(t);
-      if (i === undefined) {
-        i = shardOf(t);
-        at.set(t, i);
-      }
-      return i;
-    };
     let total = 0;
     const lens = new Map<string, unknown>();
     const lensTotal: [number, number, number] = [0, 0, 0];
-    const names = [...data.docs.keys()].sort(cmpCodepoint);
-    names.forEach((name, docId) => {
-      const d = data.docs.get(name)!;
+    const docs = data.docs;
+    const names = [...docs.keys()].sort(cmpCodepoint);
+    for (let docId = 0; docId < names.length; docId += 1) {
+      const name = names[docId]!;
+      const d = docs.get(name)!;
       const text: Record<Field, string> = { name: d.name, description: d.description, keywords: d.keywords.join(' ') };
-      // term -> its count per field, fields in FIELD_BOOST order
-      const tfs = new Map<string, [number, number, number]>();
+      // term -> its posting row `[docId, tf per field]`, fields in FIELD_BOOST order: the row is
+      // built as it is counted and pushed as it is (was a count triple copied into a new row).
+      const tfs = new Map<string, [number, number, number, number]>();
       const flens: [number, number, number] = [0, 0, 0];
       lens.set(name, flens);
       for (let fi = 0; fi < FIELD_BOOST.length; fi += 1) {
-        const field = FIELD_BOOST[fi]![0];
-        const boost = FIELD_BOOST[fi]![1];
+        const [field, boost] = FIELD_BOOST[fi]!;
         const toks = tokenizeV2(text[field as Field]);
         total += boost * toks.length;
         flens[fi] = toks.length;
         lensTotal[fi] = lensTotal[fi]! + toks.length;
+        const k = fi + 1;
         for (const t of toks) {
-          let c = tfs.get(t);
-          if (c === undefined) {
-            c = [0, 0, 0];
-            tfs.set(t, c);
+          const row = tfs.get(t);
+          if (row === undefined) {
+            const fresh: [number, number, number, number] = [docId, 0, 0, 0];
+            fresh[k] = 1;
+            tfs.set(t, fresh);
+          } else {
+            row[k] = row[k]! + 1;
           }
-          c[fi] = c[fi]! + 1;
         }
       }
-      for (const [term, counts] of tfs) {
-        const table = rows[shardAt(term)]!;
-        let list = table.get(term);
-        if (list === undefined) {
-          list = [];
-          table.set(term, list);
+      for (const [term, row] of tfs) {
+        let i = at.get(term);
+        if (i === undefined) {
+          i = shardOf(term);
+          at.set(term, i);
         }
-        list.push([docId, counts[0], counts[1], counts[2]]);
+        const table = rows[i]!;
+        const list = table.get(term);
+        if (list === undefined) table.set(term, [row]);
+        else list.push(row);
         df.set(term, (df.get(term) ?? 0) + 1);
       }
       for (const w of tokens(`${d.name} ${d.description}`)) {
-        const table = words[shardAt(w)]!;
-        let list = table.get(w);
-        if (list === undefined) {
-          list = [];
-          table.set(w, list);
+        let i = at.get(w);
+        if (i === undefined) {
+          i = shardOf(w);
+          at.set(w, i);
         }
-        list.push(name);
+        const table = words[i]!;
+        const list = table.get(w);
+        if (list === undefined) table.set(w, [name]);
+        else list.push(name);
       }
-    });
+    }
     const postings = rows.map((table) => new Map([...table].map(([t, r]) => [t, encodeSegments(r)])));
     data.df = df;
     data.dfRaw = null;

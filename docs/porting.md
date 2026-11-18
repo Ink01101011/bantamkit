@@ -3244,6 +3244,62 @@ under a bare 3.14 too (a bare 3.13 has no PyYAML, which `j89_5b` needs); clippy 
 `npm test` 2,467 passed, 0 failed, 47 skipped. ruff clean.
 
 
+### The pure build against the hand-written Python, after J90-R (#316 G4, J90-RF)
+
+**The owner's bar is "never slower than the hand-written Python", and the pure wheel (Windows,
+musl, any platform without a compiled wheel) does not meet it yet.** J90-R measured the pure build
+slower than 9c6bc181 on four paths; J90-RF profiled each and changed the one place a TypeScript
+spelling was the cost, `HotIndex.derive` and `encodeSegments`: the per-doc `forEach` callback is a
+counted loop, the shard memo is read inline (no closure per term, so `Map.get` takes ts2py's guarded
+dict read), each term's posting row is built as it is counted and pushed as it is (no count triple
+copied into a new row, 68,000 fewer `_js_get` calls on the build below), and `encodeSegments` holds
+the open run in locals instead of reading the last five numbers back. Same index bytes
+(`--suite storage-index` compares every file byte for byte), Node within its spread (the 14-source
+build 213-222 ms before and 220-222 after, best of 7, three alternating runs).
+
+**Measured (`bench/drive.py`, n = 7 interleaved fresh processes per side, medians [min..max] ms,
+macOS arm64; hand = 9c6bc181, pure = this tree, comp = this tree's mypyc wheel built locally).**
+
+| Path | 3.12 hand | 3.12 pure | 3.12 comp | 3.14 hand | 3.14 pure | 3.14 comp |
+|---|---|---|---|---|---|---|
+| hot cold build, 14 sources | 401.9 [397..431] | **457.8** [455..459] | 401.6 [395..412] | 389.8 [387..401] | **446.3** [443..457] | 394.7 [393..399] |
+| hot open + query | 5.68 | **6.18** | 5.66 | 6.61 | 5.91 | 5.39 |
+| hot held query x20 | 5.61 [5.4..6.7] | **8.39** [8.2..9.0] | 5.50 | 6.02 | **8.05** | 5.49 |
+| hot full refresh | 16.64 [16.0..29.6] | **18.18** [17.8..18.9] | 16.22 | 15.53 [15.2..22.8] | **17.58** | 15.94 [15.1..16.4] |
+| cold build | 84.49 | **85.83** | 46.48 | 79.74 | **81.34** | 52.05 |
+| cold compact with keep | 50.81 | **55.77** | 33.96 | 48.37 | **53.29** | 36.43 |
+| first `memory_save` | 31.99 | **35.73** | 29.02 | 31.14 | **35.14** | 29.54 |
+| cold query x20, retention run, tier lines x5, #204 bar | 35.9 / 1234 / 1405 / 8.09 | 20.4 / 1211 / 742 / 7.82 | 12.4 / 933 / 696 / 7.53 | 30.5 / 1177 / 1497 / 7.72 | 20.2 / 1159 / 740 / 7.42 | 12.7 / 933 / 695 / 7.67 |
+
+J90-R's pure figures on the same bench were 475.5 (build), 8.42 (held), 18.24 (full refresh) and 37.9
+(first save); the build moved -3.7%, the others within their spread. The compiled build is at or
+under the hand-written one on every path but the import (within its spread) and the 3.14 full
+refresh (15.94 against 15.53, inside both ranges).
+
+**Why the rest is not closed here, from the profiles.** Each gap is the general helpers' cost per
+operation, not an algorithm: the hand-written code and the generated code do the same work.
+- *Build* (phase timers, best of 6, 3.12: hand 363 ms = parse 217 + derive 72 + write 62; pure 424 =
+  parse 244 + derive 95 + write 72): `parse` pays for each fact through the adapters
+  (`parse_native`, `extract_refs`, `py_read_text`, `py_text`) about 40 us more a file over 680
+  files; `derive` still writes each count through `_js_put` and reads it through `_js_get` (31,000
+  calls), sets through `_js_m_set` (69,000) and pushes through `_js_m_push`.
+- *Held query* (per index and call: hand refresh 5.4 us + query 13.0; pure 9.2 + 18.6): the two stats
+  go through `stat_sync` and a `BigIntStats` object (0.4 us each) and the head stamp is built with
+  `_js_str` of three BigInts (1.2 us); `lookup` (10.2 us against 3.5) is `new Set` plus `_js_m_sort`
+  (1.25 us against 0.2 for `sorted(set())`), and `shard` reads the fingerprint through three
+  `_js_get` and a key string through `_js_str` (0.63 us a shard). Regrouping the lookup by an array
+  per shard (tried) moved it 0.5 us and was reverted.
+- *Full refresh, first save, compaction*: the same helpers on the same objects (refresh's stats, the
+  head's `dumpJsValue`, the cold index's row loop, whose floor J90-P5 measured).
+
+**What closing it would take**: an emitter rule in the shape of J90-P6's guarded expansions for
+`_js_put` / `_js_get` / `_js_list_at` of a list by an int, `Map.set`, `Map.has` and `Array.push` in
+loop bodies (J90-P6 measured `_js_get` and `_js_list_at` alone as moving no path past its spread,
+so it would need the writes too), a stat adapter that answers the three fields a head stamp reads
+without building an object, and `new Set(xs).sort(cmpCodepoint)` of strings lowered to
+`sorted(set(xs))`. Each is a compiler or adapter change with its own probe and fuzz, beyond this unit;
+the compiled wheel meets the bar today on every platform that has one.
+
 ## Concurrency
 
 Measured, not assumed: 12 pipelined saves all land in order; a recall behind a save **sees**
