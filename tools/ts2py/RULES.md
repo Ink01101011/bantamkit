@@ -997,6 +997,24 @@ encoding with surrogatepass, `_os_text` without its strict-codec test. Two are e
 every reachable input and stay green: the dict's str-key test (a dict reaching `_lifted` has
 string keys) and `type(...) is _JsMap` widened to `isinstance` (`_JsReadMap` iterates as its base).
 
+**Where each guard is gated (J90-RF F3).** The mutations above were red in `cargo test`
+(`tests/j90p5.rs`) only; the conformance suites stayed green under the two below, so they were
+checked against what bantamkit can reach:
+- *The safe-int test* (`_js_lift_ints_safe` answering True): **not equivalent; now a case.** An
+  index file read back holds a JSON integer past 2^53 only by a hand edit, and `_js_json_parse`
+  reads it as `JSON.parse` does, as the Python int 2^53, which is not a safe integer. A patch then
+  writes the doc back through `dumpJsValue`: `9007199254740992.0` on Node and on the real guard,
+  `9007199254740992` under the mutant. `--suite storage-index`, `J90-RF a head doc holding an
+  integer past 2^53 is written back as fromJs lifts it (a float)` and its python literal, both red
+  under the mutant (2 of 277), green on the guard.
+- *The digit-key test* (`any(map(str.isdigit, keys))` dropped): **equivalent on every reachable
+  input, so gated by `cargo test` alone.** It exists because a dict whose `_js_own_keys` order is
+  not its insertion order must not be handed to `json.dumps` as it is. The only `dumpJsValue` call
+  in the compiled sources (`hotindex.ts`, `dumps`) passes `sortKeys: true`, so `json.dumps` sorts
+  the keys and both paths write the same bytes, whatever order the dict holds. A digit key does
+  reach it (a `df` term such as `2026`), and the bytes are the same. It becomes reachable, and needs
+  a conformance case, the day a compiled caller passes `dumpJsValue` without `sortKeys`.
+
 **Measured and NOT taken: a per-row guarded copy of `for (const [a, b, , d] of rows)`.** On the
 cold query's row loop (3,324 rows, `micro_loop.py`): the general loop 727 us; a per-row guard
 proving `a`, `b` str and `d` a number with the body otherwise as lowered 761 us (facts alone move

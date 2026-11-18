@@ -1023,6 +1023,17 @@ def _j90_index(d: Path) -> dict:
     ))
     a_beta = a.doc("beta")
     out["stale"] = {"a_refresh": a_refresh, "a_beta": a_beta["description"] if a_beta else None, "reader": reader}
+    # J90-RF (F3): a head doc holding an integer past 2^53, written back by a patch (lib/storage_j90.mjs).
+    root, home = bed("unsafe", "facts", facts[:2])
+    first = h.HotIndex(root, "facts", home)
+    first.refresh("fast")
+    raw = first.path.read_bytes()
+    first.path.write_bytes(re.sub(rb'("beta":\{[^}]*?"size":)(\d+)', rb"\g<1>9007199254740993", raw, count=1))
+    (root / "facts" / "gamma.md").write_text(_J90_FACT.format(n="gamma", d="gamma word"), encoding="utf-8", newline="\n")
+    x = h.HotIndex(root, "facts", home)
+    refresh = x.refresh("full")
+    m = re.search(r'"beta":\{[^}]*?"size":([^,}]+)', x.path.read_text(encoding="utf-8").split("\n")[1])
+    out["unsafe"] = {"refresh": refresh, "written": m.group(1) if m else None, "names": list(x.names())}
     # J90-2: a source through a dangling symlink and one through a live symlink (lib/storage_j90.mjs).
     (d / "links" / "real").mkdir(parents=True)
     os.symlink("missing-target", d / "links" / "dangle")

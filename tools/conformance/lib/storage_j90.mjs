@@ -204,6 +204,22 @@ async function index(runtimeTs, d) {
     ));
     out.stale = { a_refresh: aRefresh, a_beta: a.doc('beta')?.description ?? null, reader };
   }
+  // J90-RF (F3): a head whose doc holds an integer past 2^53 (a hand edit; no writer makes one) is
+  // read as JSON.parse reads it (2^53, not safe) and written back by the patch as `fromJs` lifts it:
+  // a float, `9007199254740992.0`. Red when the lift's safe-int guard (`_js_lift_ints_safe`) passes
+  // every int: the generated Python then hands 2^53 to `json.dumps` as an int.
+  [root, home] = bed('unsafe', 'facts', facts.slice(0, 2));
+  {
+    const first = new h.HotIndex(root, 'facts', home);
+    first.refresh('fast');
+    const raw = readFileSync(first.path, 'latin1');
+    writeFileSync(first.path, raw.replace(/("beta":\{[^}]*?"size":)(\d+)/, '$19007199254740993'), 'latin1');
+    writeFileSync(join(root, 'facts', 'gamma.md'), FACT('gamma', 'gamma word'), 'utf8');
+    const x = new h.HotIndex(root, 'facts', home);
+    const refresh = x.refresh('full');
+    const m = readFileSync(x.path, 'utf8').split('\n')[1].match(/"beta":\{[^}]*?"size":([^,}]+)/);
+    out.unsafe = { refresh, written: m ? m[1] : null, names: [...x.names().keys()] };
+  }
   // J90-2: a source through a symlink whose target is missing (`dangle`), and one through a live
   // symlink (`live` -> `real`). What the index names it by: its realpath's last part, and whether
   // `sha16` hashes the target's path.
@@ -616,6 +632,10 @@ export function j90Cases(section, { py, nd, dirs }) {
     lit('J90-RF a full refresh after another process wrote the index: a new reader is served the newer doc', {
       a_refresh: 'fresh', a_beta: STALE, reader: [STALE, 'fresh', STALE],
     }, py.stale, nd.stale);
+    same('J90-RF a head doc holding an integer past 2^53 is written back as fromJs lifts it (a float)', py.unsafe, nd.unsafe);
+    lit('J90-RF a head doc holding an integer past 2^53 is written back as a float', {
+      refresh: 'patched', written: '9007199254740992.0', names: ['alpha', 'beta', 'gamma'],
+    }, py.unsafe, nd.unsafe);
     same('J90-2 a source through a live symlink is named by its target on both sides', py.symlinks.live, nd.symlinks.live);
     lit('a source through a live symlink', ['real', true], py.symlinks.live, nd.symlinks.live);
   } else if (section === 'cold') {
