@@ -3,15 +3,19 @@
 ← [README](../README.md) · [Install](install.md) · [Porting](porting.md)
 
 In 1.0.0 the PyPI package runs Python generated from the npm package's TypeScript (`bantamkit/_generated/`).
-On a few edge-case inputs it therefore answers differently than 0.40.0 did. The entries, written
+On a few edge-case inputs it therefore answers differently than the 0.40 releases (0.40.0 and
+0.40.1, the last) did. The entries, written
 from the user's side with before and after examples, are in
 [CHANGELOG.md → Changed (Python)](../CHANGELOG.md#changed-python). This page maps each entry to the
 case that pins it and to the `docs/porting.md` section that records the change.
 
 **How each row was settled (J90-D, #333).** One probe per entry was run three times on the same
 input: on the released 0.40.0 source (a worktree at tag `v0.40.0`), on this tree, and on the
-Node build. An entry is listed only when 0.40.0 gave the "before" answer. 0.40.0 is the last
-release; earlier releases were not checked. Rows 1–14 ran on CPython 3.12.13. Rows 15–17 ran on
+Node build. An entry is listed only when 0.40.0 gave the "before" answer. The last release is
+0.40.1: from 0.40.0 it changed only the host install (`hostinstall.py`, `hostinstall.ts`) and the
+version number (`git diff v0.40.0 v0.40.1 -- runtime-py/src runtime-ts/src`), and J90-RR found it
+gives the same "before" answers, so the rows were not re-measured on it. Earlier releases were
+not checked. Rows 1–14 ran on CPython 3.12.13. Rows 15–17 ran on
 3.11.15, 3.13.18 and 3.14.10, each interpreter for both sides, with the same probes. Rows 18–22
 and the added inputs of row 8 (J90-RF) ran on 3.12.13 and Node v26.13.0. In every row the after
 answer equals Node's, except row 13 (a ruled difference) and row 16, where `--suite shiftwork`
@@ -45,11 +49,11 @@ well: both runtimes moved to one new sentence.
 
 **Every row has a case.** Rows 2, 7 (the empty path) and 8 had none when this note was first
 written; J90-RF added a two-runtime case and a literal per side for each, each red under a
-mutation that restores 0.40.0's answer on one side or both.
+mutation that restores the 0.40 answer on one side or both.
 
 **Recorded in `docs/porting.md`, not re-run here.** Several more changes in the *Generated
 modules* chapter were not re-run for this note: the usage ledger's tie at the ninth decimal and
 its far-future weight, retrieval's NaN ordering, the queries sidecar nested past 512, the hot
 index's realpath through a dangling symlink, and others. Most need an input that a user's data does not produce, or a Python caller who builds
 values by hand. They stay in porting.md and are not listed as 1.0.0 changes until a probe has
-run them against 0.40.0.
+run them against the last release.

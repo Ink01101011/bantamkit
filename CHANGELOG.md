@@ -10,15 +10,16 @@ the changes 1.0.0 makes for Python users.
 
 ### Changed (Python)
 
-Since 0.40.0, most of the Python package's core is generated from the same TypeScript the npm
+Since 0.40.1, the last release, most of the Python package's core is generated from the same TypeScript the npm
 package runs (`bantamkit/_generated/`, #314, #315, #316). The public Python API is unchanged.
 The old hand-written Python skipped JavaScript semantics in a few places, so on the inputs below
-the PyPI package now gives a different answer than 0.40.0 gave. In every entry the new answer is
+the PyPI package now gives a different answer than the 0.40 releases gave. In every entry the new answer is
 the one the npm package gives. In most entries that is the answer the npm package already gave;
 in entry 10 the npm package's answer changed as well (both runtimes now write one new sentence),
 and entry 13 is a ruled difference where the npm package answers otherwise. Each "before" answer was
 measured on the released 0.40.0 source and each "after" answer on this tree, with the same
-input. The 1.0.0 Python migration note,
+input. 0.40.1 changed only the host install (`hostinstall`) and the version number from 0.40.0
+and gives the same "before" answers, so below "0.40" names both releases. The 1.0.0 Python migration note,
 [docs/python-1.0.0-migration.md](docs/python-1.0.0-migration.md), maps each entry to the
 conformance case that pins it.
 
@@ -26,12 +27,12 @@ Unless an entry names an interpreter, it was measured on CPython 3.12.13 and Nod
 
 1. **Numbers in log files are read the way JavaScript reads them.** `LogSegment.read()` (the
    append-only logs under `.bantamkit/`) parses each line's JSON numbers
-   as doubles. For a line `{"f":1.0}`, `{"z":-0}`, `{"b":18446744073709551616}`, 0.40.0
+   as doubles. For a line `{"f":1.0}`, `{"z":-0}`, `{"b":18446744073709551616}`, 0.40
    returned `{'f': 1.0}`, `{'z': 0}`, `{'b': 18446744073709551616}`. Now it returns `{'f': 1}`,
    `{'z': -0.0}` and `{'b': 1.8446744073709552e+19}`. Node: `1`, `-0`, `18446744073709552000`.
 2. **Archived-search scores past 2^53 are rounded as doubles.** A cold-index query whose
    term-frequency sum passes 2^53 (two rows of `9007199254740993` for one name) returned
-   `18014398509481986` in 0.40.0. Now it returns `1.8014398509481984e+16`, which is Node's
+   `18014398509481986` in 0.40. Now it returns `1.8014398509481984e+16`, which is Node's
    `18014398509481984`. The cold-index row check still accepts an integer past 2^53, and that
    integer is now rounded the way JavaScript rounds it.
 3. **Price-table JSON numbers are doubles.** `decode_price_json('9007199254740993')` returned
@@ -39,7 +40,7 @@ Unless an entry names an interpreter, it was measured on CPython 3.12.13 and Nod
    returned `3000000.0` and now returns `3000000`. Node gives the same two answers.
 4. **Work-plan refusals spell numbers as JavaScript does.** `workplan.plan()` (and the
    `work_plan` tool) refuses a `touches` entry that is not a path, and the refusal quotes the
-   value. For `1e+21`, 0.40.0 wrote `node a touches 1000000000000000000000, which is not a plain
+   value. For `1e+21`, 0.40 wrote `node a touches 1000000000000000000000, which is not a plain
    relative path`; now it writes `node a touches 1e+21, …`. `1e-7` was written `1e-07` and is now
    `1e-7`. `12345678901234567890` was quoted exactly and is now `12345678901234567000`. Node
    gives each new spelling.
@@ -134,9 +135,9 @@ Unless an entry names an interpreter, it was measured on CPython 3.12.13 and Nod
     Node gives the same answer.
 20. **A memory store reached through a dangling symlink gets a new index file.** The hot index is
     named by a hash of the store's real path. For a store path that is a symlink to a missing
-    target, 0.40.0 followed the link (`os.path.realpath`) and named the index after the missing
+    target, 0.40 followed the link (`os.path.realpath`) and named the index after the missing
     target; it now keeps the link as spelled, as Node's `realpath` does. For one such path
-    0.40.0 wrote `893fccfc6afacc12.json` (its source named `missing-target`) and now writes
+    0.40 wrote `893fccfc6afacc12.json` (its source named `missing-target`) and now writes
     `ee0575503420fafd.json` (named `dangle`), the file Node writes. The old file is not read
     again; the index is rebuilt once under the new name, from the same facts.
 21. **A hand-edited hot-index file is read as Node reads it.** These files are written only by
@@ -153,7 +154,7 @@ Unless an entry names an interpreter, it was measured on CPython 3.12.13 and Nod
     and is now dropped, so a later archived search no longer finds it. bantamkit records a
     relative path for every job it archives, so only a hand-built doc has an absolute one. Over
     docs `a` (absolute, outside), `b` (`real.json`), `c` (gone), `d` (`../root/real.json`), `f`
-    (absolute, inside) and a later `e`, 0.40.0 kept `a b d e f` and now keeps `b d e`, as Node does.
+    (absolute, inside) and a later `e`, 0.40 kept `a b d e f` and now keeps `b d e`, as Node does.
 
 Not listed: changes that never reached a release. Some answers broke inside the 1.0.0 branch and
 were fixed before any release, for example the hot index's held-head `ino` and three
