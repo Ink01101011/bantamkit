@@ -3300,6 +3300,115 @@ without building an object, and `new Set(xs).sort(cmpCodepoint)` of strings lowe
 `sorted(set(xs))`. Each is a compiler or adapter change with its own probe and fuzz, beyond this unit;
 the compiled wheel meets the bar today on every platform that has one.
 
+### The pure build against the hand-written Python, after J90-PF (#316 G4)
+
+**What moved** (`tools/ts2py/RULES.md`, *J90-PF rules*; no answer changed, every conformance suite
+compares the two runtimes as before). By where the time was, from profiles of each path against
+9c6bc181 (cProfile for the callers, then unprofiled best-of-N timings of each piece, since the
+profiler charged the collector's passes to whatever allocated next):
+
+- *The collector* (an adapter, Python-only): the generated index makes every posting row and
+  table a list or a Map, which CPython always tracks, where 9c6bc181 made tuples and dicts of
+  atomic values that it untracks; the collector's passes over them were 18-21 ms of the 14-source
+  build (measured with `gc.disable()` around the whole run: pure 435 -> 417 ms, hand 375 -> 376).
+  The hot index shim's `refresh` and the cold index shim's `add` / `compact` now run with it off
+  (inline, re-enabled only if it was on), as `no_gc` already did for the parses.
+- *The build* (TS respellings): `write` reuses the text `derive` printed each table's fingerprint
+  from (`dumpIndex` of `{fingerprint, terms}` is the fingerprint's member, then the terms' own text);
+  a native file is read twice, not three times (`parseNative` hands back the `front` it split); a
+  term's `df` is its posting list's length after the push; `postings` is built in a loop; the count
+  update goes through a local so the store is written inline.
+- *The held query* (adapters and rules): the head's stamp and the directory's are each one `os.stat`
+  answered as the string compared (`statStamp`, `statMtimeNs`), not a `BigIntStats` object read
+  through three `_js_get`; `[...new Set(terms)].sort(cmpCodepoint)` is `sorted(set(terms))`;
+  `[...byShard.keys()].sort((a, b) => a - b)` is `list.sort`; `shard`'s held-table test runs inline
+  in `lookup`; the shim's `_dict` copies a plain Map's entries at once.
+- *The open path and the full refresh*: `shardPath` joins its stem once; a listing's stat is one
+  `statFile` adapter call; `endsWith('.md')` is `str.endswith`; a `-0` inside a string (`audit-0`)
+  no longer sends a 180 KB head through the per-integer JSON hook; a dense shard of 513-2048
+  characters takes the exact-ints scan.
+- *Everywhere in loops*: `has`, `get` and `set` with an int key, `===` of two ints, `push`, stores
+  and reads by an index, written inline under the helper's own guard (J90-P6's shape).
+- *First save*: `JSON.stringify` of a list of plain values (the derived key) is `json.dumps`.
+
+**Measured** (`bench/drive.py` as J90-RF ran it, scratch HOME; n = 7 interleaved fresh processes
+per side, median [min..max] ms, macOS arm64, a loaded machine; hand = 9c6bc181, pure = this tree,
+comp = this tree's mypyc wheel built locally; verdict = pure against hand's range).
+
+| Path | 3.12 hand | 3.12 pure | 3.12 comp | 3.14 hand | 3.14 pure | 3.14 comp | verdict 3.12 / 3.14 |
+|---|---|---|---|---|---|---|---|
+| import | 94.7 [89.1..106.3] | 97.1 [91.2..98.1] | 98.2 | 89.7 [82.2..153.0] | 90.1 [84.5..97.3] | 91.0 | in / in |
+| hot cold build | 407.7 [395.7..462.4] | 415.7 [399.9..420.0] | 365.6 | 392.7 [377.5..406.6] | **410.8** [397.0..418.2] | 368.5 | in / over (+4.6%) |
+| hot open + query | 5.46 [4.7..6.0] | 5.88 [5.3..7.0] | **8.06** | 4.71 [4.3..6.0] | **6.15** [5.2..7.1] | 5.18 | in / over |
+| hot held query x20 | 5.18 [5.0..5.6] | 5.19 [5.1..5.7] | 3.68 | 5.10 [4.9..5.7] | 5.34 [5.0..5.8] | 3.75 | in / in |
+| hot full refresh | 15.39 [14.7..15.8] | **15.86** [14.9..16.4] | 14.64 | 14.76 [14.0..15.5] | **15.88** [14.6..18.6] | 14.28 | over (+3%) / over (+8%) |
+| cold build | 85.44 [83.9..87.1] | **87.20** [82.9..110.3] | 47.18 | 81.63 [79.3..82.7] | 81.76 [78.8..82.5] | 54.17 | over (+2%) / in |
+| cold query x20 | 36.42 | 20.74 | 13.12 | 30.60 | 22.57 | 13.50 | under / under |
+| cold compact with keep | 51.47 [50.6..53.0] | **53.75** [52.3..56.5] | 34.18 | 49.79 [48.1..50.6] | **51.42** [49.7..52.5] | 36.17 | over (+4%) / over (+3%) |
+| retention run | 1244.3 | 1237.9 | 960.7 | 1198.9 | 1186.4 | 956.6 | under / under |
+| tier lines x5 | 1440.3 | 776.6 | 707.4 | 1547.5 | 777.6 | 722.4 | under / under |
+| first `memory_save` | 33.97 | 31.25 | 24.11 | 32.15 | 30.70 | 25.03 | under / under |
+| #204 bar recall p50 | 8.33 | 7.72 | 7.70 | 7.81 | 7.64 | 7.81 | under / under |
+
+Against J90-RF's table: the build 457.8 -> 415.7 on 3.12, the held query 8.39 -> 5.19, the full
+refresh 18.18 -> 15.86, first save 35.73 -> 31.25. Node's 14-source build, best of 7, three
+alternating runs: 224.2 / 230.2 / 235.7 ms before, 189.3 / 190.2 / 194.9 after (one dump and one
+file read fewer). **The compiled build is faster than its J90-RF wheel on every path but the 3.12
+open path** (n = 5 against that wheel: 7.83 against 6.19; 3.14 5.81 against 6.07). Warm, step by
+step, it is the same (refresh 0.72 against 0.73 ms, segments 3.04 against 3.06): the bench's open
+path is one cold pass right after the build, and with the collector off for each refresh the
+build's young collection lands in it (the wheel without that adapter: 6.50, its build 9 ms
+slower); the other 0.9 ms is not isolated.
+
+**What is still over, and why (profiles above).** Each remaining gap is the general helpers'
+per-operation cost where 9c6bc181 used a C-level construct, not an algorithm: *build* 3.14 and the
+*full refresh*: the derive loop's Map and list operations (35 ms of loop against 16 hand, now
+inline where a rule proves the operation; 9c6bc181 counted with `Counter` and `dict.setdefault`),
+`encodeSegments` (7.3 ms against 0.9: a destructuring generator and four guarded `===` per row),
+and `dumpIndex`'s lift guard (2.8 ms a pass over 448 tables, the exactness check `json.dumps` alone
+does not make); *open*: the head's checks and the exact-ints scan (about 20 us a head) and, in the
+bench, the build's deferred collection; *compaction*: the per-token count and per-row filter, now
+inline, still a guard per operation. Closing them would need either type facts for values read
+from JSON and Maps (so a loop body could drop its guards; ts2py proves facts for locals and
+parameters only), or C-level counterparts of the hand-written module's `Counter` / `setdefault`
+idioms as runtime helpers with their own exactness proofs, or the compiled wheel, which meets the
+bar on these paths today.
+
+**Measured and not taken.** An explicit young collection at the end of a refresh (so the build pays
+for its own collector work instead of whatever runs next): 3.12's open path went from 5.9 to 8.5-9.1
+ms. The collector off around shard reads (`query`, `segments`): no change past the spread (the
+parsed tables stay alive, so the deferred collection is the same work). The exact-ints scan for
+every text past 128 characters: tier lines 3% slower (event lines carry one or two ints among
+strings); past 512 with a comma every eight or fewer, tier lines are unchanged. One regex for the
+scan: 7x slower than the translate-and-find it would replace. `array('q', ...)` as the lift guard of
+`dumpIndex`: it admits `__index__` objects, so it is not exact.
+
+**Sources researched** (each one the mechanism a gap above comes from):
+- Function call cost against inline code in hot loops: the Python wiki's
+  [Performance Tips](https://wiki.python.org/moin/PythonSpeed/PerformanceTips) ("function call
+  overhead is large compared to other instructions"), and
+  [What's New in Python 3.11](https://docs.python.org/3/whatsnew/3.11.html) (inlined Python calls
+  and cheaper frames: 1-3% and 3-7% on pyperformance; subscript and call specializations "up to"
+  10-25% and 20% per operation) with [PEP 659](https://peps.python.org/pep-0659/): the specializing
+  interpreter speeds the helper calls and the hand-written code alike, which is why no interpreter
+  version closes a per-operation gap (J90-P6 measured 3.11-3.14).
+- Emitted code that reproduces another language's semantics pays a call and a type test per
+  operator in inner loops: Transcrypt's design note on `a + b` as `__add__(a, b)`
+  ([InfoQ](https://www.infoq.com/articles/transcrypt-python-javascript-compiler)) and PScript's
+  ("the overhead to realize the more Pythonic behavior can have a negative impact on performance in
+  tight loops", [PScript introduction](https://pscript.readthedocs.io/en/stable/intro.html)). The
+  guarded expansions are this repository's answer: the helper's own first branch inline, the call
+  only for the values it is for.
+- Compiled attribute and container access: [mypyc's performance
+  tips](https://mypyc.readthedocs.io/en/latest/performance_tips_and_tricks.html) (reading a dict,
+  list indexing and `append` are fast compiled; interpreted classes and callable values are slow),
+  which is why the compiled wheel meets the bar on every path and the pure build pays for the
+  same operations.
+- The collector: CPython's [garbage collector design
+  notes](https://github.com/python/cpython/blob/main/InternalDocs/garbage_collector.md) (a young
+  collection runs when allocations minus deallocations pass `threshold0`; tuples whose contents are
+  untracked can be untracked, a list is always tracked).
+
 ## Concurrency
 
 Measured, not assumed: 12 pipelined saves all land in order; a recall behind a save **sees**
