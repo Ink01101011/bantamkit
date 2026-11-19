@@ -225,7 +225,7 @@ def _analyze_scalar(chars):
         if ch == " ":
             if index == 0:
                 leading_space = True
-            if index == _js_num(len(chars) - 1):
+            if index == len(chars) - 1:
                 trailing_space = True
             if previous_break:
                 break_space = True
@@ -234,7 +234,7 @@ def _analyze_scalar(chars):
         elif _is_break(ch):
             if index == 0:
                 leading_break = True
-            if index == _js_num(len(chars) - 1):
+            if index == len(chars) - 1:
                 trailing_break = True
             if previous_space:
                 space_break = True
@@ -402,7 +402,7 @@ class _Emitter(_JsObject):
                     start = end
                 if ch is not None:
                     data = _JS_UNDEFINED
-                    rep = (_ESCAPE_REPLACEMENTS._entries.get(cp, _JS_UNDEFINED) if type(_ESCAPE_REPLACEMENTS) is _JsMap and (type(cp) is str or type(cp) is int and -9007199254740992 <= cp <= 9007199254740992) else _js_m_get(_ESCAPE_REPLACEMENTS, cp))
+                    rep = (_ESCAPE_REPLACEMENTS._entries.get(cp, _JS_UNDEFINED) if (type(cp) is str or type(cp) is int and -9007199254740992 <= cp <= 9007199254740992) else _js_m_get(_ESCAPE_REPLACEMENTS, cp))
                     if rep is not _JS_UNDEFINED:
                         data = _js_add("\\", rep)
                     elif _js_le(cp, 255):
@@ -515,7 +515,7 @@ _safe_dump_mapping__typed = safe_dump_mapping
 def _is_simple_key(key):
     chars = [*key]
     analysis = _analyze_scalar(chars)
-    return _js_num(5 + len(chars)) < 128 and not _js_truthy(_js_get(analysis, "empty")) and not _js_truthy(_js_get(analysis, "multiline"))
+    return 5 + len(chars) < 128 and not _js_truthy(_js_get(analysis, "empty")) and not _js_truthy(_js_get(analysis, "multiline"))
 
 
 _is_simple_key__typed = _is_simple_key

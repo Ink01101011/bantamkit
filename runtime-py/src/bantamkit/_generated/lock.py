@@ -174,7 +174,7 @@ def _temp_base__typed(name):
     stem = _js_units_slice(_jsu_name, 0, -4)
     _jsu_stem = _js_code_units(stem)
     dot = _js_m_lastIndexOf(stem, ".")
-    if dot <= 0 or dot == _js_num(len(_jsu_stem) - 1):
+    if dot <= 0 or dot == len(_jsu_stem) - 1:
         return None
     for c in _js_units_slice(_jsu_stem, _js_num(dot + 1)):
         if _js_lt(c, "0") or _js_gt(c, "9"):

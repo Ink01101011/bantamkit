@@ -1236,3 +1236,77 @@ of any literal (red once the probe's receiver was a name, which the rule require
 `set` with kept keys allowed; the `has` Set arm on any receiver with `_items`; `statFile` through
 `lstat`; `statStamp` with `st_dev` for `st_ino`; `parseNative`'s `front` split from the text read
 without universal newlines.
+
+## J91-1 rules: type facts a guarded expansion reads (#341)
+
+Three new facts (`src/types.rs`, `Fact`), each a property of the Python value, met like the others
+over every assignment and return (SUBSET.md, *Types*), and one rule that reads them: a guarded
+expansion (J90-P6 / J90-PF, `hot` / `hot_stmt` and the loop-body member read) leaves out each test
+an operand's fact already answers, and is its fast arm alone when none is left.
+
+| Fact | The value | Proved by | Why it holds |
+|---|---|---|---|
+| `map` | `type(v) is _JsMap` | `new Map(...)` of the builtin (not a compiled class, not a local named `Map`), and `new Map(Object.entries(x))` (`_js_map_entries`) | both construct a `_JsMap` itself or raise; a binding keeps the flag (it is the value's type, which no later mutation of the Map changes) |
+| `int` | `type(v) is int`, `-2**53 <= v <= 2**53` | a whole literal Python spells as an int (`py_number`: below 2**53, not `-0`) and its negation; `+` / `-` of two indices; a counted update | a literal is that int; the sums are below |
+| `idx` | `type(v) is int`, `0 <= v <= 2**52` (`IDX_MAX`) | a whole literal in `[0, 2**52]`; `.length` of a proven list or `str` (`len_idx`); a proven list's `push` as a value; a counted loop's variable in its body | lengths: a list past 2**52 items needs 32 PiB of item pointers and a `str` past 2**52 UTF-16 units 2 PiB in one object, where the largest single-image machines address under 2**47 bytes; the loop: below |
+
+**Counted loops** (`lower.rs`, `counter`). `for (let i = L; i < B; i += S)` (also `i = i + S`,
+`i++`, `++i`) with `L` a whole literal in `[0, 2**52]`, `S` a whole literal in `[1, 2**20]`, `B` a
+whole literal in `[0, 2**52]`, a name proven an index, or `.length` of a name proven a list or a
+`str` (`idx_bound`), and the update the ONLY assignment to `i` inside the statement
+(`Assume::assign_spans`: the span start of every assignment target, per binding; the `let` is
+visible only inside the `for`, so an assignment anywhere else is to another binding). In the body
+`i` is narrowed to an index: it starts at `L >= 0`, only the update moves it, upward, by a whole
+`S`, so it is an int `>= 0`; the body runs only where `i < B` just held and `B <= 2**52`. The
+update is written `i = i + S`, Python's int `+`: at most `2**52 - 1 + 2**20 < 2**53`, so it is the
+double sum JS computes, and the binding observes a safe int (`int`, not `idx`: past the body `i`
+may be `B - 1 + S`).
+
+**Arithmetic.** `a + b` and `a - b` of two indices: `a + b` / `a - b` with no `_js_num` (the exact
+result lies within `[-2**52, 2**53]`, a double's exact int), an `int`.
+
+**Guarded expansions** read the fact of each operand from the read of that name made while lowering
+the expression the expansion rewrites (`Lowerer::proven`; `name_facts` stamped by `fact_seq`, so a
+fact from an earlier read never applies; an optimistic fact never does), and drop:
+
+| Expansion | Test dropped | When |
+|---|---|---|
+| `m.get(k)` / `m.has(k)` | `type(m) is _JsMap` (and `has`'s Set arm) | `m` proven a Map |
+| `m.get(k)` / `m.has(k)` / `m.set(k, v)` | the key test | `k` proven a `str` or a safe int: each is its own `_js_key` |
+| `m.set(k, v)` | `type(m) is _JsMap` | `m` proven a Map (`m._keys is None` stays: it is a property of the contents) |
+| `===` / `!==` | the `str` arm; a side's int and range tests | one side proven a number (so never two `str`s); a side proven a safe int |
+| `a + b` | `b`'s int and range test; `a`'s | `b` proven an index (within half the safe range); `a` proven one (a name) |
+| `xs[i]` (`_js_list_at`, the loop-body read) | `type(i) is int`; and `0 <=` | `i` proven a safe int; an index |
+| `xs[i] = v` | `type(xs) is list`; `type(i) is int`; `0 <=` | `xs` proven a list; `i` a safe int; an index |
+| `xs.push(x)` as a value | `type(xs) is list` | `xs` proven a list |
+
+**Respelled** (`runtime-ts/src/storage/hotindex.ts`, `derive`): the per-field loop is bounded by
+`flens.length` (the per-field count tuple, as long as FIELD_BOOST) instead of `FIELD_BOOST.length`
+(an imported constant ts2py proves nothing about), so `fi` is counted and `k = fi + 1` a safe int.
+
+**Measured and not taken** (docs/porting.md, *The pure build after J91-1*): element facts of a
+container a function fills itself (`tfs`'s rows, `rows`' Maps) and of what a function returns
+(`tokenizeV2`'s `str`s), whose bound in `derive` is under 1.3 ms of a 14-source build; and a
+`shardHash` without `shardOf`'s memo for `derive`, which moved nothing.
+
+Pinned in `tools/ts2py-bantamkit/tests/j91.rs`: `probe()` and `fuzz(3000)` of
+`tests/fixtures/j91_probe.ts` equal to what Node v26.13.0 printed (`fixtures/j91_probe.node.txt`):
+a `new Map()` set, read and tested by every pool value (from JSON: lone surrogates, `1` and `1.0`,
+`-0`, ints past 2**53, `true`, `null`) and by counted indices, NaN / `-0` / `0.5` keys proven
+numbers, a `new Set()`, a Map passed in; counted loops reading at `i`, `i + 1` past the end and
+`i - 1` (-1 first), storing at `i + 1`, a stride and a literal bound; loops that are not counted
+(the body assigns `i`, a negative start, a bound or a start passed in, a stride that is a name),
+`.length` of an object, a store by a counted index into an object; `+` / `-` of indices, of a safe
+int past 2**52 (`big + 2` rounds), `===` against JSON ints past 2**53. Every fast form has a guarded
+twin (operands through `opaque`, counters by `while`): the fuzz counts the cases where they differ
+(0, in Node and in Python), and in Python both twins run over 3,000 seeded lists of values JS cannot
+build (ints past 2**53, bools, `1.0`, `-0.0`, NaN, `inf`, BigInts, `None`) with the same answer or
+exception, and a Map parameter that is a subclass, a dict, a Set or `None` answers as the helpers.
+The compiled text is asserted to hold each form where its fact holds and the guard where it does not.
+
+Mutations, each red in `cargo test --test j91` (a scratch copy of both crates, one at a time,
+`/private/tmp/claude-501/j91/mut/run.py`): a counted loop with another assignment to `i` inside it;
+any start; any name as the bound; any stride; `.length` of any receiver an index; `new Set()` a
+Map; `===`'s unproven side without its range test; two safe ints (not indices) added plainly; an
+addend proven a safe int (not an index) untested; a list read by a safe int without `0 <=`; a key
+proven any number taken as its own tag; a store into any receiver as into a list.

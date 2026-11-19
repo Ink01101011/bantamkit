@@ -52,7 +52,7 @@ def _counted(lines):
         if event == "brief":
             continue
         if event == "uncommitted":
-            i = _js_num(len(kept) - 1)
+            i = len(kept) - 1
             while i >= 0:
                 if _js_strict_eq(_js_get((kept[i] if type(i) is int and 0 <= i < len(kept) else _js_list_at(kept, i)), "unit"), _js_get(line, "unit")):
                     _js_m_splice(kept, i, 1)
@@ -76,7 +76,7 @@ def _figure(value):
 
 def _lower_median(values):
     ordered = _js_sort_num([*values], False, lambda a, b, *_: _js_num(_js_num(a) - _js_num(b)))
-    return _js_list_at(ordered, _js_floor(_js_div(_js_num(len(ordered) - 1), 2)))
+    return _js_list_at(ordered, _js_floor(_js_div(len(ordered) - 1, 2)))
 
 
 def _floor_div(a, b):

@@ -298,9 +298,9 @@ def _cached__typed(p, sha):
             return None
         i = 0
         while i < len(flat):
-            if not isinstance((flat[i] if type(i) is int and 0 <= i < len(flat) else _js_list_at(flat, i)), str) or not _is_count(_js_list_at(flat, _js_num(i + 1))):
+            if not isinstance((flat[i] if i < len(flat) else _js_list_at(flat, i)), str) or not _is_count(_js_list_at(flat, i + 1)):
                 return None
-            i = _js_num(i + 2)
+            i = i + 2
         _js_m_set(out, name, [_CountsView(flat), (dl + 0 if type(dl) is int and -4503599627370496 <= dl <= 4503599627370496 else _js_add(dl, 0))])
     return out
 
@@ -333,9 +333,9 @@ def _cached(p, sha):
             return None
         i = 0
         while i < len(flat):
-            if not isinstance((flat[i] if type(i) is int and 0 <= i < len(flat) else _js_list_at(flat, i)), str) or not _is_count(_js_list_at(flat, _js_num(i + 1))):
+            if not isinstance((flat[i] if i < len(flat) else _js_list_at(flat, i)), str) or not _is_count(_js_list_at(flat, i + 1)):
                 return None
-            i = _js_num(i + 2)
+            i = i + 2
         _js_m_set(out, name, [_CountsView(flat), (dl + 0 if type(dl) is int and -4503599627370496 <= dl <= 4503599627370496 else _js_add(dl, 0))])
     return out
 
@@ -395,7 +395,7 @@ def _sidecar_entries(raw):
                     continue
                 qs = _js_get(entry, "queries")
                 if isinstance(qs, list) and len(qs) > 0 and _js_every_string(qs):
-                    if type(out) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) and out._keys is None:
+                    if (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) and out._keys is None:
                         out._entries[name] = qs
                     else:
                         _js_m_set(out, name, qs)
@@ -598,7 +598,7 @@ def _write_entries__typed(p, entries):
         facts = _JsMap()
         for name, held in _js_rows(_js_get(_js_dispatch(doc, "get", _js_m_get, "facts"), "v"), 2, (0, 1)):
             if not _js_truthy(_js_dispatch(entries, "has", _js_m_has, name)):
-                if type(facts) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) and facts._keys is None:
+                if (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) and facts._keys is None:
                     facts._entries[name] = held
                 else:
                     _js_m_set(facts, name, held)
@@ -648,7 +648,7 @@ def write_entries(p, entries):
         facts = _JsMap()
         for name, held in _js_rows(_js_get(_js_dispatch(doc, "get", _js_m_get, "facts"), "v"), 2, (0, 1)):
             if not _js_truthy(_js_dispatch(entries, "has", _js_m_has, name)):
-                if type(facts) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) and facts._keys is None:
+                if (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) and facts._keys is None:
                     facts._entries[name] = held
                 else:
                     _js_m_set(facts, name, held)

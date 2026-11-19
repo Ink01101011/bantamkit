@@ -371,25 +371,25 @@ def pool_without(pool, drop):
                     old = _js_add(old, 1)
                 if not (_js_lt(old, (start + count if type(start) is int and type(count) is int and -4503599627370496 <= count <= 4503599627370496 and -4503599627370496 <= start <= 4503599627370496 else _js_add(start, count)))):
                     break
-                nid = (new_id._entries.get(old, _JS_UNDEFINED) if type(new_id) is _JsMap and (type(old) is str or type(old) is int and -9007199254740992 <= old <= 9007199254740992) else _js_m_get(new_id, old))
+                nid = (new_id._entries.get(old, _JS_UNDEFINED) if (type(old) is str or type(old) is int and -9007199254740992 <= old <= 9007199254740992) else _js_m_get(new_id, old))
                 if nid is _JS_UNDEFINED:
                     continue
                 k = len(out)
-                if k > 0 and (_js_h2 == nid if type(_js_h2 := _js_add(_js_list_at(out, _js_num(k - 3)), _js_list_at(out, _js_num(k - 2)))) is type(nid) is str or type(_js_h2) is type(nid) is int and -9007199254740992 <= _js_h2 <= 9007199254740992 and -9007199254740992 <= nid <= 9007199254740992 else _js_strict_eq(_js_h2, nid)) and (_js_h3 == weight if type(_js_h3 := _js_list_at(out, _js_num(k - 1))) is type(weight) is str or type(_js_h3) is type(weight) is int and -9007199254740992 <= _js_h3 <= 9007199254740992 and -9007199254740992 <= weight <= 9007199254740992 else _js_strict_eq(_js_h3, weight)):
-                    _js_put(out, _js_num(k - 2), (_js_h4 + 1 if type(_js_h4 := _js_list_at(out, _js_num(k - 2))) is int and -4503599627370496 <= _js_h4 <= 4503599627370496 else _js_add(_js_h4, 1)))
+                if k > 0 and (_js_h2 == nid if type(_js_h2 := _js_add(_js_list_at(out, k - 3), _js_list_at(out, k - 2))) is type(nid) is str or type(_js_h2) is type(nid) is int and -9007199254740992 <= _js_h2 <= 9007199254740992 and -9007199254740992 <= nid <= 9007199254740992 else _js_strict_eq(_js_h2, nid)) and (_js_h3 == weight if type(_js_h3 := _js_list_at(out, k - 1)) is type(weight) is str or type(_js_h3) is type(weight) is int and -9007199254740992 <= _js_h3 <= 9007199254740992 and -9007199254740992 <= weight <= 9007199254740992 else _js_strict_eq(_js_h3, weight)):
+                    _js_put(out, k - 2, (_js_h4 + 1 if type(_js_h4 := _js_list_at(out, k - 2)) is int and -4503599627370496 <= _js_h4 <= 4503599627370496 else _js_add(_js_h4, 1)))
                 else:
                     out.extend((nid, 1, weight,))
             j = _js_num(j + 3)
-        if type(segs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and segs._keys is None:
+        if (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and segs._keys is None:
             segs._entries[t] = out
         else:
             _js_m_set(segs, t, out)
         d = 0
         j = 1
         while j < len(out):
-            d = _js_add(d, (out[j] if type(j) is int and 0 <= j < len(out) else _js_list_at(out, j)))
-            j = _js_num(j + 3)
-        if type(df) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and df._keys is None:
+            d = _js_add(d, (out[j] if j < len(out) else _js_list_at(out, j)))
+            j = j + 3
+        if (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and df._keys is None:
             df._entries[t] = d
         else:
             _js_m_set(df, t, d)
@@ -479,7 +479,7 @@ def _pool_of__typed(facts, q, every_row=_JS_UNDEFINED):
             if (t in weights._entries if type(weights) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else t in weights._items if type(weights) is _JsSet and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_has(weights, t)):
                 _js_m_set(mine, t, (weights._entries.get(t, _JS_UNDEFINED) if type(weights) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(weights, t)))
         for t in _js_m_keys(mine):
-            _js_m_set(df, t, (_js_h5 + 1 if type(_js_h5 := (df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(df, t))) is int and -4503599627370496 <= _js_h5 <= 4503599627370496 else _js_add(_js_h5, 1)))
+            _js_m_set(df, t, (_js_h5 + 1 if type(_js_h5 := (df._entries.get(t, _JS_UNDEFINED) if (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(df, t))) is int and -4503599627370496 <= _js_h5 <= 4503599627370496 else _js_add(_js_h5, 1)))
         if _js_truthy(_js_or_value(_js_gt(_js_size(mine), 0), every_row)):
             held.append({"name": name, "length": length, "type": py_text(_js_get(fact, "type")), "stale": stale(description), "fact": fact, "mine": mine})
     _js_sort_lex(held, ((lambda a, *_: _js_get(a, "name"), False, True),), lambda a, b, *_: cmp_codepoint(_js_get(a, "name"), _js_get(b, "name")))
@@ -488,7 +488,7 @@ def _pool_of__typed(facts, q, every_row=_JS_UNDEFINED):
     segs = _JsMap([[t, []] for t in q])
     def _js_fn5(r=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
         for t, w in _js_rows(_js_get(r, "mine"), 2, (0, 1)):
-            _js_m_push((segs._entries.get(t, _JS_UNDEFINED) if type(segs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(segs, t)), i, 1, w)
+            _js_m_push((segs._entries.get(t, _JS_UNDEFINED) if (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(segs, t)), i, 1, w)
         return _JS_UNDEFINED
     _js_m_forEach(held, _js_fn5)
     stale_ids = []
@@ -519,7 +519,7 @@ def pool_of(facts, q, every_row=_JS_UNDEFINED):
             if (t in weights._entries if type(weights) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else t in weights._items if type(weights) is _JsSet and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_has(weights, t)):
                 _js_m_set(mine, t, (weights._entries.get(t, _JS_UNDEFINED) if type(weights) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(weights, t)))
         for t in _js_m_keys(mine):
-            _js_m_set(df, t, (_js_h6 + 1 if type(_js_h6 := (df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(df, t))) is int and -4503599627370496 <= _js_h6 <= 4503599627370496 else _js_add(_js_h6, 1)))
+            _js_m_set(df, t, (_js_h6 + 1 if type(_js_h6 := (df._entries.get(t, _JS_UNDEFINED) if (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(df, t))) is int and -4503599627370496 <= _js_h6 <= 4503599627370496 else _js_add(_js_h6, 1)))
         if _js_truthy(_js_or_value(_js_gt(_js_size(mine), 0), every_row)):
             held.append({"name": name, "length": length, "type": py_text(_js_get(fact, "type")), "stale": stale(description), "fact": fact, "mine": mine})
     _js_sort_lex(held, ((lambda a, *_: _js_get(a, "name"), False, True),), lambda a, b, *_: cmp_codepoint(_js_get(a, "name"), _js_get(b, "name")))
@@ -528,7 +528,7 @@ def pool_of(facts, q, every_row=_JS_UNDEFINED):
     segs = _JsMap([[t, []] for t in _js_array("map", q)])
     def _js_fn7(r=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
         for t, w in _js_rows(_js_get(r, "mine"), 2, (0, 1)):
-            _js_m_push((segs._entries.get(t, _JS_UNDEFINED) if type(segs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(segs, t)), i, 1, w)
+            _js_m_push((segs._entries.get(t, _JS_UNDEFINED) if (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(segs, t)), i, 1, w)
         return _JS_UNDEFINED
     _js_m_forEach(held, _js_fn7)
     stale_ids = []
@@ -570,13 +570,13 @@ def pooled_ranking(pools, q, ratio, usage, context=_JS_UNDEFINED, scorer=_JS_UND
         offset = len(lengths)
         starts.append(offset)
         for t in q:
-            _js_m_set(df, t, _js_add((df._entries.get(t, _JS_UNDEFINED) if type(df) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(df, t)), _js_coalesce_value((_js_h7._entries.get(t, _JS_UNDEFINED) if type(_js_h7 := _js_get(p, "df")) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(_js_h7, t)), 0)))
+            _js_m_set(df, t, _js_add((df._entries.get(t, _JS_UNDEFINED) if (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(df, t)), _js_coalesce_value((_js_h7._entries.get(t, _JS_UNDEFINED) if type(_js_h7 := _js_get(p, "df")) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(_js_h7, t)), 0)))
             seg = (_js_h8._entries.get(t, _JS_UNDEFINED) if type(_js_h8 := _js_get(p, "segs")) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(_js_h8, t))
             if seg is not _JS_UNDEFINED and _js_gt(_js_len(seg), 0):
-                into = (segs._entries.get(t, _JS_UNDEFINED) if type(segs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(segs, t))
+                into = (segs._entries.get(t, _JS_UNDEFINED) if (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(segs, t))
                 j = 0
                 while _js_lt(j, _js_len(seg)):
-                    _js_m_push(into, (_js_h9 + offset if type(_js_h9 := (seg[j] if type(seg) is list and type(j) is int and 0 <= j < len(seg) else _js_get(seg, j))) is int and type(offset) is int and -4503599627370496 <= offset <= 4503599627370496 and -4503599627370496 <= _js_h9 <= 4503599627370496 else _js_add(_js_h9, offset)), _js_get(seg, _js_num(j + 1)), _js_get(seg, _js_num(j + 2)))
+                    _js_m_push(into, (_js_h9 + offset if type(_js_h9 := (seg[j] if type(seg) is list and type(j) is int and 0 <= j < len(seg) else _js_get(seg, j))) is int and -4503599627370496 <= _js_h9 <= 4503599627370496 else _js_add(_js_h9, offset)), _js_get(seg, _js_num(j + 1)), _js_get(seg, _js_num(j + 2)))
                     j = _js_num(j + 3)
         for x in _js_get(p, "lengths"):
             lengths.append(x)
@@ -597,7 +597,7 @@ def pooled_ranking(pools, q, ratio, usage, context=_JS_UNDEFINED, scorer=_JS_UND
             weights.append(w)
     order = rank_columns(scores, weights, ratio, floor)
     for g in order:
-        at = _js_num(len(starts) - 1)
+        at = len(starts) - 1
         while _js_gt((starts[at] if type(at) is int and 0 <= at < len(starts) else _js_list_at(starts, at)), g):
             at = _js_num(at - 1)
         yield [_js_get((live[at] if type(at) is int and 0 <= at < len(live) else _js_list_at(live, at)), 0), _js_num(_js_num(g) - _js_num((starts[at] if type(at) is int and 0 <= at < len(starts) else _js_list_at(starts, at))))]
@@ -846,7 +846,7 @@ def _sort_scored__typed(scored):
             else:
                 l = _js_num(p + 1)
         _js_m_copyWithin(a, _js_num(l + 1), l, start)
-        if type(a) is list and type(l) is int and 0 <= l < len(a):
+        if type(l) is int and 0 <= l < len(a):
             a[l] = pivot
         else:
             _js_put(a, l, pivot)
@@ -889,7 +889,7 @@ def sort_scored(scored):
             else:
                 l = _js_num(p + 1)
         _js_m_copyWithin(a, _js_num(l + 1), l, start)
-        if type(a) is list and type(l) is int and 0 <= l < len(a):
+        if type(l) is int and 0 <= l < len(a):
             a[l] = pivot
         else:
             _js_put(a, l, pivot)
@@ -1630,7 +1630,7 @@ def _js_method_MemoryStore_compact(self, reserve=_JS_UNDEFINED):
             break
         path = _js_coalesce(_js_get(fact, "source"), lambda: self.factPath(_js_get(fact, "name")))
         py_replace(path, py_join(self.root, "archive", py_name(path)))
-        bytes = (sizes._entries.get(fact, _JS_UNDEFINED) if type(sizes) is _JsMap and (type(fact) is str or type(fact) is int and -9007199254740992 <= fact <= 9007199254740992) else _js_m_get(sizes, fact))
+        bytes = (sizes._entries.get(fact, _JS_UNDEFINED) if (type(fact) is str or type(fact) is int and -9007199254740992 <= fact <= 9007199254740992) else _js_m_get(sizes, fact))
         size = _js_num(_js_num(size) - _js_num(bytes))
         archived.append({"name": _js_get(fact, "name"), "type": _js_get(fact, "type"), "description": _js_get(fact, "description"), "indexBytes": bytes, "lastRecalled": _js_coalesce_value(_js_get(fact, "last_recalled"), None), "created": _js_coalesce_value(_js_get(fact, "created"), None)})
     self.rebuildIndex()
@@ -1678,11 +1678,11 @@ def _js_method_MemoryStore_byEviction(self, facts, used=_JS_UNDEFINED):
         right = key(b)
         slot = 0
         while slot < 2:
-            if py_compare_lt((left[slot] if type(left) is list and type(slot) is int and 0 <= slot < len(left) else _js_get(left, slot)), (right[slot] if type(right) is list and type(slot) is int and 0 <= slot < len(right) else _js_get(right, slot))):
+            if py_compare_lt((left[slot] if type(left) is list and slot < len(left) else _js_get(left, slot)), (right[slot] if type(right) is list and slot < len(right) else _js_get(right, slot))):
                 return -1
-            if py_compare_lt((right[slot] if type(right) is list and type(slot) is int and 0 <= slot < len(right) else _js_get(right, slot)), (left[slot] if type(left) is list and type(slot) is int and 0 <= slot < len(left) else _js_get(left, slot))):
+            if py_compare_lt((right[slot] if type(right) is list and slot < len(right) else _js_get(right, slot)), (left[slot] if type(left) is list and slot < len(left) else _js_get(left, slot))):
                 return 1
-            slot = _js_num(slot + 1)
+            slot = slot + 1
         return 0
     return _js_m_sort([*facts], _js_fn38)
 
@@ -1780,11 +1780,11 @@ def _js_method_MemoryStore_poolIndexed(idx, q):
             out.extend((a, c, _js_add(_js_add(_js_mul(bn, x), _js_mul(bd, y)), _js_mul(bk, z)),))
             d = _js_add(d, c)
             j = _js_num(j + 5)
-        if type(segs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and segs._keys is None:
+        if (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and segs._keys is None:
             segs._entries[t] = out
         else:
             _js_m_set(segs, t, out)
-        if type(df) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and df._keys is None:
+        if (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and df._keys is None:
             df._entries[t] = d
         else:
             _js_m_set(df, t, d)

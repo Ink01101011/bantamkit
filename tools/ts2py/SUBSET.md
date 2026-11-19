@@ -318,6 +318,9 @@ returns), so nothing reads it.
 | `bool` | `type(v) is bool` | a comparison, `!`, a method or builtin that always returns a boolean; a `boolean` parameter in a typed body |
 | `list` | a Python `list` | an array literal; `split`, `map`, `filter`, `sort`, `reverse`, `entries`; an array or tuple parameter in a typed body |
 | `regex` | a compiled `re.Pattern` without `g` | a regex literal |
+| `map` (J91-1) | `type(v) is _JsMap` | `new Map(...)` of the builtin; `new Map(Object.entries(x))` |
+| `int` (J91-1) | `type(v) is int` within +-2^53 (so also `num`) | a whole literal below 2^53 and its negation; `+` / `-` of two indices; a counted loop's update |
+| `idx` (J91-1) | `type(v) is int` in `[0, 2^52]` (so also `int`) | a whole literal in that range; `.length` of a proven list or string (no one object holds 2^52 items or UTF-16 units); a proven list's `push`; a counted loop's variable in its body (RULES.md, *J91-1 rules*) |
 | `match` | `None` or a match array (element 0 the matched `str`) | `.exec` |
 | tuple | a FRESH array of exactly n items with these facts | an array literal; a function every return of which is one; a `const` whose every read is a literal index or a nullish or truthiness test (so nothing else can hold, and mutate, it) |
 | elements | what every element (or property value) is | a non-exported module `const` bound to an array or object literal whose every use is a destructuring `for-of` (arrays) or a member read (objects): a **frozen** constant; any other use escapes it |

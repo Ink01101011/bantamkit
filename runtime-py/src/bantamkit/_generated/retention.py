@@ -306,10 +306,10 @@ def hook_log_reducer(rows):
     for row in rows:
         ts = _js_get(row, "ts")
         day = _js_m_join(_js_m_slice([*ts], 0, 10), "") if isinstance(ts, str) else "?"
-        c = (days._entries.get(day, _JS_UNDEFINED) if type(days) is _JsMap and (type(day) is str or type(day) is int and -9007199254740992 <= day <= 9007199254740992) else _js_m_get(days, day))
+        c = (days._entries.get(day, _JS_UNDEFINED))
         if c is _JS_UNDEFINED:
             c = _JsMap()
-            if type(days) is _JsMap and (type(day) is str or type(day) is int and -9007199254740992 <= day <= 9007199254740992) and days._keys is None:
+            if days._keys is None:
                 days._entries[day] = c
             else:
                 _js_m_set(days, day, c)
@@ -863,7 +863,7 @@ def _sync_jobs__typed(home, root):
         if not (name.endswith(".json.gz") if type(name) is str else _js_m_endsWith(name, ".json.gz")) or _regular(path_join(arch, name)) is None:
             continue
         r = _rel(root, path_join(arch, name))
-        if (r in held._entries if type(held) is _JsMap and (type(r) is str or type(r) is int and -9007199254740992 <= r <= 9007199254740992) else r in held._items if type(held) is _JsSet and (type(r) is str or type(r) is int and -9007199254740992 <= r <= 9007199254740992) else _js_m_has(held, r)):
+        if (r in held._entries if type(held) is _JsMap else r in held._items if type(held) is _JsSet else _js_m_has(held, r)):
             continue
         data = _gunzip(path_join(arch, name))
         if data is None:
@@ -906,7 +906,7 @@ def sync_jobs(home, root):
         if not (name.endswith(".json.gz") if type(name) is str else _js_m_endsWith(name, ".json.gz")) or _regular(path_join(arch, name)) is None:
             continue
         r = _rel(root, path_join(arch, name))
-        if (r in held._entries if type(held) is _JsMap and (type(r) is str or type(r) is int and -9007199254740992 <= r <= 9007199254740992) else r in held._items if type(held) is _JsSet and (type(r) is str or type(r) is int and -9007199254740992 <= r <= 9007199254740992) else _js_m_has(held, r)):
+        if (r in held._entries if type(held) is _JsMap else r in held._items if type(held) is _JsSet else _js_m_has(held, r)):
             continue
         data = _gunzip(path_join(arch, name))
         if data is None:
@@ -980,7 +980,7 @@ def _compact_cold__typed(home, roots, report):
         if not _js_truthy(_is_file(path_join(base, name, "manifest.json"))):
             continue
         cold = ColdIndex(name, home, base)
-        held = (keeps._entries.get(name, _JS_UNDEFINED) if type(keeps) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(keeps, name))
+        held = (keeps._entries.get(name, _JS_UNDEFINED) if (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(keeps, name))
         _js_caught59 = None
         try:
             if _js_invoke(cold, "compact", None if held is _JS_UNDEFINED else _keep_under((held[0] if type(held) is list and 0 < len(held) else _js_get(held, 0)), (held[1] if type(held) is list and 1 < len(held) else _js_get(held, 1)))) is not None:
@@ -1008,7 +1008,7 @@ def _compact_cold(home, roots, report):
         if not _js_truthy(_is_file(path_join(base, name, "manifest.json"))):
             continue
         cold = ColdIndex(name, home, base)
-        held = (keeps._entries.get(name, _JS_UNDEFINED) if type(keeps) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(keeps, name))
+        held = (keeps._entries.get(name, _JS_UNDEFINED) if (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(keeps, name))
         _js_caught60 = None
         try:
             if _js_invoke(cold, "compact", None if held is _JS_UNDEFINED else _keep_under((held[0] if type(held) is list and 0 < len(held) else _js_get(held, 0)), (held[1] if type(held) is list and 1 < len(held) else _js_get(held, 1)))) is not None:
@@ -1355,12 +1355,12 @@ def search_archived(checkpoint, search, home):
             lines = _js_m_split(value, "\n")
             i = 0
             while i < len(lines):
-                toks = _JsSet(tokenize_v2((lines[i] if type(i) is int and 0 <= i < len(lines) else _js_list_at(lines, i))))
+                toks = _JsSet(tokenize_v2((lines[i] if i < len(lines) else _js_list_at(lines, i))))
                 if all(_js_m_has(toks, t) for t in [*want]):
-                    hits.append({"job": job, "file": r, "line": _js_num(i + 1)})
+                    hits.append({"job": job, "file": r, "line": i + 1})
                     if len(hits) >= SEARCH_MAX:
                         return hits
-                i = _js_num(i + 1)
+                i = i + 1
     return hits
 
 

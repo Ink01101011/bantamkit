@@ -882,7 +882,7 @@ def _js_method_Memory_viaOf(self, picked, context):
                     raise _js_caught18
                 f = None
             if f is not None:
-                if type(found) is _JsMap and (type(n) is str or type(n) is int and -9007199254740992 <= n <= 9007199254740992) and found._keys is None:
+                if (type(n) is str or type(n) is int and -9007199254740992 <= n <= 9007199254740992) and found._keys is None:
                     found._entries[n] = [label, f]
                 else:
                     _js_m_set(found, n, [label, f])
@@ -1006,7 +1006,7 @@ def _js_method_Memory_repair(self, picked):
     writable = _JsMap()
     for label, store, w in _js_rows(self.layers, 3, (0, 1, 2)):
         if _js_truthy(_js_and(w, lambda: _js_instanceof(store, MemoryStore))):
-            if type(writable) is _JsMap and (type(label) is str or type(label) is int and -9007199254740992 <= label <= 9007199254740992) and writable._keys is None:
+            if (type(label) is str or type(label) is int and -9007199254740992 <= label <= 9007199254740992) and writable._keys is None:
                 writable._entries[label] = store
             else:
                 _js_m_set(writable, label, store)
@@ -1017,7 +1017,7 @@ def _js_method_Memory_repair(self, picked):
     clock = _js_get(_js_obj28, "now")
     now = clock()
     for label, fact in _js_rows(picked, 2, (0, 1)):
-        store = (writable._entries.get(label, _JS_UNDEFINED) if type(writable) is _JsMap and (type(label) is str or type(label) is int and -9007199254740992 <= label <= 9007199254740992) else _js_m_get(writable, label))
+        store = (writable._entries.get(label, _JS_UNDEFINED) if (type(label) is str or type(label) is int and -9007199254740992 <= label <= 9007199254740992) else _js_m_get(writable, label))
         _js_caught29 = None
         try:
             if _js_truthy(_js_and(store is not _JS_UNDEFINED, lambda: _js_invoke(store, "repair", fact, ledger, now))):
@@ -1092,9 +1092,9 @@ def _js_method_Memory_queriesWrite(self, facts):
             if _js_instanceof(_js_caught36, MemoryValidationError):
                 return _refused__typed("facts[" + _js_str(i) + "]: " + _js_str(_js_get(_js_caught36, "message")))
             raise _js_caught36
-        if not (at in plan._entries if type(plan) is _JsMap and (type(at) is str or type(at) is int and -9007199254740992 <= at <= 9007199254740992) else at in plan._items if type(plan) is _JsSet and (type(at) is str or type(at) is int and -9007199254740992 <= at <= 9007199254740992) else _js_m_has(plan, at)):
+        if not (at in plan._entries if (type(at) is str or type(at) is int and -9007199254740992 <= at <= 9007199254740992) else _js_m_has(plan, at)):
             _js_m_set(plan, at, _JsMap())
-        _js_m_set((plan._entries.get(at, _JS_UNDEFINED) if type(plan) is _JsMap and (type(at) is str or type(at) is int and -9007199254740992 <= at <= 9007199254740992) else _js_m_get(plan, at)), name, [[*queries], fact_sha(_js_get(fact, "source"))] if _js_gt(_js_len(queries), 0) else None)
+        _js_m_set((plan._entries.get(at, _JS_UNDEFINED) if (type(at) is str or type(at) is int and -9007199254740992 <= at <= 9007199254740992) else _js_m_get(plan, at)), name, [[*queries], fact_sha(_js_get(fact, "source"))] if _js_gt(_js_len(queries), 0) else None)
         i = _js_num(i + 1)
     home = py_home()
     for at, entries in _js_rows(plan, 2, (0, 1)):

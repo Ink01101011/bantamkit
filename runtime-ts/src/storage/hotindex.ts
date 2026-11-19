@@ -1297,7 +1297,9 @@ export class HotIndex {
       const tfs = new Map<string, [number, number, number, number]>();
       const flens: [number, number, number] = [0, 0, 0];
       lens.set(name, flens);
-      for (let fi = 0; fi < FIELD_BOOST.length; fi += 1) {
+      // One count per FIELD_BOOST field, so `flens.length` is FIELD_BOOST's: a bound ts2py proves
+      // an index (#341, J91-1: `fi`, and so `k`, is then a proven int in the token loop below).
+      for (let fi = 0; fi < flens.length; fi += 1) {
         const [field, boost] = FIELD_BOOST[fi]!;
         const toks = tokenizeV2(text[field as Field]);
         total += boost * toks.length;

@@ -298,8 +298,8 @@ def parse_frontmatter(front):
         if _js_get(front, pos) == "\n":
             pos = _js_add(pos, 1)
             gap = _js_str_len(_js_get(_js_m_exec(_JS_RE_4, _js_m_slice(front, pos)), 0))
-            if _js_m_test(_JS_RE_5, _js_m_slice(front, (pos + gap if type(pos) is int and type(gap) is int and -4503599627370496 <= gap <= 4503599627370496 and -4503599627370496 <= pos <= 4503599627370496 else _js_add(pos, gap)))):
-                value, pos = _scan_block_sequence(front, (pos + gap if type(pos) is int and type(gap) is int and -4503599627370496 <= gap <= 4503599627370496 and -4503599627370496 <= pos <= 4503599627370496 else _js_add(pos, gap)))
+            if _js_m_test(_JS_RE_5, _js_m_slice(front, (pos + gap if type(pos) is int and -4503599627370496 <= pos <= 4503599627370496 else _js_add(pos, gap)))):
+                value, pos = _scan_block_sequence(front, (pos + gap if type(pos) is int and -4503599627370496 <= pos <= 4503599627370496 else _js_add(pos, gap)))
             else:
                 nested = _scan_nested_mapping(front, pos)
                 if nested is not None:
@@ -989,7 +989,7 @@ def _scan_quoted__typed(front, pos, quote):
             i = _js_num(i + used)
             continue
         if ch == "\n":
-            while len(out) > 0 and _js_m_test(_JS_RE_12, _js_list_at(out, _js_num(len(out) - 1))):
+            while len(out) > 0 and _js_m_test(_JS_RE_12, _js_list_at(out, len(out) - 1)):
                 _js_m_pop(out)
             breaks = 0
             while (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == "\n":
@@ -1031,7 +1031,7 @@ def _scan_quoted(front, pos, quote):
             i = _js_add(i, used)
             continue
         if ch == "\n":
-            while len(out) > 0 and _js_m_test(_JS_RE_12, _js_list_at(out, _js_num(len(out) - 1))):
+            while len(out) > 0 and _js_m_test(_JS_RE_12, _js_list_at(out, len(out) - 1)):
                 _js_m_pop(out)
             breaks = 0
             while _js_get(front, i) == "\n":
@@ -1066,7 +1066,7 @@ def _unescape__typed(front, at):
     digits = _js_units_slice(_jsu_front, _js_num(at + 2), _js_num(_js_num(at + 2) + width))
     if not _js_m_test(_js_regexp_dynamic("^[0-9A-Fa-f]{", width, "}\\Z"), digits):
         raise FactParseError("malformed \\" + code + " escape: " + _js_str(_js_json_stringify(digits)))
-    return [_js_from_code_point(_js_parse_int(digits, 16)), _js_num(2 + width)]
+    return [_js_from_code_point(_js_parse_int(digits, 16)), 2 + width]
 
 
 def _unescape(front, at):
@@ -1084,7 +1084,7 @@ def _unescape(front, at):
     digits = _js_m_slice(front, _js_add(at, 2), _js_add(_js_add(at, 2), width))
     if not _js_m_test(_js_regexp_dynamic("^[0-9A-Fa-f]{", width, "}\\Z"), digits):
         raise FactParseError("malformed \\" + _js_str(code) + " escape: " + _js_str(_js_json_stringify(digits)))
-    return [_js_from_code_point(_js_parse_int(digits, 16)), _js_num(2 + width)]
+    return [_js_from_code_point(_js_parse_int(digits, 16)), 2 + width]
 
 
 def _scan_block_sequence__typed(front, pos):
@@ -1121,7 +1121,7 @@ def _scan_block_sequence(front, pos):
     i = pos
     while True:
         gap = _js_str_len(_js_get(_js_m_exec(_JS_RE_4, _js_m_slice(front, i)), 0))
-        if gap > 0 and _js_get(front, (i + gap if type(i) is int and type(gap) is int and -4503599627370496 <= gap <= 4503599627370496 and -4503599627370496 <= i <= 4503599627370496 else _js_add(i, gap))) == "-":
+        if gap > 0 and _js_get(front, (i + gap if type(i) is int and -4503599627370496 <= i <= 4503599627370496 else _js_add(i, gap))) == "-":
             i = _js_add(i, gap)
         if not (_js_lt(i, _js_len(front)) and _js_get(front, i) == "-"):
             break

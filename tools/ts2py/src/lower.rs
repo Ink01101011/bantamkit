@@ -57,6 +57,12 @@ struct Py {
     safe_end: bool,
     /// J87: always a Python `list` (a JS array).
     is_list: bool,
+    /// J91-1 (#341): always a `_JsMap` itself (`types::Fact::map`).
+    is_map: bool,
+    /// J91-1: always a safe int (`types::Fact::int_`); set only with `is_num` and `is_double`.
+    is_int: bool,
+    /// J91-1: always an index (`types::Fact::idx`); set only with `is_int`.
+    is_idx: bool,
     /// J87: always a compiled `re.Pattern` without the `g` flag.
     is_regex: bool,
     /// J87: a fresh array of exactly these element facts (`types::Fact::tuple`).
@@ -102,6 +108,9 @@ impl Py {
             f64: self.is_f64 && self.is_num && self.is_double,
             bool_: self.is_bool,
             list: self.is_list,
+            map: self.is_map,
+            int_: self.is_int && self.is_num && self.is_double,
+            idx: self.is_idx && self.is_int && self.is_num && self.is_double,
             regex: self.is_regex,
             match_: self.is_match,
             tuple: self.tuple.clone(),
@@ -126,6 +135,9 @@ impl Py {
                 self.is_double = true;
                 self.is_bool = true;
                 self.is_list = true;
+                self.is_map = true;
+                self.is_int = true;
+                self.is_idx = true;
                 self.is_regex = true;
             }
             Some(f) => {
@@ -141,6 +153,18 @@ impl Py {
                 }
                 self.is_bool |= f.bool_;
                 self.is_list |= f.list;
+                self.is_map |= f.map;
+                if f.int_ {
+                    self.is_num = true;
+                    self.is_double = true;
+                    self.is_int = true;
+                }
+                if f.idx {
+                    self.is_num = true;
+                    self.is_double = true;
+                    self.is_int = true;
+                    self.is_idx = true;
+                }
                 self.is_regex |= f.regex;
                 self.is_match |= f.match_;
                 self.no_null |= f.no_null;
@@ -171,6 +195,9 @@ impl Py {
             is_f64: both.f64,
             is_str: both.str_,
             is_list: both.list,
+            is_map: both.map,
+            is_int: both.int_,
+            is_idx: both.idx,
             is_regex: both.regex,
             tuple: both.tuple,
             elem: both.elem,
@@ -579,6 +606,11 @@ pub struct Lowerer<'s> {
     hot_comp: usize,
     /// J90-P6: the temporaries `hot` has bound, for unique names.
     hot_tmp: usize,
+    /// J91-1 (#341): per Python name, what the last read of it proved, stamped with `fact_seq`
+    /// when it was read. A guarded expansion takes an operand's fact only from a read made while
+    /// lowering that very expression (`proven`): every operand it would test is a name read there.
+    name_facts: HashMap<String, (Fact, u64)>,
+    fact_seq: u64,
 }
 
 /// J89-3: what `fast_loop_plan` found in a counted loop's body.
@@ -757,6 +789,8 @@ impl<'s> Lowerer<'s> {
             no_walrus: 0,
             hot_comp: 0,
             hot_tmp: 0,
+            name_facts: HashMap::new(),
+            fact_seq: 0,
         }
     }
 
@@ -870,16 +904,32 @@ impl<'s> Lowerer<'s> {
 
     /// J87: the facts of a local or module `const` applied to its lowered read.
     fn with_binding_facts(&mut self, name: &str, py: Py) -> Py {
-        match self.var_key(name) {
+        let read = match self.var_key(name) {
             Some(key) => {
                 let fact = self.lookup(&key);
                 if let Some((_, narrowed)) = self.narrow.iter().rev().find(|(k, _)| *k == key) {
                     let narrowed = narrowed.clone();
-                    return py.with_fact(Some(&narrowed));
+                    py.with_fact(Some(&narrowed))
+                } else {
+                    py.with_fact(fact.as_ref())
                 }
-                py.with_fact(fact.as_ref())
             }
             None => py,
+        };
+        // J91-1: what this read proves, for a guarded expansion of the expression it is in.
+        self.fact_seq += 1;
+        self.name_facts
+            .insert(read.code.clone(), (read.fact(), self.fact_seq));
+        read
+    }
+
+    /// J91-1 (#341): what is proven of the operand `code` of a guarded expansion: the fact of a
+    /// read of that name made after `since` (while lowering the expression the expansion
+    /// rewrites), never an optimistic one. Anything else proves nothing.
+    fn proven(&self, code: &str, since: u64) -> Fact {
+        match self.name_facts.get(code) {
+            Some((fact, seq)) if *seq > since && !fact.top && is_name(code) => fact.clone(),
+            _ => Fact::default(),
         }
     }
 
@@ -2131,12 +2181,13 @@ impl<'s> Lowerer<'s> {
                 other => {
                     self.statement_call = matches!(other, Expression::CallExpression(_));
                     // J90-PF: the call's statement form first; else `expr`'s own (`hot`).
+                    let since = self.fact_seq;
                     let value = self.expr_inner(other);
                     self.statement_call = false;
-                    match self.hot_stmt(&value.code, &p) {
+                    match self.hot_stmt(&value.code, &p, since) {
                         Some(lines) => out.extend(lines),
                         None => {
-                            let value = self.hot(value);
+                            let value = self.hot(value, since);
                             out.push(format!("{p}{}", value.code));
                         }
                     }
@@ -2369,15 +2420,26 @@ impl<'s> Lowerer<'s> {
             Some(test) => self.condition(test),
             None => "True".to_string(),
         };
+        // J91-1 (#341): a counted loop's variable is an index in its body (`counter`), and its
+        // update is Python's int `+` of the stride.
+        let counter = self.counter(f);
+        let narrowed = self.narrow.len();
+        if let Some((key, _, _, _)) = &counter {
+            self.narrow.push((key.clone(), Fact::idx()));
+        }
         if !continues_out(&f.body) {
             out.push(format!("{p}while {test}:"));
             self.breaks.push(BreakTarget::Loop);
             self.body(&f.body, indent + 1, out);
             self.breaks.pop();
-            match update {
-                Some(Update::Inc(u)) => self.update_stmt(u, indent + 1, out),
-                Some(Update::Assign(a)) => self.assignment(a, indent + 1, out),
-                None => {}
+            self.narrow.truncate(narrowed);
+            match (&counter, update) {
+                (Some((_, name, step, span)), _) => {
+                    self.counter_step(name, *step, *span, indent + 1, out)
+                }
+                (None, Some(Update::Inc(u))) => self.update_stmt(u, indent + 1, out),
+                (None, Some(Update::Assign(a))) => self.assignment(a, indent + 1, out),
+                (None, None) => {}
             }
             return;
         }
@@ -2392,11 +2454,15 @@ impl<'s> Lowerer<'s> {
         self.breaks.push(BreakTarget::Loop);
         self.body(&f.body, indent + 1, &mut body);
         self.breaks.pop();
+        self.narrow.truncate(narrowed);
         let mut step = Vec::new();
-        match update {
-            Some(Update::Inc(u)) => self.update_stmt(u, indent + 2, &mut step),
-            Some(Update::Assign(a)) => self.assignment(a, indent + 2, &mut step),
-            None => {}
+        match (&counter, update) {
+            (Some((_, name, stride, span)), _) => {
+                self.counter_step(name, *stride, *span, indent + 2, &mut step)
+            }
+            (None, Some(Update::Inc(u))) => self.update_stmt(u, indent + 2, &mut step),
+            (None, Some(Update::Assign(a))) => self.assignment(a, indent + 2, &mut step),
+            (None, None) => {}
         }
         if step.is_empty() {
             step.push(format!("{deep}pass"));
@@ -2412,6 +2478,144 @@ impl<'s> Lowerer<'s> {
             out.push(format!("{deep}break"));
         }
         out.extend(body);
+    }
+
+    /// J91-1 (#341): `for (let i = L; i < B; i += S)` (or `i = i + S`, `i++`, `++i`) is a COUNTED
+    /// loop when `L` is a whole literal in `[0, IDX_MAX]`, `S` a whole literal in `[1, 2**20]`, `B`
+    /// an expression `idx_bound` proves an index wherever the test reads it, and the update is the
+    /// only assignment to `i` inside the statement (`Assume::assign_spans`; the `let` is scoped to
+    /// the statement, so the body, its closures and the test assign it nowhere). Then in the body `0 <= i < B <= IDX_MAX`: `i` starts at `L >= 0`,
+    /// only the update moves it, upward, and the body runs only where the test just held. `i` is an
+    /// int throughout (an int literal, then an int plus an int), and the update's `i + S` is at most
+    /// `IDX_MAX - 1 + 2**20 < 2**53`, so Python's int `+` is the double sum JS computes. The key,
+    /// source name, stride and the update target's span start.
+    fn counter(&mut self, f: &ForStatement<'_>) -> Option<(Key, String, u64, u32)> {
+        let Some(ForStatementInit::VariableDeclaration(v)) = &f.init else {
+            return None;
+        };
+        if v.kind != VariableDeclarationKind::Let || v.declarations.len() != 1 {
+            return None;
+        }
+        let d = &v.declarations[0];
+        let BindingPattern::BindingIdentifier(id) = &d.id else {
+            return None;
+        };
+        let name = id.name.as_str();
+        let whole = |e: &Expression<'_>, lo: f64, hi: f64| {
+            matches!(strip(e), Expression::NumericLiteral(n)
+                if n.value.fract() == 0.0 && n.value >= lo && n.value <= hi)
+        };
+        if !d
+            .init
+            .as_ref()
+            .is_some_and(|e| whole(e, 0.0, crate::types::IDX_MAX as f64))
+        {
+            return None;
+        }
+        let Some(Expression::BinaryExpression(test)) = f.test.as_ref().map(strip) else {
+            return None;
+        };
+        if test.operator != BinaryOperator::LessThan
+            || !matches!(strip(&test.left), Expression::Identifier(l) if l.name == name)
+            || !self.idx_bound(&test.right)
+        {
+            return None;
+        }
+        let is_var =
+            |e: &Expression<'_>| matches!(strip(e), Expression::Identifier(x) if x.name == name);
+        let stride = |e: &Expression<'_>| -> Option<u64> {
+            whole(e, 1.0, (1u64 << 20) as f64).then(|| match strip(e) {
+                Expression::NumericLiteral(n) => n.value as u64,
+                _ => unreachable!("whole matched a literal"),
+            })
+        };
+        let (step, span) = match f.update.as_ref()? {
+            Expression::UpdateExpression(u) if u.operator == UpdateOperator::Increment => {
+                match &u.argument {
+                    SimpleAssignmentTarget::AssignmentTargetIdentifier(x) if x.name == name => {
+                        (1, x.span.start)
+                    }
+                    _ => return None,
+                }
+            }
+            Expression::AssignmentExpression(a) => {
+                let AssignmentTarget::AssignmentTargetIdentifier(x) = &a.left else {
+                    return None;
+                };
+                if x.name != name {
+                    return None;
+                }
+                let step = match a.operator {
+                    AssignmentOperator::Addition => stride(&a.right)?,
+                    AssignmentOperator::Assign => match strip(&a.right) {
+                        Expression::BinaryExpression(b)
+                            if b.operator == BinaryOperator::Addition && is_var(&b.left) =>
+                        {
+                            stride(&b.right)?
+                        }
+                        _ => return None,
+                    },
+                    _ => return None,
+                };
+                (step, x.span.start)
+            }
+            _ => return None,
+        };
+        // The `let` of a `for` is visible only inside the statement, so an assignment to this
+        // binding lies inside its span; one there to another binding of the name (a nested `let i`
+        // shares the function's key) only makes the test fail, which is safe.
+        let key = self.var_key(name)?;
+        let (lo, hi) = (f.span.start, f.span.end);
+        let only = self.assume.assign_spans.get(&key).is_some_and(|spans| {
+            let inside: Vec<u32> = spans.range(lo..hi).copied().collect();
+            inside == [span]
+        });
+        only.then(|| (key, name.to_string(), step, span))
+    }
+
+    /// J91-1: a counted loop's bound is an index wherever the test reads it: a whole literal in
+    /// `[0, IDX_MAX]`, a name (local or module `const`) proven one, or `.length` of a name proven a
+    /// list or a `str` (`len_idx`). A binding's fact holds at every read, the test's included.
+    fn idx_bound(&mut self, e: &Expression<'_>) -> bool {
+        let fact_of = |me: &mut Self, name: &str| -> Option<Fact> {
+            let key = me.var_key(name)?;
+            me.current(&key).filter(|f| !f.top)
+        };
+        match strip(e) {
+            Expression::NumericLiteral(n) => {
+                n.value.fract() == 0.0 && n.value >= 0.0 && n.value <= crate::types::IDX_MAX as f64
+            }
+            Expression::Identifier(id) => fact_of(self, id.name.as_str()).is_some_and(|f| f.idx),
+            Expression::StaticMemberExpression(m) if m.property.name == "length" => {
+                match strip(&m.object) {
+                    Expression::Identifier(id) if self.typed_array(&m.object).is_none() => {
+                        fact_of(self, id.name.as_str()).is_some_and(|f| f.list || f.str_)
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// J91-1: a counted loop's update, `i = i + S` (Python's int `+`; `counter` proves it exact),
+    /// recorded as the assignment it is (`local_target`) of a safe int.
+    fn counter_step(
+        &mut self,
+        name: &str,
+        step: u64,
+        span: u32,
+        indent: usize,
+        out: &mut Vec<String>,
+    ) {
+        let target = self.local_target(name, Span::new(span, span));
+        self.bind(name, Fact::int());
+        out.push(format!(
+            "{}{} = {} + {step}",
+            pad(indent),
+            target.code,
+            target.code
+        ));
     }
 
     /// J89-3: `for (let i = a; i < b; i += 1) body` (or `i++` / `++i`) whose body can be proven
@@ -3472,11 +3676,12 @@ impl<'s> Lowerer<'s> {
                     out.push(format!("{p}{py}[{var}] = {}", value.code));
                     return;
                 }
+                let since = self.fact_seq;
                 let object = self.expr(&m.object);
                 let key = self.expr(&m.expression);
                 let value = self.expr(&a.right);
                 let code = format!("_js_put({}, {}, {})", object.code, key.code, value.code);
-                match self.hot_stmt(&code, &p) {
+                match self.hot_stmt(&code, &p, since) {
                     Some(lines) => out.extend(lines),
                     None => out.push(format!("{p}{code}")),
                 }
@@ -3622,8 +3827,9 @@ impl<'s> Lowerer<'s> {
     // ---------------------------------------------------------------- expressions
 
     fn expr(&mut self, e: &Expression<'_>) -> Py {
+        let since = self.fact_seq;
         let value = self.expr_inner(e);
-        self.hot(value)
+        self.hot(value, since)
     }
 
     /// J90-P6: guarded inline expansion of a hot helper call (RULES.md, *J90-P6 rules*). Inside a
@@ -3634,7 +3840,7 @@ impl<'s> Lowerer<'s> {
     /// or a literal (read again in the slow arm, with no code run in between); the first, if it is
     /// anything else, is bound by `:=` in the guard's first test, which always runs. Where `:=`
     /// cannot stand (a comprehension's iterable, a lambda), the first operand must be simple too.
-    fn hot(&mut self, value: Py) -> Py {
+    fn hot(&mut self, value: Py, since: u64) -> Py {
         // Measured (docs/porting.md, *Guarded inline expansion*): a comprehension element and the
         // other helpers (`_js_get`, `_js_num`, `_js_coalesce_value`, `_js_list_at`) moved no
         // path by more than the run's spread and cost the wheel 1.5x its size budget.
@@ -3706,23 +3912,49 @@ impl<'s> Lowerer<'s> {
         // `_js_key` and compares by value under `===`.
         const SAFE: &str = "9007199254740992";
         let a = &name;
+        // J91-1 (#341): what the operands' own reads proved (`proven`: names only, so never the
+        // `:=`-bound first operand). A test the fact already answers is left out of the guard;
+        // a guard with no test left is the fast arm alone.
+        let fa = self.proven(&first, since);
+        let fb = self.proven(&args[1], since);
+        // A guard whose every test is proven: the fast arm. Else `(fast if <tests> else slow)`.
+        let guarded = |fast: String, tests: Vec<String>, slow: String| -> String {
+            if tests.is_empty() {
+                format!("({fast})")
+            } else {
+                format!("({fast} if {} else {slow})", tests.join(" and "))
+            }
+        };
         let code = match helper {
             "_js_m_get" | "_js_m_has" => {
                 let k = &args[1];
                 // J90-PF: a key that is its own `_js_key`: a string, or a safe int (was: strings).
-                let key_test = if is_str_literal(k) || index_literal(k) {
-                    String::new()
+                // J91-1: or a key proven one (a `str`, a safe int).
+                let key_test = if is_str_literal(k) || index_literal(k) || fb.str_ || fb.int_ {
+                    None
                 } else {
-                    format!(
-                        " and (type({k}) is str or type({k}) is int and -{SAFE} <= {k} <= {SAFE})"
-                    )
+                    Some(format!(
+                        "(type({k}) is str or type({k}) is int and -{SAFE} <= {k} <= {SAFE})"
+                    ))
                 };
+                let map_test = (!fa.map).then(|| format!("type({bind}) is _JsMap"));
+                let tests: Vec<String> = map_test.into_iter().chain(key_test.clone()).collect();
                 if helper == "_js_m_get" {
-                    format!(
-                        "({a}._entries.get({k}, _JS_UNDEFINED) if type({bind}) is _JsMap{key_test} else _js_m_get({a}, {k}))"
+                    guarded(
+                        format!("{a}._entries.get({k}, _JS_UNDEFINED)"),
+                        tests,
+                        format!("_js_m_get({a}, {k})"),
+                    )
+                } else if fa.map {
+                    // J91-1: a proven Map is never a Set, so its arm alone.
+                    guarded(
+                        format!("{k} in {a}._entries"),
+                        key_test.into_iter().collect(),
+                        format!("_js_m_has({a}, {k})"),
                     )
                 } else {
                     // `has` of a Set too: its items are keyed by the same `_js_key` tags.
+                    let key_test = key_test.map_or(String::new(), |t| format!(" and {t}"));
                     format!(
                         "({k} in {a}._entries if type({bind}) is _JsMap{key_test} else {k} in {a}._items if type({a}) is _JsSet{key_test} else _js_m_has({a}, {k}))"
                     )
@@ -3731,17 +3963,42 @@ impl<'s> Lowerer<'s> {
             "_js_strict_eq" => {
                 let b = &args[1];
                 let (op, not) = if negate { ("!=", "not ") } else { ("==", "") };
-                // J90-PF: and two safe ints (the helper's second branch), compared by value.
-                format!(
-                    "({a} {op} {b} if type({bind}) is type({b}) is str or type({a}) is type({b}) is int and -{SAFE} <= {a} <= {SAFE} and -{SAFE} <= {b} <= {SAFE} else {not}_js_strict_eq({a}, {b}))"
-                )
+                if fa.num || fb.num {
+                    // J91-1: one side is a proven number, so the two are never two `str`s: only
+                    // the int arm is left, less the tests a side proven a safe int answers.
+                    let mut tests = Vec::new();
+                    for (x, f) in [(a, &fa), (b, &fb)] {
+                        if !f.int_ {
+                            let x_bind = if x == a { &bind } else { x };
+                            tests.push(format!("type({x_bind}) is int"));
+                            tests.push(format!("-{SAFE} <= {x} <= {SAFE}"));
+                        }
+                    }
+                    // The `:=` binding of the first operand must stay the guard's first test.
+                    if bind != *a && fa.int_ {
+                        return value;
+                    }
+                    guarded(
+                        format!("{a} {op} {b}"),
+                        tests,
+                        format!("{not}_js_strict_eq({a}, {b})"),
+                    )
+                } else {
+                    // J90-PF: and two safe ints (the helper's second branch), compared by value.
+                    format!(
+                        "({a} {op} {b} if type({bind}) is type({b}) is str or type({a}) is type({b}) is int and -{SAFE} <= {a} <= {SAFE} and -{SAFE} <= {b} <= {SAFE} else {not}_js_strict_eq({a}, {b}))"
+                    )
+                }
             }
             "_js_list_at" => {
                 // J90-PF: a proven list read at an int index inside it: the element (the helper's
-                // own first branch).
+                // own first branch). J91-1: less the tests an index proven an int (or an index)
+                // answers.
                 let i = &args[1];
-                let i_test = if index_literal(i) {
+                let i_test = if index_literal(i) || fb.idx {
                     format!("{i} < len({a})")
+                } else if fb.int_ {
+                    format!("0 <= {i} < len({a})")
                 } else {
                     format!("type({i}) is int and 0 <= {i} < len({a})")
                 };
@@ -3752,20 +4009,35 @@ impl<'s> Lowerer<'s> {
                 // (the helper's own first branch). The item is a name or a literal, so reading the
                 // receiver again for its length reads the same list.
                 let x = &args[1];
-                format!(
-                    "({a}.append({x}) or len({a}) if type({a}) is list else _js_m_push({a}, {x}))"
-                )
+                if fa.list {
+                    format!("({a}.append({x}) or len({a}))")
+                } else {
+                    format!(
+                        "({a}.append({x}) or len({a}) if type({a}) is list else _js_m_push({a}, {x}))"
+                    )
+                }
             }
             _ => {
                 let b = &args[1];
-                let b_test = if is_int_literal(b) && b.trim_start_matches('-').len() < 16 {
-                    String::new()
+                // J91-1: an index lies within half the safe range, so it needs no test either.
+                let b_test =
+                    if (is_int_literal(b) && b.trim_start_matches('-').len() < 16) || fb.idx {
+                        String::new()
+                    } else {
+                        format!(" and type({b}) is int and -{HALF} <= {b} <= {HALF}")
+                    };
+                if fa.idx && bind == *a {
+                    let tests: Vec<String> = b_test
+                        .strip_prefix(" and ")
+                        .map(|s| s.to_string())
+                        .into_iter()
+                        .collect();
+                    guarded(format!("{a} + {b}"), tests, format!("_js_add({a}, {b})"))
                 } else {
-                    format!(" and type({b}) is int and -{HALF} <= {b} <= {HALF}")
-                };
-                format!(
-                    "({a} + {b} if type({bind}) is int{b_test} and -{HALF} <= {a} <= {HALF} else _js_add({a}, {b}))"
-                )
+                    format!(
+                        "({a} + {b} if type({bind}) is int{b_test} and -{HALF} <= {a} <= {HALF} else _js_add({a}, {b}))"
+                    )
+                }
             }
         };
         Py {
@@ -3789,7 +4061,7 @@ impl<'s> Lowerer<'s> {
     /// again in the arm with no code run in between); a push's one item may be anything:
     /// `xs.append(x)` reads `xs` before it evaluates `x`, as JS reads the receiver first, and only
     /// one arm runs. The result is discarded, as the statement discards the call's.
-    fn hot_stmt(&self, code: &str, p: &str) -> Option<Vec<String>> {
+    fn hot_stmt(&self, code: &str, p: &str, since: u64) -> Option<Vec<String>> {
         if !self.hot_here() {
             return None;
         }
@@ -3800,17 +4072,30 @@ impl<'s> Lowerer<'s> {
         let q = format!("{p}    ");
         match (helper, args.as_slice()) {
             ("_js_m_set", [m, k, v]) if name(m) && simple_value(v) => {
+                // J91-1 (#341): less the tests the receiver's and the key's facts answer (a
+                // proven Map; a key proven a `str` or a safe int). `_keys is None` is a property of
+                // the Map's contents, which a binding's fact does not prove, so it stays.
+                let (fm, fk) = (self.proven(m, since), self.proven(k, since));
                 let key_test = if is_str_literal(k) || index_literal(k) {
                     String::new()
                 } else if name(k) {
-                    format!(
-                        " and (type({k}) is str or type({k}) is int and -{SAFE} <= {k} <= {SAFE})"
-                    )
+                    if fk.str_ || fk.int_ {
+                        String::new()
+                    } else {
+                        format!(
+                            "(type({k}) is str or type({k}) is int and -{SAFE} <= {k} <= {SAFE}) and "
+                        )
+                    }
                 } else {
                     return None;
                 };
+                let map_test = if fm.map {
+                    String::new()
+                } else {
+                    format!("type({m}) is _JsMap and ")
+                };
                 Some(vec![
-                    format!("{p}if type({m}) is _JsMap{key_test} and {m}._keys is None:"),
+                    format!("{p}if {map_test}{key_test}{m}._keys is None:"),
                     format!("{q}{m}._entries[{k}] = {v}"),
                     format!("{p}else:"),
                     format!("{q}{code}"),
@@ -3826,15 +4111,25 @@ impl<'s> Lowerer<'s> {
                 ])
             }
             ("_js_put", [xs, i, v]) if name(xs) && simple_operand(v) => {
-                let i_test = if index_literal(i) {
+                // J91-1 (#341): less the tests a receiver proven a list, and an index proven a
+                // safe int (or an index), answer.
+                let (fx, fi) = (self.proven(xs, since), self.proven(i, since));
+                let i_test = if index_literal(i) || (name(i) && fi.idx) {
                     format!("{i} < len({xs})")
+                } else if name(i) && fi.int_ {
+                    format!("0 <= {i} < len({xs})")
                 } else if name(i) {
                     format!("type({i}) is int and 0 <= {i} < len({xs})")
                 } else {
                     return None;
                 };
+                let list_test = if fx.list {
+                    String::new()
+                } else {
+                    format!("type({xs}) is list and ")
+                };
                 Some(vec![
-                    format!("{p}if type({xs}) is list and {i_test}:"),
+                    format!("{p}if {list_test}{i_test}:"),
                     format!("{q}{xs}[{i}] = {v}"),
                     format!("{p}else:"),
                     format!("{q}{code}"),
@@ -3860,10 +4155,16 @@ impl<'s> Lowerer<'s> {
                     let prec = if code.starts_with('-') { UNARY } else { ATOM };
                     // J89-3: a literal Python spells as a float (`0.75`, `-0.0`, `1e+21`).
                     let is_f64 = code.contains(['.', 'e']);
+                    // J91-1 (#341): a whole literal Python spells as an int (`py_number`: below
+                    // 2**53, not -0) is a safe int, and one in `[0, IDX_MAX]` an index.
+                    let is_int = !is_f64 && code.bytes().all(|b| b.is_ascii_digit());
+                    let is_idx = is_int && n.value <= crate::types::IDX_MAX as f64;
                     Py {
                         is_num: true,
                         is_double: true,
                         is_f64,
+                        is_int,
+                        is_idx,
                         pure: true,
                         ..Py::new(code, prec)
                     }
@@ -4037,11 +4338,13 @@ impl<'s> Lowerer<'s> {
                     // J87: a proven `str` counts UTF-16 units without the dispatch; a proven list
                     // is its Python length.
                     "length" if object.is_str => match self.units_of(&m.object, true) {
-                        Some(units) => returned(Ret::Num, format!("len({units})")),
-                        None => returned(Ret::Num, format!("_js_str_len({})", object.code)),
+                        Some(units) => len_idx(returned(Ret::Num, format!("len({units})"))),
+                        None => {
+                            len_idx(returned(Ret::Num, format!("_js_str_len({})", object.code)))
+                        }
                     },
                     "length" if object.is_list => {
-                        returned(Ret::Num, format!("len({})", object.code))
+                        len_idx(returned(Ret::Num, format!("len({})", object.code)))
                     }
                     "length" => Py::atom(format!("_js_len({})", object.code)),
                     "size" => Py::atom(format!("_js_size({})", object.code)),
@@ -4190,8 +4493,11 @@ impl<'s> Lowerer<'s> {
                     && (is_name(&key.code) || index_literal)
                 {
                     let (o, k) = (&object.code, &key.code);
-                    let k_test = if index_literal {
+                    // J91-1 (#341): less the tests a key proven a safe int (or an index) answers.
+                    let k_test = if index_literal || (key.is_idx && !key.top) {
                         format!("{k} < len({o})")
+                    } else if key.is_int && !key.top {
+                        format!("0 <= {k} < len({o})")
                     } else {
                         format!("type({k}) is int and 0 <= {k} < len({o})")
                     };
@@ -4812,9 +5118,12 @@ impl<'s> Lowerer<'s> {
                 }
                 // Negating a double is exact, so normalising the operand is enough.
                 let value = js_num(self.expr(&u.argument));
+                // J91-1: the negation of a non-zero int literal below 2**53 is a safe int.
+                let is_int = value.is_int;
                 Py {
                     is_num: true,
                     is_double: true,
+                    is_int,
                     pure: value.pure,
                     ..Py::new(format!("-{}", value.at(UNARY)), UNARY)
                 }
@@ -5197,7 +5506,11 @@ impl<'s> Lowerer<'s> {
                         items.join(", ")
                     )));
                 }
-                Some(returned(Ret::Num, format!("_js_m_push({})", all(args))))
+                // J91-1: a list's push answers its new length, an index (`len_idx`).
+                Some(len_idx(returned(
+                    Ret::Num,
+                    format!("_js_m_push({})", all(args)),
+                )))
             }
             "includes" if receiver.is_list && one_str && (receiver.pure || args[0].pure) => {
                 // SameValueZero against a `str` holds for an equal `str` element and nothing else,
@@ -6341,7 +6654,11 @@ impl<'s> Lowerer<'s> {
                         && let Some(source) = self.entries_source(object)
                     {
                         let source = self.expr(source);
-                        return Py::atom(format!("_js_map_entries({})", source.code));
+                        // J91-1: `_js_map_entries` answers a `_JsMap` itself, or raises.
+                        return Py {
+                            is_map: true,
+                            ..Py::atom(format!("_js_map_entries({})", source.code))
+                        };
                     }
                     Some(if name == "Map" { "_JsMap" } else { "_JsSet" }.to_string())
                 }
@@ -6379,7 +6696,13 @@ impl<'s> Lowerer<'s> {
         let Some(args) = self.args(&n.arguments, None, false) else {
             return Py::atom("None");
         };
-        Py::atom(format!("{class}({})", args.join(", ")))
+        // J91-1 (#341): the builtin `Map` (not a compiled class or a local of that name, both
+        // handled above) constructs a `_JsMap` itself, or raises.
+        let builtin_map = name == "Map" && !shadowed && !self.classes.contains_key(name);
+        Py {
+            is_map: builtin_map && class == "_JsMap",
+            ..Py::atom(format!("{class}({})", args.join(", ")))
+        }
     }
 
     /// `new RegExp(`...`)` (J86): a template literal whose every substitution is a whole `{n}`
@@ -7208,6 +7531,11 @@ impl<'s> Lowerer<'s> {
         // J87: an assignment rebinds the name, so its UTF-16 view may not be hoisted; a compound
         // assignment reads the target first, so it carries the binding's facts.
         if let Some(key) = self.var_key(name) {
+            self.observed
+                .assign_spans
+                .entry(key.clone())
+                .or_default()
+                .insert(span.start);
             self.observed.assigned.insert(key);
         }
         let target = Py::atom(py_name(name, false, false));
@@ -7826,6 +8154,29 @@ fn arith_of(op: BinaryOperator, left: Py, right: Py) -> Py {
     if let Some(fast) = f64_arith(op, &left, &right) {
         return fast;
     }
+    // J91-1 (#341): two indices (each an int in `[0, 2**52]`) add to an int within 2**53 and
+    // subtract to one within 2**52 of zero: the exact result is a double's exact int, so it is
+    // JS's, and Python's int arithmetic is the whole lowering (no `_js_num`). Not for an
+    // optimistic operand (`arith` re-marks the result optimistic, as for any other).
+    if left.is_idx && right.is_idx && !left.top && !right.top {
+        let (sym, prec) = match op {
+            Op::Addition => ("+", ADD),
+            Op::Subtraction => ("-", ADD),
+            _ => ("", 0),
+        };
+        if !sym.is_empty() {
+            return Py {
+                is_num: true,
+                is_double: true,
+                is_int: true,
+                pure: left.pure && right.pure,
+                ..Py::new(
+                    format!("{} {sym} {}", left.at(prec), right.at(prec + 1)),
+                    prec,
+                )
+            };
+        }
+    }
     match op {
         Op::Subtraction => {
             let (left, right) = (js_num(left), js_num(right));
@@ -7999,6 +8350,19 @@ pub fn class_py_name(name: &str, exported: bool) -> String {
 }
 
 /// The result of `+` or `-` on two doubles, rounded to a double as JS does.
+/// J91-1 (#341): a length (of a proven list, `len`; of a proven `str`, its UTF-16 units) is an index
+/// (`types::IDX_MAX`, 2**52). A list of n items holds n pointers (8n bytes) and a `str` of n code
+/// points at least n bytes, so a list past 2**52 items would need 32 PiB and a `str` past 2**51
+/// code points (2**52 units) 2 PiB, in one object: the largest single-image machines address under
+/// 2**47 bytes of memory (and no CPython build runs where a process can hold 2**51 bytes).
+fn len_idx(value: Py) -> Py {
+    Py {
+        is_int: true,
+        is_idx: true,
+        ..value
+    }
+}
+
 fn rounded(code: String) -> Py {
     Py {
         is_num: true,

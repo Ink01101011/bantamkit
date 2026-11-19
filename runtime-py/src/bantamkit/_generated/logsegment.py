@@ -74,7 +74,7 @@ def dumps_line(obj):
 
 def _split(data):
     lines = _js_m_split(_js_m_toString(data, "utf8"), "\n")
-    if len(lines) > 0 and _js_list_at(lines, _js_num(len(lines) - 1)) == "":
+    if len(lines) > 0 and _js_list_at(lines, len(lines) - 1) == "":
         _js_m_pop(lines)
     return lines
 

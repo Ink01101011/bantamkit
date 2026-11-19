@@ -350,8 +350,9 @@ export function probe(input: unknown): unknown[] {
 fn narrowing_after_a_guard_and_not_before_it() {
     let module = compile(NARROW, "narrow.ts");
     // After `if (w === undefined) throw`, `w` (a property of a frozen object of numbers) is a
-    // number; before the guard it is not.
-    has(def_of(&module, "_width"), "return _js_num(w + 1)");
+    // number; before the guard it is not. J91-1 (#341): the object's numbers are whole literals in
+    // `[0, 2**52]`, so `w` is an index and `w + 1` is Python's exact int `+` (no `_js_num`).
+    has(def_of(&module, "_width"), "return w + 1");
     has(def_of(&module, "_late"), "v = _js_add(w, 1)");
     // Inside `ch === "'" || ch === '"'`, `ch` is a string: the typed body of `twice` is called.
     has(def_of(&module, "_quote_of"), "return _twice__typed(ch)");

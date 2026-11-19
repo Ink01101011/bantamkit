@@ -29,6 +29,15 @@ pub struct Fact {
     pub bool_: bool,
     /// `isinstance(v, list)`: a JS array.
     pub list: bool,
+    /// J91-1 (#341): `type(v) is _JsMap`: a value `new Map(...)` made (never a subclass, never `None`
+    /// or `undefined`). A property of the value, so a binding keeps it.
+    pub map: bool,
+    /// J91-1 (#341): `type(v) is int` and `-2**53 <= v <= 2**53` (so also `num`): an int a JS
+    /// double holds exactly, which is its own `_js_key` and compares by value under `===`.
+    pub int_: bool,
+    /// J91-1 (#341): `type(v) is int` and `0 <= v <= 2**52` (so also `int_`): an index. The sum of
+    /// two is within 2**53, so `+` of two is exact Python arithmetic (`types::IDX_MAX`).
+    pub idx: bool,
     /// A compiled `re.Pattern` without the `g` flag (a regex literal).
     pub regex: bool,
     /// What `re.exec` returns: `None` or a match array, whose element 0 is the matched `str`.
@@ -97,6 +106,30 @@ impl Fact {
             ..Fact::default()
         }
     }
+    /// J91-1: a Python `_JsMap` itself.
+    pub fn map() -> Fact {
+        Fact {
+            map: true,
+            ..Fact::default()
+        }
+    }
+    /// J91-1: a safe int (`int_`), so also a proven number.
+    pub fn int() -> Fact {
+        Fact {
+            num: true,
+            int_: true,
+            ..Fact::default()
+        }
+    }
+    /// J91-1: an index (`idx`), so also a safe int.
+    pub fn idx() -> Fact {
+        Fact {
+            num: true,
+            int_: true,
+            idx: true,
+            ..Fact::default()
+        }
+    }
 
     /// "`inner` or `undefined`" (never `null`).
     pub fn or_undefined(inner: Fact) -> Fact {
@@ -108,7 +141,7 @@ impl Fact {
     }
 
     fn typed_flag(&self) -> bool {
-        self.str_ || self.num || self.bool_ || self.list || self.regex
+        self.str_ || self.num || self.bool_ || self.list || self.regex || self.map
     }
 
     /// Never `None`.
@@ -129,6 +162,9 @@ impl Fact {
             f64: self.f64,
             bool_: self.bool_,
             list: self.list,
+            map: self.map,
+            int_: self.int_,
+            idx: self.idx,
             regex: self.regex,
             match_: self.match_,
             tuple: self.tuple.clone(),
@@ -170,6 +206,9 @@ impl Fact {
             f64: self.f64 && other.f64,
             bool_: self.bool_ && other.bool_,
             list: self.list && other.list,
+            map: self.map && other.map,
+            int_: self.int_ && other.int_,
+            idx: self.idx && other.idx,
             regex: self.regex && other.regex,
             match_: self.match_ && other.match_,
             tuple: match (&self.tuple, &other.tuple) {
@@ -208,6 +247,9 @@ impl Fact {
             f64: self.f64 && other.f64,
             bool_: self.bool_ && other.bool_,
             list: self.list && other.list,
+            map: self.map && other.map,
+            int_: self.int_ && other.int_,
+            idx: self.idx && other.idx,
             regex: self.regex && other.regex,
             match_: matchish(self) && matchish(other) && !(self.is_null && other.is_null),
             tuple: match (&self.tuple, &other.tuple) {
@@ -237,6 +279,9 @@ impl Fact {
                 && (!need.f64 || self.f64)
                 && (!need.bool_ || self.bool_)
                 && (!need.list || self.list)
+                && (!need.map || self.map)
+                && (!need.int_ || self.int_)
+                && (!need.idx || self.idx)
                 && (!need.regex || self.regex)
     }
 
@@ -256,6 +301,10 @@ impl Fact {
         *self == Fact::default()
     }
 }
+
+/// J91-1 (#341): the largest `idx`. No index the compiler proves one exceeds it (a length is far
+/// below it: `lower.rs`, `len_idx`), and two of them add up to at most `2**53`, a double's exact int.
+pub const IDX_MAX: u64 = 1 << 52;
 
 /// The key a fact is recorded under, across the fixpoint's rounds.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -299,6 +348,10 @@ pub struct Assume {
     /// narrow them (`lower.rs`, `narrowable`). Syntactic, so it is the same every round after
     /// the first (which narrows none of them).
     pub stable: BTreeSet<Key>,
+    /// J91-1 (#341): per binding, the span starts of every assignment target naming it (not its
+    /// declaration). Syntactic, so the same every round after the first: a counted loop whose
+    /// update is the only one proves its variable an index in the body (`lower.rs`, `counter`).
+    pub assign_spans: BTreeMap<Key, BTreeSet<u32>>,
 }
 
 /// What one round observed, folded into the next round's assumptions.
@@ -312,6 +365,8 @@ pub struct Observed {
     pub declared: BTreeSet<Key>,
     /// Bindings an assignment rebinds.
     pub assigned: BTreeSet<Key>,
+    /// J91-1: where (span starts) each binding is assigned.
+    pub assign_spans: BTreeMap<Key, BTreeSet<u32>>,
     /// Bindings proven a `str` that are indexed or have their `.length` read.
     pub unit_reads: BTreeSet<Key>,
     pub escaped_locals: BTreeSet<Key>,
@@ -377,6 +432,7 @@ impl Observed {
             hoist,
             escaped_locals,
             stable,
+            assign_spans: self.assign_spans.clone(),
         }
     }
 }
