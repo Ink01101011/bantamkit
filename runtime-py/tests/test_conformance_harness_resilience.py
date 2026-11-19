@@ -243,7 +243,8 @@ export async function run() {
 def _alive(pid: int) -> bool:
     if sys.platform == "win32":
         out = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True, check=False
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         ).stdout
         return str(pid) in out
     try:
@@ -254,7 +255,8 @@ def _alive(pid: int) -> bool:
         return False
     # A killed process may sit as a zombie until init reaps it; that is not a live sleeper.
     stat = subprocess.run(
-        ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False
+        ["ps", "-o", "stat=", "-p", str(pid)],
+        capture_output=True, text=True, encoding="utf-8", check=False,
     ).stdout.strip()
     return bool(stat) and not stat.startswith("Z")
 
