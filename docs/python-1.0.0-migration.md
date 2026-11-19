@@ -53,7 +53,7 @@ mutation that restores the 0.40 answer on one side or both.
 
 **Recorded in `docs/porting.md`, not re-run here.** Several more changes in the *Generated
 modules* chapter were not re-run for this note: the usage ledger's tie at the ninth decimal and
-its far-future weight, retrieval's NaN ordering, the queries sidecar nested past 512, the hot
-index's realpath through a dangling symlink, and others. Most need an input that a user's data does not produce, or a Python caller who builds
+its far-future weight, retrieval's NaN ordering, the queries sidecar nested past 512, and
+others. Most need an input that a user's data does not produce, or a Python caller who builds
 values by hand. They stay in porting.md and are not listed as 1.0.0 changes until a probe has
 run them against the last release.

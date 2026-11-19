@@ -3460,9 +3460,10 @@ per path, median). Each comparison is with the collector off around `refresh` ag
   whole run, the collector took 108.4 ms against 102.6. The sum of the paths was 2660.0 ms against
   2666.8.
 
-The cold index keeps its `gc.disable()` around `add` / `compact`. On this bench the collections it
-defers land in no later path. With the collector left on there, 3.14 compaction took 52.5 ms
-against 50.7 (n = 7).
+The cold index keeps its `gc.disable()` around `add` / `compact`. The collections it defers run
+in the caller's next operation, as the Decision below measures (+1.3 to +1.75 ms on a recall after
+a compaction or an add). With the collector left on there, 3.14 compaction took 52.5 ms against
+50.7 (n = 7).
 
 **Decision (the owner, 2026-11-18): the collector stays off around `ColdIndex.add` / `compact`,
 and this is its cost.** J90-RR measured it on this branch against the same code with `_no_gc`
