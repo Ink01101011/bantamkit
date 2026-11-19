@@ -58,7 +58,7 @@ PACKAGE_SRC = Path(bantamkit.__file__).resolve().parent
 ASSET_SRC = assets_root()
 
 
-def _copy_package(import_root: Path) -> None:
+def _copy_package(import_root: Path, src_root: Path | None = None) -> None:
     """`bantamkit/` and, beside it, mypyc's group library: the build this checkout runs.
 
     #316 G4, J90-RF2. With the mypyc extensions beside the `.py` files, every compiled module
@@ -67,11 +67,18 @@ def _copy_package(import_root: Path) -> None:
     site-packages). A copy of `bantamkit/` alone could not import there: J90-RR measured six
     errors in this file. Copying the library keeps each copy the SAME build as the checkout,
     compiled or pure, which is what these nodes compare; a pure checkout has no such file.
+
+    `src_root` (default: the directory holding the imported package) exists for
+    `test_the_copy_takes_the_group_library_beside_the_package`, which hands it a synthetic
+    tree: see there for why the real tree cannot prove this copy works.
     """
+    src_root = PACKAGE_SRC.parent if src_root is None else src_root
     shutil.copytree(
-        PACKAGE_SRC, import_root / "bantamkit", ignore=shutil.ignore_patterns("__pycache__")
+        src_root / "bantamkit",
+        import_root / "bantamkit",
+        ignore=shutil.ignore_patterns("__pycache__"),
     )
-    for lib in PACKAGE_SRC.parent.iterdir():
+    for lib in src_root.iterdir():
         if "__mypyc." in lib.name and lib.name.endswith(tuple(EXTENSION_SUFFIXES)):
             shutil.copy2(lib, import_root / lib.name)
 
@@ -397,6 +404,62 @@ def test_compiled_counts_an_extension_module_the_import_system_would_load(tmp_pa
         f"none (0 compiled, {total} interpreted)",
         f"mypyc (1 compiled, {total - 1} interpreted)",
     ]
+
+
+# #316 G4, J90-RF3 (J90-RR2 F1). WHY THESE TWO NODES USE A SYNTHETIC TREE. Under the compiled
+# gate the venv's editable install (`_editable_impl_bantamkit.pth`) puts the checkout's
+# `runtime-py/src` on `sys.path` of every child, so a copy that left the group library behind
+# still imports it FROM THE CHECKOUT: J90-RR2 replaced the `shutil.copy2` above with `pass` and
+# saw this file pass 14. The server-launching nodes cannot see this copy break; only a tree in
+# which the copy is the ONLY way the file can arrive can. A fake group library is bytes, not a
+# loadable extension: what is asserted is that the copy takes it, by name and content, and
+# takes nothing else beside the package.
+_FAKE_GROUP_LIBRARY = f"0123abcd__mypyc{EXTENSION_SUFFIXES[0]}"
+
+
+def _synthetic_src(root: Path, *, compiled: bool) -> Path:
+    src = root / "src"
+    (src / "bantamkit" / "_generated").mkdir(parents=True)
+    (src / "bantamkit" / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+    (src / "bantamkit" / "_generated" / "mod.py").write_text("y = 2\n", encoding="utf-8")
+    (src / "bantamkit" / "__pycache__").mkdir()
+    (src / "bantamkit" / "__pycache__" / "stale.pyc").write_bytes(b"stale")
+    (src / "README.txt").write_text("not part of the build\n", encoding="utf-8")
+    if compiled:
+        (src / _FAKE_GROUP_LIBRARY).write_bytes(b"\x7fELF group library " + bytes(range(256)))
+    return src
+
+
+@pytest.mark.parametrize("compiled", [False, True], ids=["pure", "compiled"])
+def test_the_copy_takes_the_group_library_beside_the_package(tmp_path, compiled):
+    """`_copy_package` copies `bantamkit/` and, on a compiled layout, the group library."""
+    src = _synthetic_src(tmp_path, compiled=compiled)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    _copy_package(dest, src)
+
+    copied = sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*") if p.is_file())
+    expected = ["bantamkit/__init__.py", "bantamkit/_generated/mod.py"]
+    if compiled:
+        expected.append(_FAKE_GROUP_LIBRARY)
+    assert copied == sorted(expected), (
+        f"the copy is not the build beside it ({'compiled' if compiled else 'pure'} layout)"
+    )
+    if compiled:
+        assert (dest / _FAKE_GROUP_LIBRARY).read_bytes() == (src / _FAKE_GROUP_LIBRARY).read_bytes()
+
+
+def test_the_real_copy_takes_every_group_library_this_checkout_has(tmp_path):
+    """The same property on the tree this run imports: compiled gate non-empty, pure empty."""
+    beside = sorted(
+        p.name
+        for p in PACKAGE_SRC.parent.iterdir()
+        if "__mypyc." in p.name and p.name.endswith(tuple(EXTENSION_SUFFIXES))
+    )
+    _copy_package(tmp_path)
+    taken = sorted(p.name for p in tmp_path.iterdir() if p.is_file())
+    assert taken == beside
 
 
 _CHECKOUT_ONLY = checkout_only(
