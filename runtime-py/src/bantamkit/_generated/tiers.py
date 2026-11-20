@@ -300,7 +300,7 @@ def retention_line(home):
         _js_caught13 = _js_catch(_js_error13)
     if _js_caught13 is not None:
         pass
-    return "retention: " + ("" if _js_truthy(enabled()) else "off; ") + "last ran " + _js_str(ran) + "; refused " + _js_str(refused)
+    return "retention: " + ("" if enabled() else "off; ") + "last ran " + _js_str(ran) + "; refused " + _js_str(refused)
 
 
 _retention_line__typed = retention_line

@@ -967,9 +967,12 @@ export class HotIndex {
     this.dumped = new Map();
     const texts: Array<[string, string]> = [];
     for (const family of FAMILIES) {
+      // Each family's prints read once, not per shard (J91-3): nothing in the loop changes them.
+      const prints = d.shards[family];
+      const was = before === null ? null : before[family];
       for (let i = 0; i < SHARDS; i += 1) {
-        const fp = d.shards[family][i]!;
-        if (before !== null && before[family][i] === fp) continue;
+        const fp = prints[i]!;
+        if (was !== null && was[i] === fp) continue;
         const key = `${family}:${i}`;
         const held = this.shards.get(key);
         if (held === undefined || held[0] !== fp) throw new Error(`hotindex: shard ${family}-${i} not held`);
@@ -1354,7 +1357,9 @@ export class HotIndex {
     const postings: Array<Map<string, number[]>> = [];
     for (const table of rows) {
       const encoded = new Map<string, number[]>();
-      for (const [t, r] of table) encoded.set(t, encodeSegments(r));
+      // `key`, not `t`: Python has one `t` per function, and the token loop's `t` is proven a `str`
+      // (J91-3), which this table's keys are not proven to be.
+      for (const [key, r] of table) encoded.set(key, encodeSegments(r));
       postings.push(encoded);
     }
     data.df = df;

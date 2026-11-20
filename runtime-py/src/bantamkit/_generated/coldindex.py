@@ -307,17 +307,17 @@ class ColdIndex(_JsObject):
             for field, in _js_rows(FIELD_BOOST, 1, (0,)):
                 counts = _JsMap()
                 for t in tokenize_v2(_js_get(text, field)):
-                    n = (_js_h3 + 1 if type(_js_h3 := _js_coalesce_value((counts._entries.get(t, _JS_UNDEFINED) if type(counts) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(counts, t)), 0)) is int and -4503599627370496 <= _js_h3 <= 4503599627370496 else _js_add(_js_h3, 1))
-                    if type(counts) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and counts._keys is None:
+                    n = _js_num(_js_coalesce_value((counts._entries.get(t, _JS_UNDEFINED) if type(counts) is _JsMap else _js_m_get(counts, t)), 0) + 1)
+                    if type(counts) is _JsMap and counts._keys is None:
                         counts._entries[t] = n
                     else:
                         _js_m_set(counts, t, n)
                 for term, tf in _js_rows(counts, 2, (0, 1)):
                     table = _js_list_at(fresh, shard_of(term))
-                    list_ = (table._entries.get(term, _JS_UNDEFINED) if type(table) is _JsMap and (type(term) is str or type(term) is int and -9007199254740992 <= term <= 9007199254740992) else _js_m_get(table, term))
+                    list_ = (table._entries.get(term, _JS_UNDEFINED) if type(table) is _JsMap else _js_m_get(table, term))
                     if list_ is _JS_UNDEFINED:
                         list_ = []
-                        if type(table) is _JsMap and (type(term) is str or type(term) is int and -9007199254740992 <= term <= 9007199254740992) and table._keys is None:
+                        if type(table) is _JsMap and table._keys is None:
                             table._entries[term] = list_
                         else:
                             _js_m_set(table, term, list_)

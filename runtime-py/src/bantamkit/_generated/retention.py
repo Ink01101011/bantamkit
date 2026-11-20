@@ -199,8 +199,8 @@ def parse_now(now):
     days = 29 if mo == 2 and leap else _js_list_at(_DAYS_IN_MONTH, _js_num(mo - 1)) if mo >= 1 and mo <= 12 else 0
     if y < 1 or mo < 1 or mo > 12 or d < 1 or _js_gt(d, days) or h > 23 or mi > 59 or s > 59:
         raise _JsError("not a retention timestamp: " + _js_str(_js_json_stringify(now)))
-    t = _js_add(_js_add(_js_add(_js_mul(days_from_civil(y, mo, d), 86400000), _js_mul(h, 3600000)), _js_mul(mi, 60000)), _js_mul(s, 1000))
-    return _js_add(t, _js_number(_js_coalesce_value(_js_get(m, 7), "0")))
+    t = _js_num(_js_num(_js_num(_js_mul(days_from_civil(y, mo, d), 86400000) + _js_mul(h, 3600000)) + _js_mul(mi, 60000)) + _js_mul(s, 1000))
+    return _js_num(t + _js_number(_js_coalesce_value(_js_get(m, 7), "0")))
 
 
 def _iso_ms(ms):
@@ -838,13 +838,13 @@ _archive_jobs__typed = _archive_jobs
 
 
 def _shiftwork_cold__typed(home, root):
-    return ColdIndex("shiftwork-" + _js_str(store_id(root)), home, _cold_base__typed(home))
+    return ColdIndex("shiftwork-" + store_id(root), home, _cold_base__typed(home))
 
 
 def shiftwork_cold(home, root):
     if type(home) is str and type(root) is str:
         return _shiftwork_cold__typed(home, root)
-    return ColdIndex("shiftwork-" + _js_str(store_id(root)), home, _cold_base(home))
+    return ColdIndex("shiftwork-" + store_id(root), home, _cold_base(home))
 
 
 def _sync_jobs__typed(home, root):
@@ -973,11 +973,11 @@ _keep_under__typed = _keep_under
 def _compact_cold__typed(home, roots, report):
     keeps = _JsMap()
     for root in roots:
-        _js_m_set(keeps, "shiftwork-" + _js_str(store_id(root)), [root, None])
+        _js_m_set(keeps, "shiftwork-" + store_id(root), [root, None])
     stores = [path_join(home, ".bantamkit", "memory"), *[path_join(r, ".bantamkit", "memory") for r in roots]]
     for store in stores:
         if _js_truthy(_is_dir(store)):
-            _js_m_set(keeps, "facts-archive-" + _js_str(store_id(store)), [store, "archive"])
+            _js_m_set(keeps, "facts-archive-" + store_id(store), [store, "archive"])
     base = _cold_base__typed(home)
     for name in _listdir(base):
         if not _js_truthy(_is_file(path_join(base, name, "manifest.json"))):
@@ -986,7 +986,7 @@ def _compact_cold__typed(home, roots, report):
         held = (keeps._entries.get(name, _JS_UNDEFINED) if type(keeps) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(keeps, name))
         _js_caught59 = None
         try:
-            if _js_invoke(cold, "compact", None if held is _JS_UNDEFINED else _keep_under((held[0] if type(held) is list and 0 < len(held) else _js_get(held, 0)), (held[1] if type(held) is list and 1 < len(held) else _js_get(held, 1)))) is not None:
+            if _js_invoke(cold, "compact", None if held is _JS_UNDEFINED else _keep_under((held[0] if 0 < len(held) else _js_list_at(held, 0)), (held[1] if 1 < len(held) else _js_list_at(held, 1)))) is not None:
                 _js_m_push(_js_get(report, "compacted"), name)
         except Exception as _js_error59:
             _js_caught59 = _js_catch(_js_error59)
@@ -1001,11 +1001,11 @@ def _compact_cold(home, roots, report):
         return _compact_cold__typed(home, roots, report)
     keeps = _JsMap()
     for root in roots:
-        _js_m_set(keeps, "shiftwork-" + _js_str(store_id(root)), [root, None])
+        _js_m_set(keeps, "shiftwork-" + store_id(root), [root, None])
     stores = [path_join(home, ".bantamkit", "memory"), *[path_join(r, ".bantamkit", "memory") for r in _js_array("map", roots)]]
     for store in stores:
         if _js_truthy(_is_dir(store)):
-            _js_m_set(keeps, "facts-archive-" + _js_str(store_id(store)), [store, "archive"])
+            _js_m_set(keeps, "facts-archive-" + store_id(store), [store, "archive"])
     base = _cold_base(home)
     for name in _listdir(base):
         if not _js_truthy(_is_file(path_join(base, name, "manifest.json"))):
@@ -1014,7 +1014,7 @@ def _compact_cold(home, roots, report):
         held = (keeps._entries.get(name, _JS_UNDEFINED) if type(keeps) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(keeps, name))
         _js_caught60 = None
         try:
-            if _js_invoke(cold, "compact", None if held is _JS_UNDEFINED else _keep_under((held[0] if type(held) is list and 0 < len(held) else _js_get(held, 0)), (held[1] if type(held) is list and 1 < len(held) else _js_get(held, 1)))) is not None:
+            if _js_invoke(cold, "compact", None if held is _JS_UNDEFINED else _keep_under((held[0] if 0 < len(held) else _js_list_at(held, 0)), (held[1] if 1 < len(held) else _js_list_at(held, 1)))) is not None:
                 _js_m_push(_js_get(report, "compacted"), name)
         except Exception as _js_error60:
             _js_caught60 = _js_catch(_js_error60)
@@ -1036,7 +1036,7 @@ def _run_retention__typed(home, roots, now):
     for n in remove_stale_temps(state_dir, _js_fn61):
         _js_m_push(_js_get(report, "deleted"), path_join(state_dir, n))
     _prune_ledgers__typed(home, now_ns, report)
-    _fold_logs(home, now_ms, report)
+    _fold_logs__typed(home, now_ms, report)
     root_paths = [path_join(r) for r in roots]
     for root in root_paths:
         added = _archive_jobs(root, now_ns, report)
@@ -1096,7 +1096,7 @@ def _due__typed(home, now):
         data = _js_json_parse(py_read_text(_state_path__typed(home)))
         if not _is_obj(data) or not _js_in("ran_at", data):
             return True
-        age = _js_num(_js_num(parse_now(now)) - _js_num(parse_now(_js_get(data, "ran_at"))))
+        age = _js_num(parse_now(now) - parse_now(_js_get(data, "ran_at")))
     except Exception as _js_error65:
         _js_caught65 = _js_catch(_js_error65)
     if _js_caught65 is not None:
@@ -1113,7 +1113,7 @@ def due(home, now):
         data = _js_json_parse(py_read_text(state_path(home)))
         if not _is_obj(data) or not _js_in("ran_at", data):
             return True
-        age = _js_num(_js_num(parse_now(now)) - _js_num(parse_now(_js_get(data, "ran_at"))))
+        age = _js_num(parse_now(now) - parse_now(_js_get(data, "ran_at")))
     except Exception as _js_error66:
         _js_caught66 = _js_catch(_js_error66)
     if _js_caught66 is not None:
@@ -1130,7 +1130,7 @@ def _hooked(home, now):
         _js_caught68 = _js_catch(_js_error68)
     if _js_caught68 is not None:
         return False
-    age = _js_num(_js_num(parse_now(now)) - _js_num(mtime_ms))
+    age = _js_num(parse_now(now) - _js_num(mtime_ms))
     return age >= 0 and age < _js_mul(TTL_S, 1000)
 
 
@@ -1307,7 +1307,7 @@ def child_sweep(argv, now=_JS_UNDEFINED):
 
 def search_archived(checkpoint, search, home):
     terms = tokenize_v2(search)
-    if _js_strict_eq(_js_len(terms), 0):
+    if len(terms) == 0:
         return []
     want = _JsSet(terms)
     root = path_dirname(path_dirname(checkpoint))

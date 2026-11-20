@@ -422,7 +422,7 @@ class Memory(_JsObject):
         for i, _js_hole, store, names in _js_rows(walk, 4, (0, 2, 3)):
             side = read_sidecar(sidecar_path(home, _js_get(store, "root")))
             for n in names:
-                if not (n in side._entries if type(side) is _JsMap and (type(n) is str or type(n) is int and -9007199254740992 <= n <= 9007199254740992) else n in side._items if type(side) is _JsSet and (type(n) is str or type(n) is int and -9007199254740992 <= n <= 9007199254740992) else _js_m_has(side, n)):
+                if not (n in side._entries if type(side) is _JsMap and (type(n) is str or type(n) is int and -9007199254740992 <= n <= 9007199254740992) else _js_m_has(side, n)):
                     out.append([i, n])
         return out
 
@@ -615,7 +615,7 @@ class Memory(_JsObject):
             archived = False
         tag = "[" + _js_str(label) + "] " if _js_truthy(self.showLayers) else ""
         old = "[archived] " if _js_truthy(archived) else ""
-        return _js_cat(tag, old) + "[" + _js_str(py_text(_js_get(fact, "name"))) + "] (" + _js_str(py_text(_js_get(fact, "type"))) + ") " + _js_str(py_text(_js_get(fact, "description")))
+        return _js_cat(tag, old) + "[" + py_text(_js_get(fact, "name")) + "] (" + py_text(_js_get(fact, "type")) + ") " + py_text(_js_get(fact, "description"))
 
     def format(self, label, fact, archived=_JS_UNDEFINED):
         if archived is _JS_UNDEFINED:
@@ -681,17 +681,17 @@ class Memory(_JsObject):
             verb = "consolidated" if status == "consolidated" else "would consolidate"
             lines.append(verb + " " + _js_str(_js_len(_js_get(result, "merged"))) + " cross-layer name collision(s) — " + _js_str(identical) + " " + ("byte-identical, " + _js_str(diverged) + " diverged and unioned — and rewrote ") + (_js_str(_js_len(_js_get(result, "rewritten"))) + " project fact(s). The survivor stays in the ") + ("project layer; the profile copy moves to " + _js_str(_js_get(result, "archiveDir")) + " and is NOT ") + "deleted: restore it by name.")
         for merge in _js_get(result, "merged"):
-            lines.append("- " + _js_str(py_text(_js_get(merge, "name"))) + " (" + _js_str(_js_get(merge, "kind")) + ", name+description similarity " + (_js_str(format_fixed3(_js_get(merge, "jaccard"))) + ") — body " + _js_str(_js_get(merge, "bodyBefore")) + " -> " + _js_str(_js_get(merge, "bodyAfter")) + " ") + ("bytes, " + _js_str(_js_get(merge, "blocksAdded")) + " block(s) kept from the " + _js_str(_js_get(merge, "consumedLayer")) + " ") + ("copy, survivor in " + _js_str(_js_get(merge, "survivorLayer"))))
+            lines.append("- " + py_text(_js_get(merge, "name")) + " (" + _js_str(_js_get(merge, "kind")) + ", name+description similarity " + (_js_str(format_fixed3(_js_get(merge, "jaccard"))) + ") — body " + _js_str(_js_get(merge, "bodyBefore")) + " -> " + _js_str(_js_get(merge, "bodyAfter")) + " ") + ("bytes, " + _js_str(_js_get(merge, "blocksAdded")) + " block(s) kept from the " + _js_str(_js_get(merge, "consumedLayer")) + " ") + ("copy, survivor in " + _js_str(_js_get(merge, "survivorLayer"))))
         for record in _js_get(result, "superseded"):
             lines.append("- superseded '" + _js_str(_js_get(record, "subject")) + "': the " + _js_str(_js_get(record, "lostLayer")) + " copy " + ("(" + _js_str(_js_get(record, "lostDate")) + ") lost to the " + _js_str(_js_get(record, "keptLayer")) + " copy ") + ("(" + _js_str(_js_get(record, "keptDate")) + "); the older claim is kept verbatim under ") + ("'" + _js_str(SUPERSEDED_HEADING) + "'"))
         for hit in _js_get(result, "absolutised"):
-            lines.append("- dated " + _js_str(py_text(_js_get(hit, "name"))) + " (" + _js_str(_js_get(hit, "layer")) + "): '" + _js_str(_js_get(hit, "term")) + "' -> " + _js_str(_js_get(hit, "resolved")) + ", " + ("resolved against that fact's own mtime " + _js_str(_js_get(hit, "basis")) + ", not today"))
+            lines.append("- dated " + py_text(_js_get(hit, "name")) + " (" + _js_str(_js_get(hit, "layer")) + "): '" + _js_str(_js_get(hit, "term")) + "' -> " + _js_str(_js_get(hit, "resolved")) + ", " + ("resolved against that fact's own mtime " + _js_str(_js_get(hit, "basis")) + ", not today"))
         for hit in _js_get(result, "unresolved"):
-            lines.append("- left alone in " + _js_str(py_text(_js_get(hit, "name"))) + " (" + _js_str(_js_get(hit, "layer")) + "): '" + _js_str(_js_get(hit, "term")) + "' — no exact day " + "follows from an mtime, so nothing was substituted")
+            lines.append("- left alone in " + py_text(_js_get(hit, "name")) + " (" + _js_str(_js_get(hit, "layer")) + "): '" + _js_str(_js_get(hit, "term")) + "' — no exact day " + "follows from an mtime, so nothing was substituted")
         for name, reason in _js_rows(_js_get(result, "refused"), 2, (0, 1)):
-            lines.append("- refused " + _js_str(py_text(name)) + ": " + _js_str(reason))
+            lines.append("- refused " + py_text(name) + ": " + _js_str(reason))
         for pair in _js_get(result, "similarUnmerged"):
-            lines.append("- similar but NOT merged: " + _js_str(py_text(_js_get(pair, "projectName"))) + " (project) and " + (_js_str(py_text(_js_get(pair, "profileName"))) + " (profile) score " + _js_str(format_fixed3(_js_get(pair, "jaccard"))) + "; this pass merges ") + "on name equality only, so nothing was done about it")
+            lines.append("- similar but NOT merged: " + py_text(_js_get(pair, "projectName")) + " (project) and " + (py_text(_js_get(pair, "profileName")) + " (profile) score " + _js_str(format_fixed3(_js_get(pair, "jaccard"))) + "; this pass merges ") + "on name equality only, so nothing was done about it")
         lines.append("project index " + _js_str(_js_get(result, "indexBefore")) + " -> " + _js_str(_js_get(result, "indexAfter")) + " bytes against a " + (_js_str(_js_get(result, "budget")) + "-byte budget; the profile index (derived, no file on disk) ") + (_js_str(_js_get(result, "profileIndexBefore")) + " -> " + _js_str(_js_get(result, "profileIndexAfter")) + "; fact bytes ") + ("across both layers " + _js_str(_js_get(result, "factBytesBefore")) + " -> " + _js_str(_js_get(result, "factBytesAfter")) + "."))
         if status == "refused-budget":
             lines.append("NOTHING WAS WRITTEN: the merged index would be " + _js_str(_js_get(result, "indexAfter")) + " bytes " + ("against a " + _js_str(_js_get(result, "budget")) + "-byte budget. Call `memory_compact` to archive ") + "the stalest facts, then run this again.")

@@ -1061,7 +1061,7 @@ def py_pow(x, y, *_):
 
 
 def py_nfkc_lower(text, *_):
-    return _unicodedata.normalize("NFKC", text).lower()
+    return str.lower(_unicodedata.normalize("NFKC", text))
 
 
 def py_wordchar(ch, *_):

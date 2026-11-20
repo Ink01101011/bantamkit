@@ -2775,14 +2775,28 @@ def _js_json_ints_exact(text):
     J90-PF: a `-0` likewise: only one after `[`, `,`, `:` or at the start (past blanks) can be a
     token; one after any other character is inside a string (`"audit-0"`) or an exponent
     (`1e-0`, a float token) and never reaches `parse_int`. A hot index head names files and
-    slugs such as `x-0-y`, and one such `-0` sent the whole 180 KB text through the hook."""
-    for match in _JS_JSON_NEG_ZERO.finditer(text):
-        before = match.start() - 1
-        while before >= 0 and text[before] in " \t\n\r":
-            before -= 1
-        if before < 0 or text[before] in "[,:":
-            return False
+    slugs such as `x-0-y`, and one such `-0` sent the whole 180 KB text through the hook.
+
+    J91-3 (#341): the same answer, read over the UTF-8 bytes (no byte of a multi-byte sequence is
+    ASCII, so each ASCII character is one byte at its place): the `-0` candidates by the same
+    pattern over the bytes; and the runs of 16 digits first through `_JS_JSON_RUN_PROBE`, which
+    maps every digit to `0`, each of `[`, `,`, `:`, `-` and the four blanks to `a`, and any other
+    byte to `b`. A run that could be a token starts right after one of those (or at the start), so
+    with no `a` + 16 zeros in the probe and the probe not starting with 16 zeros there is none; a
+    run after a quote or a letter (an index's 19-digit `mtime_ns` strings) costs no loop. Only a
+    probe that has such a candidate walks the runs as before."""
     data = text.encode("utf-8", "surrogatepass")
+    for match in _JS_JSON_NEG_ZERO_BYTES.finditer(data):
+        before = match.start() - 1
+        while before >= 0 and data[before] in b" \t\n\r":
+            before -= 1
+        if before < 0 or data[before] in b"[,:":
+            return False
+    probe = data.translate(_JS_JSON_RUN_PROBE)
+    if _JS_SIXTEEN_ZEROS not in probe or (
+        _JS_JSON_RUN_AFTER_TOKEN not in probe and not probe.startswith(_JS_SIXTEEN_ZEROS)
+    ):
+        return True
     zeros = data.translate(_JS_DIGITS_TO_ZERO)
     at = zeros.find(_JS_SIXTEEN_ZEROS)
     while at != -1:
@@ -3272,7 +3286,12 @@ _JS_JSON_DECODER_INTS: _Final = _js_jsonlib.JSONDecoder(
 # an ASCII digit), so a run of 16 digits in the text is 16 zero bytes in a row.
 _JS_DIGITS_TO_ZERO: _Final = bytes.maketrans(b"123456789", b"000000000")
 _JS_SIXTEEN_ZEROS: _Final = b"0" * 16
-_JS_JSON_NEG_ZERO: _Final = _js_re.compile(r"-0(?![.eE0-9])")
+# J91-3 (#341): `_js_json_ints_exact` over the UTF-8 bytes (was `-0(?![.eE0-9])` over the `str`).
+_JS_JSON_NEG_ZERO_BYTES: _Final = _js_re.compile(rb"-0(?![.eE0-9])")
+_JS_JSON_RUN_PROBE: _Final = bytes(
+    0x30 if 0x30 <= b <= 0x39 else 0x61 if b in b"[,:- \t\n\r" else 0x62 for b in range(256)
+)
+_JS_JSON_RUN_AFTER_TOKEN: _Final = b"a" + b"0" * 16
 _JS_ZERO_RUN: _Final = _js_re.compile(b"0+")
 _JS_JSON_NUMBER: _Final = _js_re.compile(r"-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?")
 

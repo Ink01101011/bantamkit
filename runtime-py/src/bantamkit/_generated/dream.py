@@ -137,7 +137,7 @@ def sorted_names(values):
     if _js_every_string(values):
         return _js_sort_lex([*values], ((lambda a, *_: a, False, True),), lambda a, b, *_: cmp_codepoint(a, b))
     def lt(x, y):
-        return False if _js_truthy(py_equal_value(x, y)) else py_compare_lt(x, y)
+        return False if py_equal_value(x, y) else py_compare_lt(x, y)
     a = [*values]
     n = len(a)
     if n < 2:
@@ -477,7 +477,7 @@ def merge_links(base, other):
     for link in other:
         if not _js_truthy(_truthy(link)):
             continue
-        if any(_js_truthy(py_equal_value(held, link)) for held in out):
+        if any(py_equal_value(held, link) for held in out):
             continue
         out.append(link)
     return out
@@ -632,7 +632,7 @@ def _rebuild_if_present(store):
 
 
 def _consume(store, name):
-    destination = py_join(_js_get(store, "root"), "archive", _js_str(py_text(name)) + ".md")
+    destination = py_join(_js_get(store, "root"), "archive", py_text(name) + ".md")
     py_mkdir_parents(py_parent(destination))
     _js_obj9 = _js_invoke(store, "internals")
     fact_path = _js_get(_js_obj9, "factPath")
@@ -686,13 +686,13 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
         key = py_hash_key(name)
         here = (by_project._entries.get(key, _JS_UNDEFINED) if type(by_project) is _JsMap and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_get(by_project, key))
         there = (by_profile._entries.get(key, _JS_UNDEFINED) if type(by_profile) is _JsMap and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_get(by_profile, key))
-        destination = py_join(_js_get(profile, "root"), "archive", _js_str(py_text(name)) + ".md")
+        destination = py_join(_js_get(profile, "root"), "archive", py_text(name) + ".md")
         if _js_truthy(py_lexists(destination)):
             refused.append([name, _js_str(destination) + " already exists; refusing to overwrite an earlier " + "archived copy — restore or remove it and run again"])
             continue
         here_date = py_mtime_date(project_path(name))
         there_date = py_mtime_date(profile_path(name))
-        identical = _js_and(_js_and(_js_and(_js_strict_eq(py_strip(_js_get(here, "body")), py_strip(_js_get(there, "body"))) and _js_strict_eq(_py_attr_strip(_js_get(here, "description")), _py_attr_strip(_js_get(there, "description"))), lambda: py_equal_value(_js_get(here, "type"), _js_get(there, "type"))), lambda: _js_strict_eq(_js_len(_js_get(here, "links")), _js_len(_js_get(there, "links")))), lambda: _js_m_every(_js_get(here, "links"), lambda link, i, *_: py_equal_value(link, _js_get(_js_get(there, "links"), i))))
+        identical = _js_strict_eq(py_strip(_js_get(here, "body")), py_strip(_js_get(there, "body"))) and _js_strict_eq(_py_attr_strip(_js_get(here, "description")), _py_attr_strip(_js_get(there, "description"))) and py_equal_value(_js_get(here, "type"), _js_get(there, "type")) and _js_strict_eq(_js_len(_js_get(here, "links")), _js_len(_js_get(there, "links"))) and _js_m_every(_js_get(here, "links"), lambda link, i, *_: py_equal_value(link, _js_get(_js_get(there, "links"), i)))
         body, resolved_hits, unresolved_hits = absolutise(_js_get(here, "body"), here_date, name, PROJECT_LAYER)
         _js_m_push(hits, *resolved_hits)
         _js_m_push(unresolved, *unresolved_hits)
@@ -701,7 +701,7 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
         added = _JS_UNDEFINED
         records = _JS_UNDEFINED
         kind = _JS_UNDEFINED
-        if _js_truthy(identical):
+        if identical:
             description = _js_get(here, "description")
             links = [*_js_get(here, "links")]
             added = 0
@@ -723,7 +723,7 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
         else:
             _js_m_set(planned, key, survivor)
         consumed.append(name)
-        merged.append({"name": name, "kind": kind, "jaccard": jaccard(tokens(_js_str(py_text(_js_get(here, "name"))) + " " + _js_str(py_text(_js_get(here, "description")))), tokens(_js_str(py_text(_js_get(there, "name"))) + " " + _js_str(py_text(_js_get(there, "description"))))), "survivorLayer": PROJECT_LAYER, "consumedLayer": PROFILE_LAYER, "bodyBefore": buffer_byte_length(_js_get(here, "body"), "utf8"), "bodyAfter": buffer_byte_length(body, "utf8"), "blocksAdded": added, "superseded": records})
+        merged.append({"name": name, "kind": kind, "jaccard": jaccard(tokens(py_text(_js_get(here, "name")) + " " + py_text(_js_get(here, "description"))), tokens(py_text(_js_get(there, "name")) + " " + py_text(_js_get(there, "description")))), "survivorLayer": PROJECT_LAYER, "consumedLayer": PROFILE_LAYER, "bodyBefore": buffer_byte_length(_js_get(here, "body"), "utf8"), "bodyAfter": buffer_byte_length(body, "utf8"), "blocksAdded": added, "superseded": records})
     project_only = [key for key in [*_js_m_keys(by_project)] if not _js_m_has(by_profile, key)]
     for name in _sorted_names__typed([_js_get(_js_m_get(by_project, key), "name") for key in project_only]):
         key = py_hash_key(name)
@@ -737,9 +737,9 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
     similar = []
     for here in project_facts:
         for there in profile_facts:
-            if _js_truthy(py_equal_value(_js_get(here, "name"), _js_get(there, "name"))):
+            if py_equal_value(_js_get(here, "name"), _js_get(there, "name")):
                 continue
-            score = jaccard(tokens(_js_str(py_text(_js_get(here, "name"))) + " " + _js_str(py_text(_js_get(here, "description")))), tokens(_js_str(py_text(_js_get(there, "name"))) + " " + _js_str(py_text(_js_get(there, "description")))))
+            score = jaccard(tokens(py_text(_js_get(here, "name")) + " " + py_text(_js_get(here, "description"))), tokens(py_text(_js_get(there, "name")) + " " + py_text(_js_get(there, "description"))))
             if _js_ge(score, DUPLICATE_JACCARD):
                 similar.append({"projectName": _js_get(here, "name"), "profileName": _js_get(there, "name"), "jaccard": score})
     _js_m_sort(similar, lambda a, b, *_: _js_or(_js_or(_js_num(_js_num(_js_get(b, "jaccard")) - _js_num(_js_get(a, "jaccard"))), lambda: cmp_codepoint(py_text(_js_get(a, "projectName")), py_text(_js_get(b, "projectName")))), lambda: cmp_codepoint(py_text(_js_get(a, "profileName")), py_text(_js_get(b, "profileName")))))
@@ -786,7 +786,7 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
 def _py_min(values):
     best = _js_list_at(values, 0)
     for value in _js_m_slice(values, 1):
-        if _js_truthy(py_compare_lt(value, best)):
+        if py_compare_lt(value, best):
             best = value
     return best
 
@@ -794,6 +794,6 @@ def _py_min(values):
 def _py_max(values):
     best = _js_list_at(values, 0)
     for value in _js_m_slice(values, 1):
-        if _js_truthy(py_compare_lt(best, value)):
+        if py_compare_lt(best, value):
             best = value
     return best

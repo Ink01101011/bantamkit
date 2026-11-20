@@ -1251,8 +1251,12 @@ def py_pow(x, y, *_):
 
 
 def py_nfkc_lower(text, *_):
-    """`pyNfkcLower` (pysem.ts): `unicodedata.normalize('NFKC', text).lower()`, which it ports."""
-    return _unicodedata.normalize("NFKC", text).lower()
+    """`pyNfkcLower` (pysem.ts): `unicodedata.normalize('NFKC', text).lower()`, which it ports.
+
+    J91-3 (#341): `str.lower` of the normalized text, the base method, so the answer is an exact
+    `str` even for a `str` subclass (whose `normalize` may answer the argument itself): the row's
+    `str` contract. For an exact `str` it is the same call."""
+    return str.lower(_unicodedata.normalize("NFKC", text))
 
 
 def py_wordchar(ch, *_):

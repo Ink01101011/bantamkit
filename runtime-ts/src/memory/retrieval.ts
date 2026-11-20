@@ -84,7 +84,9 @@ export function tokenizeV2(text: string): string[] {
   };
   const flushRun = (end: number): void => {
     if (runAt >= 0) {
-      if (end - runAt === 1) out.push(s[runAt]!);
+      // `s.slice(runAt, end)` is the one unit `s[runAt]` (`end - runAt === 1`), and a `string`
+      // without the `undefined` an index may answer (J91-3: ts2py proves the tokens `str`s).
+      if (end - runAt === 1) out.push(s.slice(runAt, end));
       else for (let i = runAt; i + 1 < end; i++) out.push(s.slice(i, i + 2));
       runAt = -1;
     }

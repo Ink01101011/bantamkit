@@ -148,7 +148,7 @@ def format_fact(fact):
     if _is_parsed(fact):
         fact = _fact_of_parsed(fact)
     front = safe_dump_mapping([["name", _js_get(fact, "name")], ["description", _js_get(fact, "description")], ["type", _js_get(fact, "type")], ["created", _js_coalesce_value(_js_get(fact, "created"), None)], ["last_recalled", _js_coalesce_value(_js_get(fact, "last_recalled"), None)], ["links", _js_get(fact, "links")], *([["keywords", _js_get(fact, "keywords")]] if _js_truthy(_js_and(_js_get(fact, "keywords"), lambda: _js_gt(_js_len(_js_get(fact, "keywords")), 0))) else []), *([["outcome", _js_get(fact, "outcome")]] if not _js_is_nullish(_js_get(fact, "outcome")) else []), *([["status", _js_get(fact, "status")]] if not _js_is_nullish(_js_get(fact, "status")) and _js_get(fact, "status") != "active" else []), *_js_m_filter(_js_coalesce_value(_js_get(fact, "extra"), []), lambda _js_arg0, *_: (lambda k: not _js_m_includes(OWNED_KEYS, k))(*_js_destructure(_js_arg0, 1)))])
-    return _js_add(_js_add(_js_add(_js_add("---\n", front), "---\n\n"), py_strip(_js_get(fact, "body"))), "\n")
+    return _js_add(_js_add("---\n" + front + "---\n\n", py_strip(_js_get(fact, "body"))), "\n")
 
 
 def _is_parsed(fact):
@@ -334,7 +334,7 @@ def _well_formed_meta(meta):
     out = []
     for k, v in _js_rows(_js_object_entries(meta), 2, (0, 1)):
         if isinstance(v, str):
-            out.append([k, well_formed(v)])
+            out.append([k, _well_formed__typed(v)])
         elif isinstance(v, list):
             out.append([k, [_well_formed__typed(x) if isinstance(x, str) else x for x in _js_array("map", v)]])
         else:

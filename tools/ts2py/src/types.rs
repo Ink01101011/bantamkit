@@ -40,15 +40,25 @@ pub struct Fact {
     pub idx: bool,
     /// A compiled `re.Pattern` without the `g` flag (a regex literal).
     pub regex: bool,
+    /// J91-3 (#341): a `_JsGlobalRegExp` (a regex literal with the `g` flag), so `s.match(v)`
+    /// answers `None` or a fresh list of `str`s (`_js_m_match`).
+    pub gregex: bool,
     /// What `re.exec` returns: `None` or a match array, whose element 0 is the matched `str`.
     pub match_: bool,
     /// A FRESH array (an array literal, or what a function returns when every return statement
     /// returns one): its exact length and what is proven about each element. Only an expression's
     /// value carries it, never a binding, because a binding's array can be mutated later.
     pub tuple: Option<Vec<Fact>>,
-    /// What every element of an array (every property value of a plain object) is: only through a
-    /// frozen module constant (`lower.rs`), whose every use reads it, so nothing can mutate it.
+    /// What every element of an array (every property value of a plain object) is: through a
+    /// frozen module constant (`lower.rs`), whose every use reads it, so nothing can mutate it;
+    /// J91-3 (#341): or of an `own` array, Map or Set (for a Map, every entry it iterates: a fresh
+    /// `[key, value]` pair, so `tuple` holds what the keys and the values are).
     pub elem: Option<Box<Fact>>,
+    /// J91-3 (#341): a list, `_JsMap` or `_JsSet` that nothing else can reach: a value just made
+    /// (an array literal, `new Map()`, `new Set(...)`, a `g` match), a sealed local's read, or what
+    /// a function returns when every return is one (`RULES.md`, *J91-3 rules*). Only an `own`
+    /// value's binding may keep `elem`: every later change to it is a use the compiler saw.
+    pub own: bool,
     /// The optimistic "anything" of a key no round has assigned yet, passed through unchanged
     /// (a read of such a local, a call of such a function): it meets as the identity, so a value
     /// that never got one stays optimistic until a real value is seen.
@@ -141,7 +151,7 @@ impl Fact {
     }
 
     fn typed_flag(&self) -> bool {
-        self.str_ || self.num || self.bool_ || self.list || self.regex || self.map
+        self.str_ || self.num || self.bool_ || self.list || self.regex || self.map || self.gregex
     }
 
     /// Never `None`.
@@ -166,9 +176,11 @@ impl Fact {
             int_: self.int_,
             idx: self.idx,
             regex: self.regex,
+            gregex: self.gregex,
             match_: self.match_,
             tuple: self.tuple.clone(),
             elem: self.elem.clone(),
+            own: self.own,
             top: self.top,
             ..Fact::default()
         }
@@ -210,7 +222,9 @@ impl Fact {
             int_: self.int_ && other.int_,
             idx: self.idx && other.idx,
             regex: self.regex && other.regex,
+            gregex: self.gregex && other.gregex,
             match_: self.match_ && other.match_,
+            own: self.own && other.own,
             tuple: match (&self.tuple, &other.tuple) {
                 (Some(a), Some(b)) if a.len() == b.len() => {
                     Some(a.iter().zip(b).map(|(x, y)| x.meet(y)).collect())
@@ -251,6 +265,8 @@ impl Fact {
             int_: self.int_ && other.int_,
             idx: self.idx && other.idx,
             regex: self.regex && other.regex,
+            gregex: self.gregex && other.gregex,
+            own: self.own && other.own,
             match_: matchish(self) && matchish(other) && !(self.is_null && other.is_null),
             tuple: match (&self.tuple, &other.tuple) {
                 (Some(a), Some(b)) if a.len() == b.len() => {
@@ -283,6 +299,7 @@ impl Fact {
                 && (!need.int_ || self.int_)
                 && (!need.idx || self.idx)
                 && (!need.regex || self.regex)
+                && (!need.gregex || self.gregex)
     }
 
     /// What a BINDING may keep of a value: no array contents, here or in what it is when defined
@@ -291,6 +308,7 @@ impl Fact {
         Fact {
             tuple: None,
             elem: None,
+            own: false,
             nn: self.nn.as_ref().map(|nn| Box::new(nn.shallow())),
             ..self.clone()
         }
@@ -352,6 +370,16 @@ pub struct Assume {
     /// declaration). Syntactic, so the same every round after the first: a counted loop whose
     /// update is the only one proves its variable an index in the body (`lower.rs`, `counter`).
     pub assign_spans: BTreeMap<Key, BTreeSet<u32>>,
+    /// J91-3 (#341): `const` locals some read of which is not a sealed use (`lower.rs`, `seal`):
+    /// their value may be reached by code the compiler does not watch, so their binding keeps no
+    /// `own` and no `elem`. Only grows.
+    pub unsealed: BTreeSet<Key>,
+    /// J91-3: per local, the scopes (owner span starts) of the nested functions that read it.
+    pub captured: BTreeMap<Key, BTreeSet<u32>>,
+    /// J91-3: per nested function a `const f = (...) => ...` declares (its scope's owner), the key
+    /// of `f`: such a function is sealed when `f` is only ever called, directly, from the body
+    /// that declares it, so it cannot run once that body has returned.
+    pub closures: BTreeMap<u32, Key>,
 }
 
 /// What one round observed, folded into the next round's assumptions.
@@ -370,6 +398,10 @@ pub struct Observed {
     /// Bindings proven a `str` that are indexed or have their `.length` read.
     pub unit_reads: BTreeSet<Key>,
     pub escaped_locals: BTreeSet<Key>,
+    /// J91-3 (#341): see `Assume`.
+    pub unsealed: BTreeSet<Key>,
+    pub captured: BTreeMap<Key, BTreeSet<u32>>,
+    pub closures: BTreeMap<u32, Key>,
 }
 
 impl Observed {
@@ -425,6 +457,17 @@ impl Observed {
         let mut escaped_locals = assume.escaped_locals.clone();
         escaped_locals.extend(self.escaped_locals.iter().cloned());
         let stable = self.declared.difference(&self.assigned).cloned().collect();
+        let mut unsealed = assume.unsealed.clone();
+        unsealed.extend(self.unsealed.iter().cloned());
+        let mut captured = assume.captured.clone();
+        for (key, owners) in &self.captured {
+            captured
+                .entry(key.clone())
+                .or_default()
+                .extend(owners.iter().copied());
+        }
+        let mut closures = assume.closures.clone();
+        closures.extend(self.closures.iter().map(|(k, v)| (*k, v.clone())));
         Assume {
             facts,
             wrapped,
@@ -433,6 +476,9 @@ impl Observed {
             escaped_locals,
             stable,
             assign_spans: self.assign_spans.clone(),
+            unsealed,
+            captured,
+            closures,
         }
     }
 }

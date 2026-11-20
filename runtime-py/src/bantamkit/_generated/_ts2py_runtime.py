@@ -2360,13 +2360,18 @@ def _js_json_int(text):
 
 
 def _js_json_ints_exact(text):
-    for match in _JS_JSON_NEG_ZERO.finditer(text):
-        before = match.start() - 1
-        while before >= 0 and text[before] in " \t\n\r":
-            before -= 1
-        if before < 0 or text[before] in "[,:":
-            return False
     data = text.encode("utf-8", "surrogatepass")
+    for match in _JS_JSON_NEG_ZERO_BYTES.finditer(data):
+        before = match.start() - 1
+        while before >= 0 and data[before] in b" \t\n\r":
+            before -= 1
+        if before < 0 or data[before] in b"[,:":
+            return False
+    probe = data.translate(_JS_JSON_RUN_PROBE)
+    if _JS_SIXTEEN_ZEROS not in probe or (
+        _JS_JSON_RUN_AFTER_TOKEN not in probe and not probe.startswith(_JS_SIXTEEN_ZEROS)
+    ):
+        return True
     zeros = data.translate(_JS_DIGITS_TO_ZERO)
     at = zeros.find(_JS_SIXTEEN_ZEROS)
     while at != -1:
@@ -2767,7 +2772,11 @@ _JS_JSON_DECODER_INTS: _Final = _js_jsonlib.JSONDecoder(
 )
 _JS_DIGITS_TO_ZERO: _Final = bytes.maketrans(b"123456789", b"000000000")
 _JS_SIXTEEN_ZEROS: _Final = b"0" * 16
-_JS_JSON_NEG_ZERO: _Final = _js_re.compile(r"-0(?![.eE0-9])")
+_JS_JSON_NEG_ZERO_BYTES: _Final = _js_re.compile(rb"-0(?![.eE0-9])")
+_JS_JSON_RUN_PROBE: _Final = bytes(
+    0x30 if 0x30 <= b <= 0x39 else 0x61 if b in b"[,:- \t\n\r" else 0x62 for b in range(256)
+)
+_JS_JSON_RUN_AFTER_TOKEN: _Final = b"a" + b"0" * 16
 _JS_ZERO_RUN: _Final = _js_re.compile(b"0+")
 _JS_JSON_NUMBER: _Final = _js_re.compile(r"-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][-+]?[0-9]+)?")
 

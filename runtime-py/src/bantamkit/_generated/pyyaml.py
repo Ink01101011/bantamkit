@@ -583,14 +583,8 @@ def _claim(value, path, seen):
     return _JS_UNDEFINED
 
 
-def _is_array_index_key__typed(key):
-    return _JS_RE_8.search(_js_code_units(key)) is not None and _js_number(key) < 4294967295
-
-
 def _is_array_index_key(key):
-    if type(key) is str:
-        return _is_array_index_key__typed(key)
-    return _js_m_test(_JS_RE_8, key) and _js_number(key) < 4294967295
+    return _JS_RE_8.search(_js_code_units(key)) is not None and _js_number(key) < 4294967295
 
 
 def _emit_node__typed(e, value, mapping_context, path, seen):
@@ -633,8 +627,8 @@ def _emit_node__typed(e, value, mapping_context, path, seen):
                 if not isinstance(key, str):
                     raise YamlEmitError("cannot emit " + _js_typeof(key) + " key under " + path)
                 if _is_array_index_key(key):
-                    raise YamlEmitError("cannot emit key " + _js_str(key) + " under " + path + ": an array-index key is listed first by Object.entries, so the mapping no longer holds its own order")
-                _emit_mapping_entry(e, key, item, path + "." + _js_str(key), seen)
+                    raise YamlEmitError("cannot emit key " + key + " under " + path + ": an array-index key is listed first by Object.entries, so the mapping no longer holds its own order")
+                _emit_mapping_entry__typed(e, key, item, path + "." + key, seen)
             _js_invoke(e, "popIndent")
     else:
         raise YamlEmitError("cannot emit " + _js_typeof(value) + " for key " + path)
@@ -683,8 +677,8 @@ def _emit_node(e, value, mapping_context, path, seen):
                 if not isinstance(key, str):
                     raise YamlEmitError("cannot emit " + _js_typeof(key) + " key under " + _js_str(path))
                 if _is_array_index_key(key):
-                    raise YamlEmitError("cannot emit key " + _js_str(key) + " under " + _js_str(path) + ": an array-index key is listed first by Object.entries, so the mapping no longer holds its own order")
-                _emit_mapping_entry(e, key, item, _js_str(path) + "." + _js_str(key), seen)
+                    raise YamlEmitError("cannot emit key " + key + " under " + _js_str(path) + ": an array-index key is listed first by Object.entries, so the mapping no longer holds its own order")
+                _emit_mapping_entry(e, key, item, _js_str(path) + "." + key, seen)
             _js_invoke(e, "popIndent")
     else:
         raise YamlEmitError("cannot emit " + _js_typeof(value) + " for key " + _js_str(path))

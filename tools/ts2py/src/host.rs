@@ -18,7 +18,7 @@
 //! py_name = "exists_sync"
 //! kind = "function"                    # function | class | error-class | constant | imported-class
 //! # methods = ["decode"]               # class and imported-class only
-//! # contract = "compare-codepoints"    # optional, see `adapters::Contract`
+//! # contract = "compare-codepoints"    # optional, see `adapters::Contract` ("str" too)
 //! why = "Node builtin: ... measured on ..."
 //! ```
 //!
@@ -182,6 +182,7 @@ impl Host {
                 Some("compare-codepoints") if kind == AdapterKind::Function => {
                     Some(Contract::CompareCodepoints)
                 }
+                Some("str") if kind == AdapterKind::Function => Some(Contract::Str),
                 Some(other) => return Err(format!("{label}: unknown contract {other}")),
             };
             host.adapters.rows.push(Adapter {

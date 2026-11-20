@@ -132,6 +132,8 @@ pub struct Compiled {
 /// `<path>:<line>:<col>: unsupported <construct>: <snippet>` (or `syntax error` for a parse error).
 /// J87: rounds of the type-fact fixpoint before a module is refused as not settling.
 const MAX_ROUNDS: usize = 64;
+/// J91-3 (#341): rounds of the whole compile (`compile_modules`).
+const MAX_COMPILE_ROUNDS: usize = 4;
 
 pub fn compile(source: &str, display_path: &str, options: &Options) -> Result<String, Vec<String>> {
     compile_modules(&[(display_path, source)], options).map(|mut modules| modules.remove(0).code)
@@ -203,6 +205,7 @@ pub fn compile_modules(
                 names,
                 generators: lower::generator_names(program),
                 type_fields: types::TypeDecls::read(program).fields,
+                rets: HashMap::new(),
             },
         );
     }
@@ -236,42 +239,77 @@ pub fn compile_modules(
         false
     };
 
-    let mut out = Vec::new();
-    for (((display_path, source), program), stem) in sources.iter().zip(&programs).zip(stems) {
-        let cyclic_imports: HashSet<String> = edges
-            .get(*display_path)
-            .map(|targets| {
-                targets
-                    .iter()
-                    .filter(|t| reaches(t, display_path))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut module_ctx = lower::ModuleCtx {
-            path: display_path.to_string(),
-            cyclic_imports,
-            ..ctx.clone()
-        };
-        if let Some(private) = private_methods.get(*display_path) {
-            module_ctx.class_methods.extend(private.iter().cloned());
-        }
-        // J87: rounds of the type-fact fixpoint (`types.rs`): each lowers the whole module under
-        // the facts the last one left standing, until a round observes exactly what it assumed.
-        // Every fact only shrinks and every wrapper or escape only grows, so this ends.
-        let mut assume = types::Assume::default();
-        let mut rounds = 0;
-        let (mut lowerer, body) = loop {
-            let mut lowerer =
-                lower::Lowerer::with_assume(source, module_ctx.clone(), assume.clone());
-            let body = lowerer.program(program);
-            let next = lowerer.next_assume();
-            rounds += 1;
-            if next == *lowerer.assumed() || rounds >= MAX_ROUNDS {
-                break (lowerer, body);
+    // J91-3 (#341): rounds of the whole compile. Each lowers every module with what the previous
+    // round proved of the other modules' exported functions (`ModuleExports::rets`; none in the
+    // first), until a round proves exactly what it was given. Every round's facts are sound: the
+    // first assumes nothing of another module, and each later one only what an earlier, sound
+    // round proved of the same JavaScript functions (each lowering answers what JS answers, so
+    // what a function returns does not depend on how its body was lowered). A round that has not
+    // settled by `MAX_COMPILE_ROUNDS` is still sound; its output is the one written.
+    let rebound: Vec<&str> = options
+        .host
+        .rebound
+        .iter()
+        .map(|r| r.name.as_str())
+        .collect();
+    let mut settled: Vec<(lower::Lowerer<'_>, String, usize)> = Vec::new();
+    for _ in 0..MAX_COMPILE_ROUNDS {
+        settled.clear();
+        let mut proved: HashMap<String, HashMap<String, types::Fact>> = HashMap::new();
+        for ((display_path, source), program) in sources.iter().zip(&programs) {
+            let cyclic_imports: HashSet<String> = edges
+                .get(*display_path)
+                .map(|targets| {
+                    targets
+                        .iter()
+                        .filter(|t| reaches(t, display_path))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut module_ctx = lower::ModuleCtx {
+                path: display_path.to_string(),
+                cyclic_imports,
+                ..ctx.clone()
+            };
+            if let Some(private) = private_methods.get(*display_path) {
+                module_ctx.class_methods.extend(private.iter().cloned());
             }
-            assume = next;
-        };
+            // J87: rounds of the type-fact fixpoint (`types.rs`): each lowers the whole module
+            // under the facts the last one left standing, until a round observes exactly what it
+            // assumed. Every fact only shrinks and every wrapper or escape only grows, so this ends.
+            let mut assume = types::Assume::default();
+            let mut rounds = 0;
+            let (lowerer, body) = loop {
+                let mut lowerer =
+                    lower::Lowerer::with_assume(source, module_ctx.clone(), assume.clone());
+                let body = lowerer.program(program);
+                let next = lowerer.next_assume();
+                rounds += 1;
+                if next == *lowerer.assumed() || rounds >= MAX_ROUNDS {
+                    break (lowerer, body);
+                }
+                assume = next;
+            };
+            proved.insert(display_path.to_string(), lowerer.export_rets(&rebound));
+            settled.push((lowerer, body, rounds));
+        }
+        let same = ctx
+            .modules
+            .iter()
+            .all(|(path, m)| proved.get(path).cloned().unwrap_or_default() == m.rets);
+        if same {
+            break;
+        }
+        for (path, m) in ctx.modules.iter_mut() {
+            m.rets = proved.remove(path).unwrap_or_default();
+        }
+    }
+
+    let mut out = Vec::new();
+    for ((((display_path, source), _), stem), (mut lowerer, body, rounds)) in
+        sources.iter().zip(&programs).zip(stems).zip(settled)
+    {
         if rounds >= MAX_ROUNDS && lowerer.next_assume() != *lowerer.assumed() {
             errors.push(format!(
                 "{display_path}:1:1: unsupported module: type facts did not settle in {MAX_ROUNDS} rounds"

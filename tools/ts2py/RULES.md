@@ -1400,3 +1400,96 @@ counted loop, any start, any name as the bound, `.length` of any receiver, `new 
 `===`'s unproven side without its range test, two safe ints added plainly, any proven number a key's
 own tag, any stride) are still red in `cargo test --test j91`; the three that mutated a test J91-2
 now always writes (an addend's, a list read's and a store's type tests) have no code left to mutate.
+
+## J91-3 rules: element and return facts (#341)
+
+Measured in docs/porting.md (*The pure build after J91-3*). Pinned in
+`tools/ts2py-bantamkit/tests/j93.rs` (fixtures `j93_probe.ts` and `j93_lib.ts`, two modules in an
+import cycle).
+
+**`own` and `elem`.** A new flag of `types::Fact`, `own`: the value is a list, `_JsMap` or `_JsSet`
+nothing else can reach. A value is `own` when it was just made (an array literal, `new Map()`,
+`new Set(...)` of the builtins, `s.match(re)` of a `g` regex), when it is the read of a sealed
+binding (below), or when it is what a function returns and every return of it is `own`. `elem`
+(J87: what every element of a frozen constant is) now also says what an `own` value holds: a list's
+elements, a Set's items, a Map's entries (as the fresh `[key, value]` pair its for-of yields, so
+`tuple` holds the key's and the value's facts). A binding keeps `own` and `elem` only when sealed;
+every other binding keeps the flags alone (`shallow`), as before. A module constant is never `own`.
+
+**Sealed bindings** (`lower.rs`, `Seal`, `seal_read`, `fill`, `sealed_fact`). A local `const` bound
+to an `own` value is sealed when every read of it is one of:
+
+| Read | Why it lets nothing else reach the value |
+|---|---|
+| receiver of `push` / `set` / `get` / `has` / `add` | the builtin reads or changes it in place; what `push` / `set` / `add` puts in is met into the binding's `elem` (`fill`) |
+| object of `.length` / `.size`; a for-of's iterable | a read in place |
+| `return x` in the body that declares `x` (`Seal::Return`), when every nested function that reads `x` is a sealed closure (`returnable`) | the caller gets the only reference: the frame is gone and no function that reads `x` can still run |
+
+A sealed closure is a `const f = (...) => ...` whose every read is a direct call from the body
+that declares it (`Seal::Call`): it cannot run once that body has returned. Any other read of the
+binding (an argument, an alias, an index read or store, `splice`, a return from a nested function)
+unseals it (`Assume::unsealed`, which only grows), and the binding keeps nothing of what the value
+holds. What a sealed binding keeps of an element is shallow (an element is a value other reads can
+reach and change), except that a Map's entry stays a pair (each iteration makes a new one). What is
+put in: `push(v...)` the meet of each `v`'s shallow fact (a spread: nothing); `set(k, v)` the pair
+of `k` (less `f64`: `-0` is stored as `0`) and `v`; `add(v)` a `str` only when `v` is one (a
+`str` item is itself; a number's tag may not be). An optimistic argument puts in "anything" for the
+round (`Fact::top`, the meet's identity), as every optimistic value does.
+
+**Reads of what a sealed value holds.** A for-of over it binds each element's fact (J87's rule,
+now for any `elem`); a destructuring for-of over a Map binds the pair's sides and still walks it
+with `_js_rows` (no pair is made); `m.get(k)` of a Map whose entries are proven is the value's
+fact met with `undefined` (`contents_fact`); a Map none of whose entries was ever set answers
+`undefined`.
+
+**Return facts across modules** (`lib.rs`, `ModuleExports::rets`, `Lowerer::export_rets`). The
+compile runs in rounds (`MAX_COMPILE_ROUNDS` = 4): each lowers every module, to its own settled
+fixpoint, with what the previous round proved of the other modules' exported functions (nothing in
+the first), until a round proves what it was given. A call of an imported function proves what
+both of its bodies' returns proved, met (a call by the exported name runs the guarded entry, which
+runs the untyped body for an argument it cannot admit); an untyped function's one body; nothing for
+a function whose returns were never seen, a generator, or a name a `[[rebound]]` row names (the
+call may not run this body). Every round's facts are sound: the first assumes nothing of another
+module, and each later one only what an earlier round proved of the same JavaScript functions,
+whose Python answers do not depend on how their bodies were lowered (every lowering answers what JS
+answers). A round left unsettled at the cap is still sound, and is the output.
+
+**An adapter row's `str` contract** (`adapters::Contract::Str`, `contract = "str"`): the function
+answers an exact `str` or raises, whatever its arguments, so a call is a proven `str`. Taken by one
+row: `pyNfkcLower`, whose adapter is now `str.lower(unicodedata.normalize('NFKC', text))`.
+`normalize` refuses anything but a `str` (TypeError, as before); `str.lower` is the base method, so
+a `str` subclass with its own `lower` (whose `normalize` may answer the argument itself) still
+gives an exact `str`. For an exact `str` it is the same call as before.
+
+**A `g` match** (`contents_fact`): `s.match(re)`, `re` proven a `_JsGlobalRegExp` (a new flag,
+`gregex`, of a `g` literal and of a module constant bound to one), is `null` or an `own` list of
+`str`s (`_js_m_match`: every match's text through `_js_from_units`). A match without `g` proves
+nothing of its elements (a group may be `undefined`).
+
+**`a ?? b`** is `a` only where `a` is neither `null` nor `undefined`: what `a` is when defined, met
+with `b` (was: `a`'s fact met with `b`'s, so `x ?? []` never proved a list).
+
+**A for-of `const` may be narrowed** by a guard (`Array.isArray(v)`), as any `const`: it is never
+reassigned in the body, and each pass binds it anew. **And no narrowing outlives an assignment**:
+a binding is narrowable only when nothing assigns it (`Assume::assign_spans`). A `const` and a `let`
+of one name in two blocks of one function are one Python binding (one key), so the `const`'s key in
+`consts` let a guard narrow the `let` past an assignment to it: `let v = rows[1]; if
+(Array.isArray(v)) { v = opaque(5); v.length }` was `len(v)` (a TypeError where Node answers
+`undefined`). No shipped module had that shape (the regenerated modules are unchanged by the fix).
+
+**The JSON integer scan, over bytes** (`_js_json_ints_exact`, runtime). The same answer as J90-PF's
+(pinned against that function, embedded in the test, over 60,000 seeded texts of token-like atoms;
+and `JSON.parse` answering the slow decoder's value and types over 3,000 seeded arrays): the `-0`
+candidates by the same pattern over the UTF-8 bytes (no byte of a multi-byte sequence is ASCII),
+and the runs of 16 digits first through a probe (`_JS_JSON_RUN_PROBE`: a digit to `0`, each of `[`,
+`,`, `:`, `-` and the four blanks to `a`, any other byte to `b`). A run that could be a token starts
+right after one of those or at the start, so a probe with no `a` + 16 zeros that does not start
+with 16 zeros has none; only a probe with such a candidate walks the runs as before. A hot index
+tail's 19-digit `mtime_ns` strings (each a run after a quote) no longer cost a Python loop step each:
+the scan of a full refresh's 14 tails (600 KB) 1.03 to 0.69 ms (3.14).
+
+**Two TypeScript respellings, neither slower in Node** (porting.md): `tokenizeV2`'s one-unit run
+pushes `s.slice(runAt, end)` (the one unit `s[runAt]` is, `end - runAt === 1`, but a `string`
+without the `undefined` an index may answer), and `derive`'s encoded tables iterate `[key, r]`, not
+`[t, r]` (Python has one `t` per function, and the token loop's `t` is proven a `str`, which those
+keys are not). And `write` reads each family's prints once, not per shard.

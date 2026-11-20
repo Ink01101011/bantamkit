@@ -34,6 +34,9 @@ pub enum Contract {
     /// J90-P2: `f(x, y)` orders two strings by code point (-1, 0 or 1 as `x` sorts before, with
     /// or after `y`; CPython's `sorted()` order), so a comparator chain of it is a key sort.
     CompareCodepoints,
+    /// J91-3 (#341): `f(...)` answers an exact `str` (`type(v) is str`) or raises, whatever its
+    /// arguments, so a call is a proven `str` (`types::Fact::str_`).
+    Str,
 }
 
 #[derive(Clone, Debug, PartialEq)]

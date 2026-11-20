@@ -397,6 +397,10 @@ module = "runtime-ts/src/pysem.ts"
 name = "pyNfkcLower"
 py_name = "py_nfkc_lower"
 kind = "function"
+# J91-3 (#341): the adapter is `str.lower(unicodedata.normalize('NFKC', text))`: `normalize` refuses
+# anything but a `str` (TypeError) and `str.lower` answers an exact `str` of any `str`, a subclass
+# included (it is the base method, not an override).
+contract = "str"
 why = "Python is the reference: `pyNfkcLower` is `unicodedata.normalize('NFKC', s).lower()` (retrieval.py's tokenizer); Node's spelling differs only where its ICU has Unicode data CPython's tables do not (code points CPython leaves unassigned)."
 
 [[adapter]]
