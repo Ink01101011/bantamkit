@@ -24,6 +24,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_num,
     _js_or,
     _js_put,
+    _js_row,
     _js_rows,
     _js_size,
     _js_str,
@@ -206,12 +207,13 @@ def _logs(base):
 _logs__typed = _logs
 
 
-def log_lines(home, detail=_JS_UNDEFINED):
+def _log_lines__typed(home, detail=_JS_UNDEFINED):
     if detail is _JS_UNDEFINED:
         detail = False
     out = []
     families = _JsMap([["usage", [0, 0, 0, 0]], ["touch", [0, 0, 0, 0]]])
-    for name, p in _js_rows(_logs(path_join(home, ".bantamkit")), 2, (0, 1)):
+    for _js_r1 in _logs(path_join(home, ".bantamkit")):
+        name, p = _js_r1 if type(_js_r1) is list and len(_js_r1) == 2 else _js_row(_js_r1, 2, (0, 1))
         seg = LogSegment(p)
         segments = _js_invoke(seg, "segments")
         if _kind_of(p) != "file" and _js_strict_eq(_js_len(segments), 0):
@@ -234,7 +236,35 @@ def log_lines(home, detail=_JS_UNDEFINED):
     return out if len(out) > 0 else ["logs: none"]
 
 
-_log_lines__typed = log_lines
+def log_lines(home, detail=_JS_UNDEFINED):
+    if type(home) is str:
+        return _log_lines__typed(home, detail)
+    if detail is _JS_UNDEFINED:
+        detail = False
+    out = []
+    families = _JsMap([["usage", [0, 0, 0, 0]], ["touch", [0, 0, 0, 0]]])
+    for _js_r2 in _logs(path_join(home, ".bantamkit")):
+        name, p = _js_r2 if type(_js_r2) is list and len(_js_r2) == 2 else _js_row(_js_r2, 2, (0, 1))
+        seg = LogSegment(p)
+        segments = _js_invoke(seg, "segments")
+        if _kind_of(p) != "file" and _js_strict_eq(_js_len(segments), 0):
+            continue
+        held = _js_add(_size_of(p), _js_m_reduce(segments, lambda sum, s, *_: _js_add(sum, _size_of(s)), 0))
+        _js_invoke(seg, "read")
+        family = _js_m_get(families, _js_list_at(_js_m_split(name, "/"), 0))
+        if _js_truthy(_js_or(detail, lambda: family is _JS_UNDEFINED)):
+            out.append("logs: " + _js_str(name) + " " + _js_str(held) + " (" + _js_str(_js_len(segments)) + " rotated, " + _js_str(_js_get(seg, "skipped")) + " skipped)")
+            continue
+        _js_put(family, 0, _js_add(_js_get(family, 0), 1))
+        _js_put(family, 1, _js_add(_js_get(family, 1), held))
+        _js_put(family, 2, _js_add(_js_get(family, 2), _js_len(segments)))
+        _js_put(family, 3, _js_add(_js_get(family, 3), _js_get(seg, "skipped")))
+    for family, sums in _js_rows(families, 2, (0, 1)):
+        n = (sums[0] if type(sums) is list and 0 < len(sums) else _js_get(sums, 0))
+        if _js_strict_eq(n, 0):
+            continue
+        out.append("logs: " + _js_str(family) + "/* " + _plural(n, "file") + " " + _js_str((sums[1] if type(sums) is list and 1 < len(sums) else _js_get(sums, 1))) + " (" + _js_str((sums[2] if type(sums) is list and 2 < len(sums) else _js_get(sums, 2))) + " rotated, " + _js_str((sums[3] if type(sums) is list and 3 < len(sums) else _js_get(sums, 3))) + " skipped)")
+    return out if len(out) > 0 else ["logs: none"]
 
 
 def touch_line(home):

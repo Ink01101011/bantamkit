@@ -74,10 +74,10 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_object_keys,
     _js_or,
     _js_or_value,
-    _js_parse_int,
     _js_put,
     _js_re,
     _js_re_exec,
+    _js_row,
     _js_rows,
     _js_size,
     _js_sort_keyed,
@@ -97,7 +97,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _JsSet,
     _mypyc_attr,
 )
-from ._ts2py_adapters import BantamError, cmp_codepoint, create_hash, dump_js_value, extract_refs, fact_refs, hash_hex, lstat_sync, mkdir_sync, node_realpath, parse_frontmatter, parse_native, path_basename, path_dirname, path_join, process_pid, py_decode_utf8, py_join, py_os_error_text, py_read_text, py_split, py_strip, PyOSError, read_file_sync, readdir_sync, rename_sync, rm_sync, stat_file, stat_mtime_ns, stat_stamp, stat_sync, write_file_sync
+from ._ts2py_adapters import BantamError, cmp_codepoint, create_hash, dump_js_value, extract_refs, fact_refs, hash_hex, hash_hex_int, lstat_sync, mkdir_sync, node_realpath, parse_frontmatter, parse_native, path_basename, path_dirname, path_join, process_pid, py_decode_utf8, py_join, py_os_error_text, py_read_text, py_split, py_strip, PyOSError, read_file_sync, readdir_sync, rename_sync, rm_sync, stat_file, stat_mtime_ns, stat_stamp, stat_sync, write_file_sync
 from .lock import exclusive, remove_stale_temps
 from .retrieval import FIELD_BOOST, py_round9, stale, tokenize_v2
 
@@ -268,8 +268,9 @@ def _encode_segments__typed(rows):
     ta = 0
     tb = 0
     tc = 0
-    for i, a, b, c in _js_rows(rows, 4, (0, 1, 2, 3)):
-        if count > 0 and (_js_h1 == i if type(_js_h1 := (start + count if type(start) is int and type(count) is int and -4503599627370496 <= count <= 4503599627370496 and -4503599627370496 <= start <= 4503599627370496 else _js_add(start, count))) is type(i) is str or type(_js_h1) is type(i) is int and -9007199254740992 <= _js_h1 <= 9007199254740992 and -9007199254740992 <= i <= 9007199254740992 else _js_strict_eq(_js_h1, i)) and (ta == a if type(ta) is type(a) is str or type(ta) is type(a) is int and -9007199254740992 <= ta <= 9007199254740992 and -9007199254740992 <= a <= 9007199254740992 else _js_strict_eq(ta, a)) and (tb == b if type(tb) is type(b) is str or type(tb) is type(b) is int and -9007199254740992 <= tb <= 9007199254740992 and -9007199254740992 <= b <= 9007199254740992 else _js_strict_eq(tb, b)) and (tc == c if type(tc) is type(c) is str or type(tc) is type(c) is int and -9007199254740992 <= tc <= 9007199254740992 and -9007199254740992 <= c <= 9007199254740992 else _js_strict_eq(tc, c)):
+    for _js_r1 in rows:
+        i, a, b, c = _js_r1 if type(_js_r1) is list and len(_js_r1) == 4 else _js_row(_js_r1, 4, (0, 1, 2, 3))
+        if count > 0 and (_js_h2 == i if type(_js_h2 := (start + count if type(start) is int and type(count) is int and -4503599627370496 <= count <= 4503599627370496 and -4503599627370496 <= start <= 4503599627370496 else _js_add(start, count))) is type(i) is str or type(_js_h2) is type(i) is int and -9007199254740992 <= _js_h2 <= 9007199254740992 and -9007199254740992 <= i <= 9007199254740992 else _js_strict_eq(_js_h2, i)) and (ta == a if type(ta) is type(a) is str or type(ta) is type(a) is int and -9007199254740992 <= ta <= 9007199254740992 and -9007199254740992 <= a <= 9007199254740992 else _js_strict_eq(ta, a)) and (tb == b if type(tb) is type(b) is str or type(tb) is type(b) is int and -9007199254740992 <= tb <= 9007199254740992 and -9007199254740992 <= b <= 9007199254740992 else _js_strict_eq(tb, b)) and (tc == c if type(tc) is type(c) is str or type(tc) is type(c) is int and -9007199254740992 <= tc <= 9007199254740992 and -9007199254740992 <= c <= 9007199254740992 else _js_strict_eq(tc, c)):
             count = _js_num(count + 1)
         else:
             if count > 0:
@@ -294,7 +295,7 @@ def encode_segments(rows):
     tb = 0
     tc = 0
     for i, a, b, c in _js_rows(rows, 4, (0, 1, 2, 3)):
-        if count > 0 and (_js_h2 == i if type(_js_h2 := (start + count if type(start) is int and type(count) is int and -4503599627370496 <= count <= 4503599627370496 and -4503599627370496 <= start <= 4503599627370496 else _js_add(start, count))) is type(i) is str or type(_js_h2) is type(i) is int and -9007199254740992 <= _js_h2 <= 9007199254740992 and -9007199254740992 <= i <= 9007199254740992 else _js_strict_eq(_js_h2, i)) and (ta == a if type(ta) is type(a) is str or type(ta) is type(a) is int and -9007199254740992 <= ta <= 9007199254740992 and -9007199254740992 <= a <= 9007199254740992 else _js_strict_eq(ta, a)) and (tb == b if type(tb) is type(b) is str or type(tb) is type(b) is int and -9007199254740992 <= tb <= 9007199254740992 and -9007199254740992 <= b <= 9007199254740992 else _js_strict_eq(tb, b)) and (tc == c if type(tc) is type(c) is str or type(tc) is type(c) is int and -9007199254740992 <= tc <= 9007199254740992 and -9007199254740992 <= c <= 9007199254740992 else _js_strict_eq(tc, c)):
+        if count > 0 and (_js_h3 == i if type(_js_h3 := (start + count if type(start) is int and type(count) is int and -4503599627370496 <= count <= 4503599627370496 and -4503599627370496 <= start <= 4503599627370496 else _js_add(start, count))) is type(i) is str or type(_js_h3) is type(i) is int and -9007199254740992 <= _js_h3 <= 9007199254740992 and -9007199254740992 <= i <= 9007199254740992 else _js_strict_eq(_js_h3, i)) and (ta == a if type(ta) is type(a) is str or type(ta) is type(a) is int and -9007199254740992 <= ta <= 9007199254740992 and -9007199254740992 <= a <= 9007199254740992 else _js_strict_eq(ta, a)) and (tb == b if type(tb) is type(b) is str or type(tb) is type(b) is int and -9007199254740992 <= tb <= 9007199254740992 and -9007199254740992 <= b <= 9007199254740992 else _js_strict_eq(tb, b)) and (tc == c if type(tc) is type(c) is str or type(tc) is type(c) is int and -9007199254740992 <= tc <= 9007199254740992 and -9007199254740992 <= c <= 9007199254740992 else _js_strict_eq(tc, c)):
             count = _js_num(count + 1)
         else:
             if count > 0:
@@ -355,7 +356,7 @@ def shard_of(term):
     got = _js_m_get(_SHARD_MEMO, term)
     if got is not _JS_UNDEFINED:
         return got
-    i = _js_mod(_js_parse_int(_js_str_slice(hash_hex("sha256", term), 0, 8), 16), SHARDS)
+    i = _js_mod(hash_hex_int("sha256", term, 8), SHARDS)
     if _js_ge(_js_size(_SHARD_MEMO), _SHARD_MEMO_MAX):
         _SHARD_MEMO = _JsMap()
     _js_m_set(_SHARD_MEMO, term, i)
@@ -947,12 +948,12 @@ class HotIndex(_JsObject):
         names = _js_m_sort([*_js_m_keys(docs)], cmp_codepoint)
         doc_id = 0
         while doc_id < len(names):
-            name = (names[doc_id] if doc_id < len(names) else _js_list_at(names, doc_id))
+            name = (names[doc_id] if type(doc_id) is int and doc_id < len(names) else _js_list_at(names, doc_id))
             d = (docs._entries.get(name, _JS_UNDEFINED) if type(docs) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(docs, name))
             text = {"name": _js_get(d, "name"), "description": _js_get(d, "description"), "keywords": _js_m_join(_js_get(d, "keywords"), " ")}
             tfs = _JsMap()
             flens = [0, 0, 0]
-            if (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) and lens._keys is None:
+            if type(lens) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) and lens._keys is None:
                 lens._entries[name] = flens
             else:
                 _js_m_set(lens, name, flens)
@@ -965,29 +966,29 @@ class HotIndex(_JsObject):
                 _js_put(lens_total, fi, _js_add((lens_total[fi] if type(fi) is int and 0 <= fi < len(lens_total) else _js_list_at(lens_total, fi)), _js_len(toks)))
                 k = _js_num(fi + 1)
                 for t in toks:
-                    row = (tfs._entries.get(t, _JS_UNDEFINED) if (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(tfs, t))
+                    row = (tfs._entries.get(t, _JS_UNDEFINED) if type(tfs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(tfs, t))
                     if row is _JS_UNDEFINED:
                         fresh = [doc_id, 0, 0, 0]
-                        if type(k) is int and 0 <= k < len(fresh):
+                        if type(fresh) is list and type(k) is int and 0 <= k < len(fresh):
                             fresh[k] = 1
                         else:
                             _js_put(fresh, k, 1)
-                        if (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and tfs._keys is None:
+                        if type(tfs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and tfs._keys is None:
                             tfs._entries[t] = fresh
                         else:
                             _js_m_set(tfs, t, fresh)
                     else:
-                        n = (_js_h8 + 1 if type(_js_h8 := (row[k] if type(row) is list and type(k) is int and 0 <= k < len(row) else _js_get(row, k))) is int and -4503599627370496 <= _js_h8 <= 4503599627370496 else _js_add(_js_h8, 1))
+                        n = (_js_h10 + 1 if type(_js_h10 := (row[k] if type(row) is list and type(k) is int and 0 <= k < len(row) else _js_get(row, k))) is int and -4503599627370496 <= _js_h10 <= 4503599627370496 else _js_add(_js_h10, 1))
                         if type(row) is list and type(k) is int and 0 <= k < len(row):
                             row[k] = n
                         else:
                             _js_put(row, k, n)
                 fi = _js_num(fi + 1)
             for term, row in _js_rows(tfs, 2, (0, 1)):
-                i = (at._entries.get(term, _JS_UNDEFINED) if (type(term) is str or type(term) is int and -9007199254740992 <= term <= 9007199254740992) else _js_m_get(at, term))
+                i = (at._entries.get(term, _JS_UNDEFINED) if type(at) is _JsMap and (type(term) is str or type(term) is int and -9007199254740992 <= term <= 9007199254740992) else _js_m_get(at, term))
                 if i is _JS_UNDEFINED:
                     i = shard_of(term)
-                    if (type(term) is str or type(term) is int and -9007199254740992 <= term <= 9007199254740992) and at._keys is None:
+                    if type(at) is _JsMap and (type(term) is str or type(term) is int and -9007199254740992 <= term <= 9007199254740992) and at._keys is None:
                         at._entries[term] = i
                     else:
                         _js_m_set(at, term, i)
@@ -998,21 +999,21 @@ class HotIndex(_JsObject):
                         table._entries[term] = [row]
                     else:
                         _js_m_set(table, term, [row])
-                    if (type(term) is str or type(term) is int and -9007199254740992 <= term <= 9007199254740992) and df._keys is None:
+                    if type(df) is _JsMap and (type(term) is str or type(term) is int and -9007199254740992 <= term <= 9007199254740992) and df._keys is None:
                         df._entries[term] = 1
                     else:
                         _js_m_set(df, term, 1)
                 else:
                     held = (list_.append(row) or len(list_) if type(list_) is list else _js_m_push(list_, row))
-                    if (type(term) is str or type(term) is int and -9007199254740992 <= term <= 9007199254740992) and df._keys is None:
+                    if type(df) is _JsMap and (type(term) is str or type(term) is int and -9007199254740992 <= term <= 9007199254740992) and df._keys is None:
                         df._entries[term] = held
                     else:
                         _js_m_set(df, term, held)
             for w in tokens(_js_str(_js_get(d, "name")) + " " + _js_str(_js_get(d, "description"))):
-                i = (at._entries.get(w, _JS_UNDEFINED) if (type(w) is str or type(w) is int and -9007199254740992 <= w <= 9007199254740992) else _js_m_get(at, w))
+                i = (at._entries.get(w, _JS_UNDEFINED) if type(at) is _JsMap and (type(w) is str or type(w) is int and -9007199254740992 <= w <= 9007199254740992) else _js_m_get(at, w))
                 if i is _JS_UNDEFINED:
                     i = shard_of(w)
-                    if (type(w) is str or type(w) is int and -9007199254740992 <= w <= 9007199254740992) and at._keys is None:
+                    if type(at) is _JsMap and (type(w) is str or type(w) is int and -9007199254740992 <= w <= 9007199254740992) and at._keys is None:
                         at._entries[w] = i
                     else:
                         _js_m_set(at, w, i)
@@ -1045,7 +1046,7 @@ class HotIndex(_JsObject):
         for family, tables in [["postings", postings], ["words", words]]:
             i = 0
             while _js_lt(i, len(tables)):
-                table = (tables[i] if i < len(tables) else _js_list_at(tables, i))
+                table = (tables[i] if type(i) is int and i < len(tables) else _js_list_at(tables, i))
                 text = dump_index(table)
                 fp = _print_of(text)
                 _js_m_push(_js_get(prints, family), fp)
@@ -1106,9 +1107,9 @@ def _js_method_HotIndex_lookup(self, family, terms):
     by_shard = _JsMap()
     for t in want:
         i = shard_of(t)
-        list_ = (by_shard._entries.get(i, _JS_UNDEFINED) if (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) else _js_m_get(by_shard, i))
+        list_ = (by_shard._entries.get(i, _JS_UNDEFINED) if type(by_shard) is _JsMap and (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) else _js_m_get(by_shard, i))
         if list_ is _JS_UNDEFINED:
-            if (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) and by_shard._keys is None:
+            if type(by_shard) is _JsMap and (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) and by_shard._keys is None:
                 by_shard._entries[i] = [t]
             else:
                 _js_m_set(by_shard, i, [t])
@@ -1122,14 +1123,14 @@ def _js_method_HotIndex_lookup(self, family, terms):
     for i in _js_sort_num([*_js_m_keys(by_shard)], False, lambda a, b, *_: _js_num(_js_num(a) - _js_num(b))):
         fp = _js_get(prints, i)
         key = _js_str(family) + ":" + _js_str(i)
-        held = (_js_h3._entries.get(key, _JS_UNDEFINED) if type(_js_h3 := self.shards) is _JsMap else _js_m_get(_js_h3, key))
+        held = (_js_h4._entries.get(key, _JS_UNDEFINED) if type(_js_h4 := self.shards) is _JsMap else _js_m_get(_js_h4, key))
         table = _JS_UNDEFINED
-        if held is not _JS_UNDEFINED and (_js_h4 == fp if type(_js_h4 := (held[0] if type(held) is list and 0 < len(held) else _js_get(held, 0))) is type(fp) is str or type(_js_h4) is type(fp) is int and -9007199254740992 <= _js_h4 <= 9007199254740992 and -9007199254740992 <= fp <= 9007199254740992 else _js_strict_eq(_js_h4, fp)):
+        if held is not _JS_UNDEFINED and (_js_h5 == fp if type(_js_h5 := (held[0] if type(held) is list and 0 < len(held) else _js_get(held, 0))) is type(fp) is str or type(_js_h5) is type(fp) is int and -9007199254740992 <= _js_h5 <= 9007199254740992 and -9007199254740992 <= fp <= 9007199254740992 else _js_strict_eq(_js_h5, fp)):
             table = (held[1] if type(held) is list and 1 < len(held) else _js_get(held, 1))
         else:
             table = self.shard(family, i)
             prints = _js_get(_js_get(self.loaded(), "shards"), family)
-        for t in (by_shard._entries.get(i, _JS_UNDEFINED) if (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) else _js_m_get(by_shard, i)):
+        for t in (by_shard._entries.get(i, _JS_UNDEFINED) if type(by_shard) is _JsMap and (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) else _js_m_get(by_shard, i)):
             if (t in table._entries if type(table) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else t in table._items if type(table) is _JsSet and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_has(table, t)):
                 _js_m_set(out, t, (table._entries.get(t, _JS_UNDEFINED) if type(table) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(table, t)))
     return out
@@ -1211,7 +1212,7 @@ def _js_method_HotIndex_load(self):
     for k, v in _js_rows(_entries(_js_get(top, "skipped")), 2, (0, 1)):
         if not isinstance(v, str):
             return None
-        if (type(k) is str or type(k) is int and -9007199254740992 <= k <= 9007199254740992) and skipped._keys is None:
+        if type(skipped) is _JsMap and (type(k) is str or type(k) is int and -9007199254740992 <= k <= 9007199254740992) and skipped._keys is None:
             skipped._entries[k] = v
         else:
             _js_m_set(skipped, k, v)
@@ -1237,11 +1238,11 @@ def _js_method_HotIndex_write(self, before):
             if not (i < SHARDS):
                 break
             fp = _js_get(_js_get(_js_get(d, "shards"), family), i)
-            if before is not None and (_js_h5 == fp if type(_js_h5 := _js_get(_js_get(before, family), i)) is type(fp) is str or type(_js_h5) is type(fp) is int and -9007199254740992 <= _js_h5 <= 9007199254740992 and -9007199254740992 <= fp <= 9007199254740992 else _js_strict_eq(_js_h5, fp)):
+            if before is not None and (_js_h6 == fp if type(_js_h6 := _js_get(_js_get(before, family), i)) is type(fp) is str or type(_js_h6) is type(fp) is int and -9007199254740992 <= _js_h6 <= 9007199254740992 and -9007199254740992 <= fp <= 9007199254740992 else _js_strict_eq(_js_h6, fp)):
                 continue
             key = _js_str(family) + ":" + _js_str(i)
-            held = (_js_h6._entries.get(key, _JS_UNDEFINED) if type(_js_h6 := self.shards) is _JsMap else _js_m_get(_js_h6, key))
-            if held is _JS_UNDEFINED or (_js_h7 != fp if type(_js_h7 := (held[0] if type(held) is list and 0 < len(held) else _js_get(held, 0))) is type(fp) is str or type(_js_h7) is type(fp) is int and -9007199254740992 <= _js_h7 <= 9007199254740992 and -9007199254740992 <= fp <= 9007199254740992 else not _js_strict_eq(_js_h7, fp)):
+            held = (_js_h7._entries.get(key, _JS_UNDEFINED) if type(_js_h7 := self.shards) is _JsMap else _js_m_get(_js_h7, key))
+            if held is _JS_UNDEFINED or (_js_h8 != fp if type(_js_h8 := (held[0] if type(held) is list and 0 < len(held) else _js_get(held, 0))) is type(fp) is str or type(_js_h8) is type(fp) is int and -9007199254740992 <= _js_h8 <= 9007199254740992 and -9007199254740992 <= fp <= 9007199254740992 else not _js_strict_eq(_js_h8, fp)):
                 raise _JsError("hotindex: shard " + _js_str(family) + "-" + _js_str(i) + " not held")
             done = (dumped._entries.get(key, _JS_UNDEFINED) if type(dumped) is _JsMap else _js_m_get(dumped, key))
             texts.append([self.shardPath(family, i), _js_str(_js_m_slice(dump_index({"fingerprint": fp}), 0, -1)) + ",\"terms\":" + _js_str((done[1] if type(done) is list and 1 < len(done) else _js_get(done, 1))) + "}" if done is not _JS_UNDEFINED and _js_strict_eq((done[0] if type(done) is list and 0 < len(done) else _js_get(done, 0)), (held[1] if type(held) is list and 1 < len(held) else _js_get(held, 1))) else dump_index({"fingerprint": fp, "terms": (held[1] if type(held) is list and 1 < len(held) else _js_get(held, 1))})])
@@ -1256,7 +1257,8 @@ def _js_method_HotIndex_write(self, before):
             def _js_fn14(b=_JS_UNDEFINED, *_):
                 return self.writesName(b)
             remove_stale_temps(path_dirname(self.path), _js_fn14)
-            for p, text in _js_rows(texts, 2, (0, 1)):
+            for _js_r9 in texts:
+                p, text = _js_r9 if type(_js_r9) is list and len(_js_r9) == 2 else _js_row(_js_r9, 2, (0, 1))
                 tmp = path_join(path_dirname(p), _js_str(path_basename(p)) + "." + _js_str(process_pid()) + ".tmp")
                 _js_caught15 = None
                 try:
@@ -1298,7 +1300,7 @@ def _js_method_HotIndex_patch(self, data, stats, force=_JS_UNDEFINED):
     loose = _JsSet(_js_get(data, "loose"))
     now_files = _JsMap()
     for n, m, s in _js_rows(stats, 3, (0, 1, 2)):
-        if (type(n) is str or type(n) is int and -9007199254740992 <= n <= 9007199254740992) and now_files._keys is None:
+        if type(now_files) is _JsMap and (type(n) is str or type(n) is int and -9007199254740992 <= n <= 9007199254740992) and now_files._keys is None:
             now_files._entries[n] = [m, s]
         else:
             _js_m_set(now_files, n, [m, s])
@@ -1324,7 +1326,7 @@ def _js_method_HotIndex_patch(self, data, stats, force=_JS_UNDEFINED):
         _js_m_delete(skipped, file)
         _js_m_delete(loose, file)
     for file in _js_sort_keyed([*redo], lambda a, *_: _js_m_get(order, a), False, lambda a, b, *_: _js_num(_js_num(_js_m_get(order, a)) - _js_num(_js_m_get(order, b)))):
-        mtime_ns, size = _js_destructure((now_files._entries.get(file, _JS_UNDEFINED) if (type(file) is str or type(file) is int and -9007199254740992 <= file <= 9007199254740992) else _js_m_get(now_files, file)), 2)
+        mtime_ns, size = _js_destructure((now_files._entries.get(file, _JS_UNDEFINED) if type(now_files) is _JsMap and (type(file) is str or type(file) is int and -9007199254740992 <= file <= 9007199254740992) else _js_m_get(now_files, file)), 2)
         parsed = self.parse(py_join(self.dir, file))
         if isinstance(parsed, str):
             if type(skipped) is _JsMap and (type(file) is str or type(file) is int and -9007199254740992 <= file <= 9007199254740992) and skipped._keys is None:
@@ -1338,7 +1340,7 @@ def _js_method_HotIndex_patch(self, data, stats, force=_JS_UNDEFINED):
         held = _js_m_get(docs, _js_get(doc, "name"))
         if held is _JS_UNDEFINED:
             _js_m_set(docs, _js_get(doc, "name"), doc)
-        elif _js_lt((order._entries.get(file, _JS_UNDEFINED) if (type(file) is str or type(file) is int and -9007199254740992 <= file <= 9007199254740992) else _js_m_get(order, file)), _js_m_get(order, _js_get(held, "file"))):
+        elif _js_lt((order._entries.get(file, _JS_UNDEFINED) if type(order) is _JsMap and (type(file) is str or type(file) is int and -9007199254740992 <= file <= 9007199254740992) else _js_m_get(order, file)), _js_m_get(order, _js_get(held, "file"))):
             _js_m_set(docs, _js_get(doc, "name"), doc)
             _js_m_set(skipped, _js_get(held, "file"), DUPLICATE + " '" + _js_str(_js_get(doc, "name")) + "': " + _js_str(file) + " holds it")
         else:

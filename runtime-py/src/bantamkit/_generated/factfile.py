@@ -298,8 +298,8 @@ def parse_frontmatter(front):
         if _js_get(front, pos) == "\n":
             pos = _js_add(pos, 1)
             gap = _js_str_len(_js_get(_js_m_exec(_JS_RE_4, _js_m_slice(front, pos)), 0))
-            if _js_m_test(_JS_RE_5, _js_m_slice(front, (pos + gap if type(pos) is int and -4503599627370496 <= pos <= 4503599627370496 else _js_add(pos, gap)))):
-                value, pos = _scan_block_sequence(front, (pos + gap if type(pos) is int and -4503599627370496 <= pos <= 4503599627370496 else _js_add(pos, gap)))
+            if _js_m_test(_JS_RE_5, _js_m_slice(front, (pos + gap if type(pos) is int and type(gap) is int and -4503599627370496 <= pos <= 4503599627370496 else _js_add(pos, gap)))):
+                value, pos = _scan_block_sequence(front, (pos + gap if type(pos) is int and type(gap) is int and -4503599627370496 <= pos <= 4503599627370496 else _js_add(pos, gap)))
             else:
                 nested = _scan_nested_mapping(front, pos)
                 if nested is not None:
@@ -1121,7 +1121,7 @@ def _scan_block_sequence(front, pos):
     i = pos
     while True:
         gap = _js_str_len(_js_get(_js_m_exec(_JS_RE_4, _js_m_slice(front, i)), 0))
-        if gap > 0 and _js_get(front, (i + gap if type(i) is int and -4503599627370496 <= i <= 4503599627370496 else _js_add(i, gap))) == "-":
+        if gap > 0 and _js_get(front, (i + gap if type(i) is int and type(gap) is int and -4503599627370496 <= i <= 4503599627370496 else _js_add(i, gap))) == "-":
             i = _js_add(i, gap)
         if not (_js_lt(i, _js_len(front)) and _js_get(front, i) == "-"):
             break

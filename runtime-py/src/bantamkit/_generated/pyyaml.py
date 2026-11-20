@@ -65,6 +65,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_or,
     _js_re,
     _js_re_exec,
+    _js_row,
     _js_rows,
     _js_str,
     _js_str_at,
@@ -402,7 +403,7 @@ class _Emitter(_JsObject):
                     start = end
                 if ch is not None:
                     data = _JS_UNDEFINED
-                    rep = (_ESCAPE_REPLACEMENTS._entries.get(cp, _JS_UNDEFINED) if (type(cp) is str or type(cp) is int and -9007199254740992 <= cp <= 9007199254740992) else _js_m_get(_ESCAPE_REPLACEMENTS, cp))
+                    rep = (_ESCAPE_REPLACEMENTS._entries.get(cp, _JS_UNDEFINED) if type(_ESCAPE_REPLACEMENTS) is _JsMap and (type(cp) is str or type(cp) is int and -9007199254740992 <= cp <= 9007199254740992) else _js_m_get(_ESCAPE_REPLACEMENTS, cp))
                     if rep is not _JS_UNDEFINED:
                         data = _js_add("\\", rep)
                     elif _js_le(cp, 255):
@@ -498,7 +499,21 @@ def _js_method__Emitter_writeSingleQuoted(self, chars, split):
     return _JS_UNDEFINED
 
 
+def _safe_dump_mapping__typed(entries):
+    e = _Emitter()
+    seen = []
+    _js_invoke(e, "increaseIndent", False, False)
+    for _js_r1 in entries:
+        key, value = _js_r1 if type(_js_r1) is list and len(_js_r1) == 2 else _js_row(_js_r1, 2, (0, 1))
+        _emit_mapping_entry(e, key, value, key, seen)
+    _js_invoke(e, "popIndent")
+    _js_invoke(e, "writeIndent")
+    return _js_m_toString(e)
+
+
 def safe_dump_mapping(entries):
+    if type(entries) is list:
+        return _safe_dump_mapping__typed(entries)
     e = _Emitter()
     seen = []
     _js_invoke(e, "increaseIndent", False, False)
@@ -507,9 +522,6 @@ def safe_dump_mapping(entries):
     _js_invoke(e, "popIndent")
     _js_invoke(e, "writeIndent")
     return _js_m_toString(e)
-
-
-_safe_dump_mapping__typed = safe_dump_mapping
 
 
 def _is_simple_key(key):

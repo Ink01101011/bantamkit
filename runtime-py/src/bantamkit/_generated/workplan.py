@@ -119,7 +119,7 @@ def _cycle_path(nodes, emitted):
         _js_m_set(at, _js_get(current, "id"), len(path))
         path.append(_js_get(current, "id"))
         next = _js_m_find(_js_get(current, "depends_on"), lambda dep, *_: not (dep in emitted._entries if type(emitted) is _JsMap and (type(dep) is str or type(dep) is int and -9007199254740992 <= dep <= 9007199254740992) else dep in emitted._items if type(emitted) is _JsSet and (type(dep) is str or type(dep) is int and -9007199254740992 <= dep <= 9007199254740992) else _js_m_has(emitted, dep)))
-        current = _JS_UNDEFINED if next is _JS_UNDEFINED else (by_id._entries.get(next, _JS_UNDEFINED) if (type(next) is str or type(next) is int and -9007199254740992 <= next <= 9007199254740992) else _js_m_get(by_id, next))
+        current = _JS_UNDEFINED if next is _JS_UNDEFINED else (by_id._entries.get(next, _JS_UNDEFINED) if type(by_id) is _JsMap and (type(next) is str or type(next) is int and -9007199254740992 <= next <= 9007199254740992) else _js_m_get(by_id, next))
     return path
 
 
@@ -155,13 +155,13 @@ def _plan__typed(input):
         owner = _JsMap()
         for entry in ready:
             touches = _js_coalesce_value(_js_get(_js_list_at(nodes, _js_get(entry, "index")), "touches"), [])
-            clash = _js_m_find(touches, lambda path, *_: (path in owner._entries if (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else _js_m_has(owner, path)))
+            clash = _js_m_find(touches, lambda path, *_: (path in owner._entries if type(owner) is _JsMap and (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else _js_m_has(owner, path)))
             if clash is not _JS_UNDEFINED:
-                held.append({"id": _js_get(entry, "id"), "batch": len(batches), "by": (owner._entries.get(clash, _JS_UNDEFINED) if (type(clash) is str or type(clash) is int and -9007199254740992 <= clash <= 9007199254740992) else _js_m_get(owner, clash)), "path": clash})
+                held.append({"id": _js_get(entry, "id"), "batch": len(batches), "by": (owner._entries.get(clash, _JS_UNDEFINED) if type(owner) is _JsMap and (type(clash) is str or type(clash) is int and -9007199254740992 <= clash <= 9007199254740992) else _js_m_get(owner, clash)), "path": clash})
                 continue
             batch.append(_js_get(entry, "id"))
             for path in touches:
-                if not (path in owner._entries if (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else _js_m_has(owner, path)):
+                if not (path in owner._entries if type(owner) is _JsMap and (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else _js_m_has(owner, path)):
                     _js_m_set(owner, path, _js_get(entry, "id"))
         batches.append(batch)
         for id_ in batch:
@@ -209,13 +209,13 @@ def plan(input):
         owner = _JsMap()
         for entry in ready:
             touches = _js_coalesce_value(_js_get(_js_list_at(nodes, _js_get(entry, "index")), "touches"), [])
-            clash = _js_m_find(touches, lambda path, *_: (path in owner._entries if (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else _js_m_has(owner, path)))
+            clash = _js_m_find(touches, lambda path, *_: (path in owner._entries if type(owner) is _JsMap and (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else _js_m_has(owner, path)))
             if clash is not _JS_UNDEFINED:
-                held.append({"id": _js_get(entry, "id"), "batch": len(batches), "by": (owner._entries.get(clash, _JS_UNDEFINED) if (type(clash) is str or type(clash) is int and -9007199254740992 <= clash <= 9007199254740992) else _js_m_get(owner, clash)), "path": clash})
+                held.append({"id": _js_get(entry, "id"), "batch": len(batches), "by": (owner._entries.get(clash, _JS_UNDEFINED) if type(owner) is _JsMap and (type(clash) is str or type(clash) is int and -9007199254740992 <= clash <= 9007199254740992) else _js_m_get(owner, clash)), "path": clash})
                 continue
             batch.append(_js_get(entry, "id"))
             for path in touches:
-                if not (path in owner._entries if (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else _js_m_has(owner, path)):
+                if not (path in owner._entries if type(owner) is _JsMap and (type(path) is str or type(path) is int and -9007199254740992 <= path <= 9007199254740992) else _js_m_has(owner, path)):
                     _js_m_set(owner, path, _js_get(entry, "id"))
         batches.append(batch)
         for id_ in batch:

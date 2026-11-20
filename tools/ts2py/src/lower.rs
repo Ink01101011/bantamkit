@@ -3787,6 +3787,29 @@ impl<'s> Lowerer<'s> {
                 } else if exact.is_some() {
                     // J87: every element is a fresh array of exactly this many items.
                     out.push(format!("{p}for {} in {}:", names.join(", "), right.code));
+                } else if right.is_list && !right.top {
+                    // J91-2 (#341): a proven list, iterated by Python's own list iterator (as
+                    // `_js_rows` iterates it), each item unpacked in the loop: a list of exactly
+                    // the pattern's length is its items (what `_js_rows` yields for it), anything
+                    // else is `_js_row`, `_js_rows`' answer for that one item. No generator.
+                    let wanted: Vec<String> = names
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, name)| *name != "_js_hole")
+                        .map(|(i, _)| i.to_string())
+                        .collect();
+                    self.hot_tmp += 1;
+                    let item = format!("_js_r{}", self.hot_tmp);
+                    out.push(format!("{p}for {item} in {}:", right.code));
+                    out.push(format!(
+                        "{p}    {}{} = {item} if type({item}) is list and len({item}) == {} else _js_row({item}, {}, ({}{}))",
+                        names.join(", "),
+                        if names.len() == 1 { "," } else { "" },
+                        names.len(),
+                        names.len(),
+                        wanted.join(", "),
+                        if wanted.len() == 1 { "," } else { "" }
+                    ));
                 } else {
                     // J90-P: each item through `_js_rows`, which slices a list long enough at
                     // once and reads anything else as the general lowering did (`_js_get` of
@@ -3937,7 +3960,10 @@ impl<'s> Lowerer<'s> {
                         "(type({k}) is str or type({k}) is int and -{SAFE} <= {k} <= {SAFE})"
                     ))
                 };
-                let map_test = (!fa.map).then(|| format!("type({bind}) is _JsMap"));
+                // J91-2 (#341): the receiver test stays even for a proven Map: it is what mypyc
+                // narrows the receiver by, to read `_entries` from its struct (without it, a
+                // generic attribute lookup); a proven Map only drops `has`'s Set arm.
+                let map_test = Some(format!("type({bind}) is _JsMap"));
                 let tests: Vec<String> = map_test.into_iter().chain(key_test.clone()).collect();
                 if helper == "_js_m_get" {
                     guarded(
@@ -3949,7 +3975,7 @@ impl<'s> Lowerer<'s> {
                     // J91-1: a proven Map is never a Set, so its arm alone.
                     guarded(
                         format!("{k} in {a}._entries"),
-                        key_test.into_iter().collect(),
+                        tests,
                         format!("_js_m_has({a}, {k})"),
                     )
                 } else {
@@ -3967,10 +3993,12 @@ impl<'s> Lowerer<'s> {
                     // J91-1: one side is a proven number, so the two are never two `str`s: only
                     // the int arm is left, less the tests a side proven a safe int answers.
                     let mut tests = Vec::new();
+                    // J91-2 (#341): a side proven a safe int keeps `type(x) is int` (mypyc narrows
+                    // it by that test) and drops only its range test.
                     for (x, f) in [(a, &fa), (b, &fb)] {
+                        let x_bind = if x == a { &bind } else { x };
+                        tests.push(format!("type({x_bind}) is int"));
                         if !f.int_ {
-                            let x_bind = if x == a { &bind } else { x };
-                            tests.push(format!("type({x_bind}) is int"));
                             tests.push(format!("-{SAFE} <= {x} <= {SAFE}"));
                         }
                     }
@@ -3995,11 +4023,13 @@ impl<'s> Lowerer<'s> {
                 // own first branch). J91-1: less the tests an index proven an int (or an index)
                 // answers.
                 let i = &args[1];
-                let i_test = if index_literal(i) || fb.idx {
+                let i_test = if index_literal(i) {
                     format!("{i} < len({a})")
-                } else if fb.int_ {
-                    format!("0 <= {i} < len({a})")
+                } else if fb.idx {
+                    // J91-2: `type(i) is int` stays, the test mypyc narrows `i` by.
+                    format!("type({i}) is int and {i} < len({a})")
                 } else {
+                    // J91-2: a safe int that is not an index keeps every test (mypyc's narrowing).
                     format!("type({i}) is int and 0 <= {i} < len({a})")
                 };
                 format!("({a}[{i}] if {i_test} else _js_list_at({a}, {i}))")
@@ -4009,28 +4039,27 @@ impl<'s> Lowerer<'s> {
                 // (the helper's own first branch). The item is a name or a literal, so reading the
                 // receiver again for its length reads the same list.
                 let x = &args[1];
-                if fa.list {
-                    format!("({a}.append({x}) or len({a}))")
-                } else {
-                    format!(
-                        "({a}.append({x}) or len({a}) if type({a}) is list else _js_m_push({a}, {x}))"
-                    )
-                }
+                // J91-2 (#341): `type(a) is list` stays even for a proven list, the test mypyc
+                // narrows the receiver by (to `PyList_Append`; without it, a generic method call).
+                format!(
+                    "({a}.append({x}) or len({a}) if type({a}) is list else _js_m_push({a}, {x}))"
+                )
             }
             _ => {
                 let b = &args[1];
                 // J91-1: an index lies within half the safe range, so it needs no test either.
-                let b_test =
-                    if (is_int_literal(b) && b.trim_start_matches('-').len() < 16) || fb.idx {
-                        String::new()
-                    } else {
-                        format!(" and type({b}) is int and -{HALF} <= {b} <= {HALF}")
-                    };
+                // J91-2 (#341): an index keeps `type(b) is int` (mypyc's narrowing) and drops its
+                // range test.
+                let b_test = if is_int_literal(b) && b.trim_start_matches('-').len() < 16 {
+                    String::new()
+                } else if fb.idx {
+                    format!(" and type({b}) is int")
+                } else {
+                    format!(" and type({b}) is int and -{HALF} <= {b} <= {HALF}")
+                };
                 if fa.idx && bind == *a {
-                    let tests: Vec<String> = b_test
-                        .strip_prefix(" and ")
-                        .map(|s| s.to_string())
-                        .into_iter()
+                    let tests: Vec<String> = std::iter::once(format!("type({a}) is int"))
+                        .chain(b_test.strip_prefix(" and ").map(|s| s.to_string()))
                         .collect();
                     guarded(format!("{a} + {b}"), tests, format!("_js_add({a}, {b})"))
                 } else {
@@ -4075,7 +4104,7 @@ impl<'s> Lowerer<'s> {
                 // J91-1 (#341): less the tests the receiver's and the key's facts answer (a
                 // proven Map; a key proven a `str` or a safe int). `_keys is None` is a property of
                 // the Map's contents, which a binding's fact does not prove, so it stays.
-                let (fm, fk) = (self.proven(m, since), self.proven(k, since));
+                let fk = self.proven(k, since);
                 let key_test = if is_str_literal(k) || index_literal(k) {
                     String::new()
                 } else if name(k) {
@@ -4089,11 +4118,9 @@ impl<'s> Lowerer<'s> {
                 } else {
                     return None;
                 };
-                let map_test = if fm.map {
-                    String::new()
-                } else {
-                    format!("type({m}) is _JsMap and ")
-                };
+                // J91-2 (#341): the receiver test stays for a proven Map, as for `get` (mypyc's
+                // narrowing).
+                let map_test = format!("type({m}) is _JsMap and ");
                 Some(vec![
                     format!("{p}if {map_test}{key_test}{m}._keys is None:"),
                     format!("{q}{m}._entries[{k}] = {v}"),
@@ -4113,21 +4140,20 @@ impl<'s> Lowerer<'s> {
             ("_js_put", [xs, i, v]) if name(xs) && simple_operand(v) => {
                 // J91-1 (#341): less the tests a receiver proven a list, and an index proven a
                 // safe int (or an index), answer.
-                let (fx, fi) = (self.proven(xs, since), self.proven(i, since));
-                let i_test = if index_literal(i) || (name(i) && fi.idx) {
+                let fi = self.proven(i, since);
+                let i_test = if index_literal(i) {
                     format!("{i} < len({xs})")
-                } else if name(i) && fi.int_ {
-                    format!("0 <= {i} < len({xs})")
+                } else if name(i) && fi.idx {
+                    // J91-2: `type(i) is int` stays, mypyc's narrowing.
+                    format!("type({i}) is int and {i} < len({xs})")
                 } else if name(i) {
+                    // J91-2: a safe int that is not an index keeps every test (mypyc's narrowing).
                     format!("type({i}) is int and 0 <= {i} < len({xs})")
                 } else {
                     return None;
                 };
-                let list_test = if fx.list {
-                    String::new()
-                } else {
-                    format!("type({xs}) is list and ")
-                };
+                // J91-2 (#341): the list test stays for a proven list (mypyc's narrowing).
+                let list_test = format!("type({xs}) is list and ");
                 Some(vec![
                     format!("{p}if {list_test}{i_test}:"),
                     format!("{q}{xs}[{i}] = {v}"),
@@ -4494,11 +4520,15 @@ impl<'s> Lowerer<'s> {
                 {
                     let (o, k) = (&object.code, &key.code);
                     // J91-1 (#341): less the tests a key proven a safe int (or an index) answers.
-                    let k_test = if index_literal || (key.is_idx && !key.top) {
+                    // J91-2: an index keeps `type(k) is int`, the test mypyc narrows `k` by (no
+                    // test is left for a literal, which mypyc already types an int).
+                    let k_test = if index_literal {
                         format!("{k} < len({o})")
-                    } else if key.is_int && !key.top {
-                        format!("0 <= {k} < len({o})")
+                    } else if key.is_idx && !key.top {
+                        format!("type({k}) is int and {k} < len({o})")
                     } else {
+                        // J91-2: a safe int that is not an index keeps every test (its sign
+                        // test, and `type(k) is int` for mypyc).
                         format!("type({k}) is int and 0 <= {k} < len({o})")
                     };
                     Py::atom(format!(
@@ -5651,6 +5681,25 @@ impl<'s> Lowerer<'s> {
                         "generator function called anywhere but as a for-of's iterable or an array spread",
                     );
                 }
+                // J91-2 (#341): `parseInt(<hash chain>.slice(0, N), 16)`, the hash chain J90-P2's
+                // (`createHash(alg).update(x, 'utf8').digest('hex')`) and N a whole literal in
+                // `[1, 13]`: `hash_hex_int(alg, x, N)`, the int of the digest's first N hex digits
+                // (below 16**13 = 2**52, an index). `x` is evaluated first and nothing else can
+                // throw before the hash reads it, as in JS.
+                if name == "parseInt"
+                    && !self.is_local(name)
+                    && let Some((alg, data, digits)) = self.hash_int_chain(c)
+                {
+                    self.imports
+                        .entry(self.ctx.adapter_module.clone())
+                        .or_default()
+                        .insert("hash_hex_int".to_string());
+                    let value = self.expr(data);
+                    return len_idx(returned(
+                        Ret::Num,
+                        format!("hash_hex_int({}, {}, {digits})", py_str(alg), value.code),
+                    ));
+                }
                 if !self.is_local(name)
                     && let Some(&(_, helper, min, max, ret)) =
                         GLOBAL_CALLS.iter().find(|(n, ..)| *n == name)
@@ -6280,6 +6329,50 @@ impl<'s> Lowerer<'s> {
         }
         let alg = literal(&create.arguments[0], &["sha256", "sha1"])?;
         Some((alg, update.arguments[0].as_expression()?))
+    }
+
+    /// J91-2 (#341): the arguments of `parseInt(H.slice(0, N), 16)`, `H` a `hash_chain` and `N` a
+    /// whole literal in `[1, 13]`: the algorithm, the hashed value and N. A sha1 hex digest has
+    /// 40 digits and a sha256 one 64, so the slice is N digits, all `[0-9a-f]`, and `parseInt`
+    /// reads every one of them: the int they spell, below 16**13 = 2**52.
+    fn hash_int_chain<'b, 'a>(
+        &self,
+        c: &'b CallExpression<'a>,
+    ) -> Option<(&'static str, &'b Expression<'a>, u32)> {
+        let number = |a: &Argument<'_>| match a.as_expression().map(strip) {
+            Some(Expression::NumericLiteral(n)) if n.value.fract() == 0.0 => Some(n.value),
+            _ => None,
+        };
+        if c.optional || c.arguments.len() != 2 || number(&c.arguments[1]) != Some(16.0) {
+            return None;
+        }
+        let Some(Expression::CallExpression(slice)) = c.arguments[0].as_expression().map(strip)
+        else {
+            return None;
+        };
+        let Expression::StaticMemberExpression(sm) = strip(&slice.callee) else {
+            return None;
+        };
+        if slice.optional
+            || sm.optional
+            || sm.property.name != "slice"
+            || slice.arguments.len() != 2
+            || number(&slice.arguments[0]) != Some(0.0)
+        {
+            return None;
+        }
+        let digits = number(&slice.arguments[1]).filter(|n| (1.0..=13.0).contains(n))?;
+        let Expression::CallExpression(digest) = strip(&sm.object) else {
+            return None;
+        };
+        let Expression::StaticMemberExpression(dm) = strip(&digest.callee) else {
+            return None;
+        };
+        if dm.property.name != "digest" {
+            return None;
+        }
+        let (alg, data) = self.hash_chain(digest, dm)?;
+        Some((alg, data, digits as u32))
     }
 
     /// J90-P2: `(a, b) => c1 || c2 || ... || cn`, each `ci` a key difference `k(a) - k(b)` /

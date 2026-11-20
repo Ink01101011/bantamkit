@@ -133,7 +133,7 @@ class NativeStore(_JsObject):
                         _js_m_push(skipped, {"file": file, "reason": _js_get(_js_caught3, "message")})
                 continue
             name = _js_get(fact, "name")
-            first = (held._entries.get(name, _JS_UNDEFINED) if (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(held, name))
+            first = (held._entries.get(name, _JS_UNDEFINED) if type(held) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(held, name))
             if first is not _JS_UNDEFINED:
                 if not _js_is_nullish(skipped):
                     if type(skipped) is list:
@@ -141,7 +141,7 @@ class NativeStore(_JsObject):
                     else:
                         _js_m_push(skipped, {"file": file, "reason": _js_str(DUPLICATE) + " '" + _js_str(name) + "': " + _js_str(first) + " holds it"})
                 continue
-            if (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) and held._keys is None:
+            if type(held) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) and held._keys is None:
                 held._entries[name] = file
             else:
                 _js_m_set(held, name, file)

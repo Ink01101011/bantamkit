@@ -221,7 +221,7 @@ class ColdIndex(_JsObject):
         m = self.manifest()
         for seg in _js_get(m, "segments"):
             for n, d in _js_rows(self.segment(_js_get(seg, "id")), 2, (0, 1)):
-                if (type(n) is str or type(n) is int and -9007199254740992 <= n <= 9007199254740992) and out._keys is None:
+                if type(out) is _JsMap and (type(n) is str or type(n) is int and -9007199254740992 <= n <= 9007199254740992) and out._keys is None:
                     out._entries[n] = d
                 else:
                     _js_m_set(out, n, d)
@@ -307,8 +307,8 @@ class ColdIndex(_JsObject):
             for field, in _js_rows(FIELD_BOOST, 1, (0,)):
                 counts = _JsMap()
                 for t in tokenize_v2(_js_get(text, field)):
-                    n = (_js_h3 + 1 if type(_js_h3 := _js_coalesce_value((counts._entries.get(t, _JS_UNDEFINED) if (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(counts, t)), 0)) is int and -4503599627370496 <= _js_h3 <= 4503599627370496 else _js_add(_js_h3, 1))
-                    if (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and counts._keys is None:
+                    n = (_js_h3 + 1 if type(_js_h3 := _js_coalesce_value((counts._entries.get(t, _JS_UNDEFINED) if type(counts) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(counts, t)), 0)) is int and -4503599627370496 <= _js_h3 <= 4503599627370496 else _js_add(_js_h3, 1))
+                    if type(counts) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) and counts._keys is None:
                         counts._entries[t] = n
                     else:
                         _js_m_set(counts, t, n)
@@ -361,13 +361,13 @@ class ColdIndex(_JsObject):
                     if (id_ in keep._entries if type(keep) is _JsMap and (type(id_) is str or type(id_) is int and -9007199254740992 <= id_ <= 9007199254740992) else id_ in keep._items if type(keep) is _JsSet and (type(id_) is str or type(id_) is int and -9007199254740992 <= id_ <= 9007199254740992) else _js_m_has(keep, id_)):
                         kept.append(r)
                 if _js_truthy(len(kept)):
-                    if (type(term) is str or type(term) is int and -9007199254740992 <= term <= 9007199254740992) and terms._keys is None:
+                    if type(terms) is _JsMap and (type(term) is str or type(term) is int and -9007199254740992 <= term <= 9007199254740992) and terms._keys is None:
                         terms._entries[term] = kept
                     else:
                         _js_m_set(terms, term, kept)
             if add is not None:
                 for term, rows in _js_rows((add[i] if type(add) is list and type(i) is int and 0 <= i < len(add) else _js_get(add, i)), 2, (0, 1)):
-                    list_ = (terms._entries.get(term, _JS_UNDEFINED) if (type(term) is str or type(term) is int and -9007199254740992 <= term <= 9007199254740992) else _js_m_get(terms, term))
+                    list_ = (terms._entries.get(term, _JS_UNDEFINED) if type(terms) is _JsMap and (type(term) is str or type(term) is int and -9007199254740992 <= term <= 9007199254740992) else _js_m_get(terms, term))
                     if list_ is _JS_UNDEFINED:
                         _js_m_set(terms, term, [*rows])
                     else:
@@ -384,10 +384,10 @@ def _js_method_ColdIndex_query(self, terms):
     by_shard = _JsMap()
     for t in _js_sort_unique(terms, cmp_codepoint):
         i = shard_of(t)
-        list_ = (by_shard._entries.get(i, _JS_UNDEFINED) if (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) else _js_m_get(by_shard, i))
+        list_ = (by_shard._entries.get(i, _JS_UNDEFINED) if type(by_shard) is _JsMap and (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) else _js_m_get(by_shard, i))
         if list_ is _JS_UNDEFINED:
             list_ = []
-            if (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) and by_shard._keys is None:
+            if type(by_shard) is _JsMap and (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) and by_shard._keys is None:
                 by_shard._entries[i] = list_
             else:
                 _js_m_set(by_shard, i, list_)
@@ -398,10 +398,10 @@ def _js_method_ColdIndex_query(self, terms):
     sums = _JsMap()
     for i in _js_sort_num([*_js_m_keys(by_shard)], False, lambda a, b, *_: _js_num(_js_num(a) - _js_num(b))):
         table = self.shard(i)
-        for t in (by_shard._entries.get(i, _JS_UNDEFINED) if (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) else _js_m_get(by_shard, i)):
+        for t in (by_shard._entries.get(i, _JS_UNDEFINED) if type(by_shard) is _JsMap and (type(i) is str or type(i) is int and -9007199254740992 <= i <= 9007199254740992) else _js_m_get(by_shard, i)):
             for name, seg, _js_hole, tf in _js_rows(_js_coalesce_value((table._entries.get(t, _JS_UNDEFINED) if type(table) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(table, t)), []), 4, (0, 1, 3)):
                 if (_js_h1 == seg if type(_js_h1 := (owners._entries.get(name, _JS_UNDEFINED) if type(owners) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(owners, name))) is type(seg) is str or type(_js_h1) is type(seg) is int and -9007199254740992 <= _js_h1 <= 9007199254740992 and -9007199254740992 <= seg <= 9007199254740992 else _js_strict_eq(_js_h1, seg)):
-                    _js_m_set(sums, name, (_js_h2 + tf if type(_js_h2 := _js_coalesce_value((sums._entries.get(name, _JS_UNDEFINED) if (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(sums, name)), 0)) is int and type(tf) is int and -4503599627370496 <= tf <= 4503599627370496 and -4503599627370496 <= _js_h2 <= 4503599627370496 else _js_add(_js_h2, tf)))
+                    _js_m_set(sums, name, (_js_h2 + tf if type(_js_h2 := _js_coalesce_value((sums._entries.get(name, _JS_UNDEFINED) if type(sums) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(sums, name)), 0)) is int and type(tf) is int and -4503599627370496 <= tf <= 4503599627370496 and -4503599627370496 <= _js_h2 <= 4503599627370496 else _js_add(_js_h2, tf)))
     ranked = _js_m_sort([*_js_m_keys(sums)], cmp_codepoint)
     _js_sort_keyed(ranked, lambda a, *_: _js_m_get(sums, a), True, lambda a, b, *_: _js_num(_js_num(_js_m_get(sums, b)) - _js_num(_js_m_get(sums, a))))
     return [[n, _js_m_get(owners, n), _js_m_get(sums, n)] for n in ranked]
@@ -429,7 +429,7 @@ def _js_method_ColdIndex_compact(self, keep=_JS_UNDEFINED):
         merged = _JsMap()
         for seg in old:
             for n, d in _js_rows(self.segment(seg), 2, (0, 1)):
-                if (type(n) is str or type(n) is int and -9007199254740992 <= n <= 9007199254740992) and merged._keys is None:
+                if type(merged) is _JsMap and (type(n) is str or type(n) is int and -9007199254740992 <= n <= 9007199254740992) and merged._keys is None:
                     merged._entries[n] = d
                 else:
                     _js_m_set(merged, n, d)

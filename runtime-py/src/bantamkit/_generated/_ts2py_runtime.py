@@ -3471,6 +3471,12 @@ def _js_rows(items, n, wanted):
             yield [_js_get(item, k) if k in wanted else None for k in range(n)]
 
 
+def _js_row(item, n, wanted):
+    if type(item) is list and len(item) >= n:
+        return item[:n]
+    return [_js_get(item, k) if k in wanted else None for k in range(n)]
+
+
 def _js_sort_keyed(items, key, descending, compare):
     if type(items) is list and len(items) > 1 and _JS_UNDEFINED not in items:
         try:

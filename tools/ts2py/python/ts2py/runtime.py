@@ -4052,6 +4052,17 @@ def _js_rows(items, n, wanted):
             yield [_js_get(item, k) if k in wanted else None for k in range(n)]
 
 
+def _js_row(item, n, wanted):
+    """J91-2 (#341): what `_js_rows(items, n, wanted)` yields for the one item `item` of a list
+    (its second branch): a list of at least `n` items is its first `n`, anything else the general
+    lowering's `_js_get` of each wanted index, in order (a hole is never read). The lowering of a
+    destructuring for-of over a proven list unpacks a list of exactly `n` items itself and calls
+    this for every other item."""
+    if type(item) is list and len(item) >= n:
+        return item[:n]
+    return [_js_get(item, k) if k in wanted else None for k in range(n)]
+
+
 def _js_sort_keyed(items, key, descending, compare):
     """J90-P: `items.sort((a, b) => key(a) - key(b))` (`descending`: `key(b) - key(a)`), `key`
     an expression with no effect (ts2py proved it). When every key is a number JS holds exactly (a

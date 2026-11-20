@@ -92,25 +92,27 @@ fn facts_answer_like_node() {
     let modules = compiled();
     let code = &modules[0].code;
     let map_fast = function(code, "_map_fast__typed");
-    // A `new Map()` receiver: no receiver test in `get` / `has` / `set`; a JSON key keeps its key
-    // test; a counted index needs none (`m.get(i)` is the dict read alone).
+    // A `new Map()` receiver: `has` has no Set arm; a JSON key keeps its key test; a counted index
+    // needs none (`m.get(i)` is the receiver test alone). J91-2 (#341): the receiver test
+    // `type(m) is _JsMap` stays, the test mypyc narrows the receiver by.
     for form in [
-        format!("got = (m._entries.get(k, _JS_UNDEFINED) if {KEY} else _js_m_get(m, k))"),
-        format!("(k in m._entries if {KEY} else _js_m_has(m, k))"),
-        format!("if {KEY} and m._keys is None:\n            m._entries[k] = shown"),
-        "if m._keys is None:\n            m._entries[i] = label".to_string(),
-        "got = (m._entries.get(i, _JS_UNDEFINED))".to_string(),
+        format!("got = (m._entries.get(k, _JS_UNDEFINED) if type(m) is _JsMap and {KEY} else _js_m_get(m, k))"),
+        format!("(k in m._entries if type(m) is _JsMap and {KEY} else _js_m_has(m, k))"),
+        format!("if type(m) is _JsMap and {KEY} and m._keys is None:\n            m._entries[k] = shown"),
+        "if type(m) is _JsMap and m._keys is None:\n            m._entries[i] = label".to_string(),
+        "got = (m._entries.get(i, _JS_UNDEFINED) if type(m) is _JsMap else _js_m_get(m, i))".to_string(),
         // A key proven a number but not a safe int (NaN here) keeps its key test.
-        "(m._entries.get(nan, _JS_UNDEFINED) if (type(nan) is str or type(nan) is int and -9007199254740992 <= nan <= 9007199254740992) else _js_m_get(m, nan))".to_string(),
+        "(m._entries.get(nan, _JS_UNDEFINED) if type(m) is _JsMap and (type(nan) is str or type(nan) is int and -9007199254740992 <= nan <= 9007199254740992) else _js_m_get(m, nan))".to_string(),
         // `new Set()` is never proven a Map: `has` keeps both arms' receiver tests.
         format!("(k in s._entries if type(s) is _JsMap and {KEY} else k in s._items if type(s) is _JsSet and {KEY} else _js_m_has(s, k))"),
-        // The counted variable: an index in the body (no type or sign test), an int `+` after it.
-        "k = (vals[i] if i < len(vals) else _js_list_at(vals, i))".to_string(),
+        // The counted variable: an index in the body (no sign test; J91-2: `type(i) is int`
+        // stays, mypyc's narrowing), an int `+` after it.
+        "k = (vals[i] if type(i) is int and i < len(vals) else _js_list_at(vals, i))".to_string(),
         "i = i + 1".to_string(),
     ] {
         assert!(map_fast.contains(&form), "missing {form}\nin:\n{map_fast}");
     }
-    assert!(!map_fast.contains("type(m) is _JsMap"), "{map_fast}");
+    assert!(!map_fast.contains("m._items"), "{map_fast}");
     // The guarded twin and a parameter: never proven a Map.
     for name in ["_map_guarded__typed", "map_param"] {
         let body = function(code, name);
@@ -118,18 +120,20 @@ fn facts_answer_like_node() {
     }
     let counted = function(code, "_counted_fast__typed");
     for form in [
-        // `i + 1` and `i - 1` of an index are ints (safe; one may be -1): no `_js_num`, no type test.
+        // `i + 1` and `i - 1` of an index are ints (safe; one may be -1): no `_js_num`. A read
+        // by an index needs no sign test; J91-2 (#341): every read and store keeps its type tests
+        // (`type(i) is int`, a receiver's `type(ys) is list`), the tests mypyc narrows by, and a
+        // safe int that is not an index keeps its sign test too.
         "k = i + 1",
         "j = i - 1",
-        "here = (xs[i] if i < len(xs) else _js_list_at(xs, i))",
-        "after = (ys[k] if 0 <= k < len(ys) else _js_list_at(ys, k))",
-        "before = (xs[j] if 0 <= j < len(xs) else _js_list_at(xs, j))",
-        // A proven list's store at an int index: no receiver or type test.
-        "if 0 <= k < len(ys):\n            ys[k] = here",
+        "here = (xs[i] if type(i) is int and i < len(xs) else _js_list_at(xs, i))",
+        "after = (ys[k] if type(k) is int and 0 <= k < len(ys) else _js_list_at(ys, k))",
+        "before = (xs[j] if type(j) is int and 0 <= j < len(xs) else _js_list_at(xs, j))",
+        "if type(ys) is list and type(k) is int and 0 <= k < len(ys):\n            ys[k] = here",
         // A stride, a literal bound, `ys.length - i`, `++i`.
         "i = i + 2",
         "n = len(ys) - i",
-        "(ys[n] if 0 <= n < len(ys) else _js_list_at(ys, n))",
+        "(ys[n] if type(n) is int and 0 <= n < len(ys) else _js_list_at(ys, n))",
     ] {
         assert!(counted.contains(form), "missing {form}\nin:\n{counted}");
     }
@@ -149,7 +153,7 @@ fn facts_answer_like_node() {
         // `.length` of a value not proven a list or a string proves nothing.
         "(x[n] if type(n) is int and 0 <= n < len(x) else _js_list_at(x, n))",
         // A store into a value not proven a list keeps its list test.
-        "if type(obj) is list and i < len(obj):\n            obj[i] = i",
+        "if type(obj) is list and type(i) is int and i < len(obj):\n            obj[i] = i",
     ] {
         assert!(
             not_counted.contains(form),
@@ -165,13 +169,15 @@ fn facts_answer_like_node() {
         "_js_str(half + i)",
         "_js_str(_js_num(big + 2))",
         "_js_str(_js_num(big + i))",
-        // `v + i`, `i` an index: `v`'s own test alone; `v + big`, `big` not an index: both tests.
-        "w = (v + i if type(v) is int and -4503599627370496 <= v <= 4503599627370496 else _js_add(v, i))",
+        // `v + i`, `i` an index: `v`'s own test and `i`'s type test (J91-2: mypyc's narrowing);
+        // `v + big`, `big` not an index: both tests.
+        "w = (v + i if type(v) is int and type(i) is int and -4503599627370496 <= v <= 4503599627370496 else _js_add(v, i))",
         "wb = (v + big if type(v) is int and type(big) is int and -4503599627370496 <= big <= 4503599627370496 and -4503599627370496 <= v <= 4503599627370496 else _js_add(v, big))",
-        // `===` with one side a proven number: the int arm alone; an index needs no test.
-        "(a == v if type(v) is int and -9007199254740992 <= v <= 9007199254740992 else _js_strict_eq(a, v))",
+        // `===` with one side a proven number: the int arm alone; an index needs no range test
+        // (J91-2: its `type(x) is int` stays, mypyc's narrowing).
+        "(a == v if type(a) is int and type(v) is int and -9007199254740992 <= v <= 9007199254740992 else _js_strict_eq(a, v))",
         "(top == v if type(top) is int and -9007199254740992 <= top <= 9007199254740992 and type(v) is int and -9007199254740992 <= v <= 9007199254740992 else _js_strict_eq(top, v))",
-        "(v != i if type(v) is int and -9007199254740992 <= v <= 9007199254740992 else not _js_strict_eq(v, i))",
+        "(v != i if type(v) is int and -9007199254740992 <= v <= 9007199254740992 and type(i) is int else not _js_strict_eq(v, i))",
     ] {
         assert!(
             arithmetic.contains(form),

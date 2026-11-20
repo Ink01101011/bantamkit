@@ -65,6 +65,7 @@ from ._ts2py_runtime import (  # noqa: F401
     _js_put,
     _js_re,
     _js_re_exec,
+    _js_row,
     _js_rows,
     _js_size,
     _js_str,
@@ -306,10 +307,10 @@ def hook_log_reducer(rows):
     for row in rows:
         ts = _js_get(row, "ts")
         day = _js_m_join(_js_m_slice([*ts], 0, 10), "") if isinstance(ts, str) else "?"
-        c = (days._entries.get(day, _JS_UNDEFINED))
+        c = (days._entries.get(day, _JS_UNDEFINED) if type(days) is _JsMap else _js_m_get(days, day))
         if c is _JS_UNDEFINED:
             c = _JsMap()
-            if days._keys is None:
+            if type(days) is _JsMap and days._keys is None:
                 days._entries[day] = c
             else:
                 _js_m_set(days, day, c)
@@ -452,7 +453,8 @@ def _fold_logs__typed(home, now_ms, report):
             continue
         p = path_join(base, "touch", name)
         logs.append([p, "touch" if _old_touch(p, usage_cutoff) else "none"])
-    for p, how in _js_rows(logs, 2, (0, 1)):
+    for _js_r1 in logs:
+        p, how = _js_r1 if type(_js_r1) is list and len(_js_r1) == 2 else _js_row(_js_r1, 2, (0, 1))
         st = _regular(p)
         if st is None:
             continue
@@ -492,7 +494,8 @@ def _fold_logs(home, now_ms, report):
             continue
         p = path_join(base, "touch", name)
         logs.append([p, "touch" if _old_touch(p, usage_cutoff) else "none"])
-    for p, how in _js_rows(logs, 2, (0, 1)):
+    for _js_r2 in logs:
+        p, how = _js_r2 if type(_js_r2) is list and len(_js_r2) == 2 else _js_row(_js_r2, 2, (0, 1))
         st = _regular(p)
         if st is None:
             continue
@@ -980,7 +983,7 @@ def _compact_cold__typed(home, roots, report):
         if not _js_truthy(_is_file(path_join(base, name, "manifest.json"))):
             continue
         cold = ColdIndex(name, home, base)
-        held = (keeps._entries.get(name, _JS_UNDEFINED) if (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(keeps, name))
+        held = (keeps._entries.get(name, _JS_UNDEFINED) if type(keeps) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(keeps, name))
         _js_caught59 = None
         try:
             if _js_invoke(cold, "compact", None if held is _JS_UNDEFINED else _keep_under((held[0] if type(held) is list and 0 < len(held) else _js_get(held, 0)), (held[1] if type(held) is list and 1 < len(held) else _js_get(held, 1)))) is not None:
@@ -1008,7 +1011,7 @@ def _compact_cold(home, roots, report):
         if not _js_truthy(_is_file(path_join(base, name, "manifest.json"))):
             continue
         cold = ColdIndex(name, home, base)
-        held = (keeps._entries.get(name, _JS_UNDEFINED) if (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(keeps, name))
+        held = (keeps._entries.get(name, _JS_UNDEFINED) if type(keeps) is _JsMap and (type(name) is str or type(name) is int and -9007199254740992 <= name <= 9007199254740992) else _js_m_get(keeps, name))
         _js_caught60 = None
         try:
             if _js_invoke(cold, "compact", None if held is _JS_UNDEFINED else _keep_under((held[0] if type(held) is list and 0 < len(held) else _js_get(held, 0)), (held[1] if type(held) is list and 1 < len(held) else _js_get(held, 1)))) is not None:
@@ -1355,7 +1358,7 @@ def search_archived(checkpoint, search, home):
             lines = _js_m_split(value, "\n")
             i = 0
             while i < len(lines):
-                toks = _JsSet(tokenize_v2((lines[i] if i < len(lines) else _js_list_at(lines, i))))
+                toks = _JsSet(tokenize_v2((lines[i] if type(i) is int and i < len(lines) else _js_list_at(lines, i))))
                 if all(_js_m_has(toks, t) for t in [*want]):
                     hits.append({"job": job, "file": r, "line": i + 1})
                     if len(hits) >= SEARCH_MAX:

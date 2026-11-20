@@ -166,7 +166,7 @@ def sorted_names(values):
             else:
                 l = _js_num(p + 1)
         _js_m_copyWithin(a, _js_num(l + 1), l, start)
-        if type(l) is int and 0 <= l < len(a):
+        if type(a) is list and type(l) is int and 0 <= l < len(a):
             a[l] = pivot
         else:
             _js_put(a, l, pivot)
@@ -684,8 +684,8 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
     both_keys = [key for key in [*_js_m_keys(by_project)] if _js_m_has(by_profile, key)]
     for name in _sorted_names__typed([_js_get(_js_m_get(by_project, key), "name") for key in both_keys]):
         key = py_hash_key(name)
-        here = (by_project._entries.get(key, _JS_UNDEFINED) if (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_get(by_project, key))
-        there = (by_profile._entries.get(key, _JS_UNDEFINED) if (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_get(by_profile, key))
+        here = (by_project._entries.get(key, _JS_UNDEFINED) if type(by_project) is _JsMap and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_get(by_project, key))
+        there = (by_profile._entries.get(key, _JS_UNDEFINED) if type(by_profile) is _JsMap and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_get(by_profile, key))
         destination = py_join(_js_get(profile, "root"), "archive", _js_str(py_text(name)) + ".md")
         if _js_truthy(py_lexists(destination)):
             refused.append([name, _js_str(destination) + " already exists; refusing to overwrite an earlier " + "archived copy — restore or remove it and run again"])
@@ -718,7 +718,7 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
         created_candidates = _js_m_filter([_js_coalesce_value(_js_get(here, "created"), None), _js_coalesce_value(_js_get(there, "created"), None)], lambda _js_a0=_JS_UNDEFINED, *_: _truthy(_js_a0))
         recalled_candidates = _js_m_filter([_js_get(here, "last_recalled"), _js_get(there, "last_recalled")], lambda _js_a0=_JS_UNDEFINED, *_: _truthy(_js_a0))
         survivor = {**_js_spread(here), "description": description, "body": body, "links": links, "created": _py_min(created_candidates) if len(created_candidates) > 0 else None, "last_recalled": _py_max(recalled_candidates) if len(recalled_candidates) > 0 else None, "keywords": union_keywords(_js_coalesce_value(_js_get(here, "keywords"), []), _js_coalesce_value(_js_get(there, "keywords"), [])), **_js_spread(_union_extra(_js_coalesce_value(_js_get(here, "extra"), []), _js_coalesce_value(_js_get(there, "extra"), [])))}
-        if (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) and planned._keys is None:
+        if type(planned) is _JsMap and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) and planned._keys is None:
             planned._entries[key] = survivor
         else:
             _js_m_set(planned, key, survivor)
@@ -727,7 +727,7 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
     project_only = [key for key in [*_js_m_keys(by_project)] if not _js_m_has(by_profile, key)]
     for name in _sorted_names__typed([_js_get(_js_m_get(by_project, key), "name") for key in project_only]):
         key = py_hash_key(name)
-        fact = (by_project._entries.get(key, _JS_UNDEFINED) if (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_get(by_project, key))
+        fact = (by_project._entries.get(key, _JS_UNDEFINED) if type(by_project) is _JsMap and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_get(by_project, key))
         basis = py_mtime_date(project_path(name))
         body, resolved_hits, unresolved_hits = absolutise(_js_get(fact, "body"), basis, name, PROJECT_LAYER)
         _js_m_push(hits, *resolved_hits)
@@ -764,7 +764,7 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
     fact_bytes_before = _js_add(sum(_js_m_values(project_sizes)), sum(_js_m_values(profile_sizes)))
     fact_bytes_after = _js_num(_js_num(fact_bytes_before) - _js_num(sum([_js_m_get(profile_sizes, py_hash_key(n)) for n in consumed])))
     for key, fact in _js_rows(planned, 2, (0, 1)):
-        fact_bytes_after = _js_num(fact_bytes_after + _js_num(_js_num(bytes(format_fact(fact))) - _js_num((project_sizes._entries.get(key, _JS_UNDEFINED) if (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_get(project_sizes, key)))))
+        fact_bytes_after = _js_num(fact_bytes_after + _js_num(_js_num(bytes(format_fact(fact))) - _js_num((project_sizes._entries.get(key, _JS_UNDEFINED) if type(project_sizes) is _JsMap and (type(key) is str or type(key) is int and -9007199254740992 <= key <= 9007199254740992) else _js_m_get(project_sizes, key)))))
     rewritten = _sorted_names__typed([_js_get(fact, "name") for fact in [*_js_m_values(planned)]])
     all_superseded = []
     for merge in merged:

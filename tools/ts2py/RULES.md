@@ -1308,3 +1308,95 @@ any start; any name as the bound; any stride; `.length` of any receiver an index
 Map; `===`'s unproven side without its range test; two safe ints (not indices) added plainly; an
 addend proven a safe int (not an index) untested; a list read by a safe int without `0 <=`; a key
 proven any number taken as its own tag; a store into any receiver as into a list.
+
+## J91-2 rules: two exact runtime helpers, and the type tests mypyc narrows by (#341)
+
+Measured in docs/porting.md (*The pure build after J91-2*). Pinned in
+`tools/ts2py-bantamkit/tests/j92.rs` (the two helpers) and `tests/j91.rs` (the type tests).
+
+**`hash_hex_int` (the shard hash).** `parseInt(createHash(A).update(x, 'utf8').digest('hex')
+.slice(0, N), 16)`, the hash chain J90-P2 matches (`A` a literal `'sha256'` or `'sha1'`, the
+`node:crypto` adapter not shadowed), `N` a whole literal in `[1, 13]`, the slice's start the literal
+`0` and the radix the literal `16` (`hash_int_chain`): `hash_hex_int(A, x, N)`, an index. A sha1
+digest is 40 hex digits and a sha256 one 64, so the slice is N lower-case hex digits and `parseInt`
+reads all of them: the int they spell, below 16**13 = 2**52. The adapter hashes `hash_hex`'s bytes
+(`_hash_bytes`, the same lone-surrogate and surrogate-escape handling) and reads the first N digits
+(`int.from_bytes` of the first N/2 digest bytes for an even N: the same digits, big-endian); any
+value but a `str` is `int(hash_hex(A, x)[:N], 16)`, so it is `hash_hex`'s answer or its refusal.
+`x` is evaluated before the call and nothing before the hash can throw, as in JS. Not taken: 14
+digits or more, a slice from anything but 0, another radix or none, a slice of anything but the
+chain.
+
+**A destructuring for-of over a proven list.** `for (const [a, b, ...] of xs)`, `xs` proven a list
+and its elements not proven fresh tuples of the pattern's length (J87 unpacks those directly):
+`for _js_rN in xs:` and, first in the body, `a, b, ... = _js_rN if type(_js_rN) is list and
+len(_js_rN) == n else _js_row(_js_rN, n, wanted)`. `_js_rows(xs, n, wanted)` over a list is `for
+item in xs:` yielding `item` when it is a list of exactly `n`, `item[:n]` when longer, and
+`_js_get` of each wanted index otherwise; `_js_row` is that answer for one item. Python's list
+iterator is the one `_js_rows` iterated, so an item pushed during the walk is visited (as in JS),
+and the unpack runs at the start of each pass, where the generator's resume ran. No generator is
+made or resumed (`encodeSegments`, 8,285 calls of 2.65 rows: 5.25 to 4.42 ms, 3.14).
+
+**A fact drops a range or sign test, never a type test.** J91-1's facts also left out `type(m) is
+_JsMap`, `type(xs) is list` and `type(i) is int`. Those are the tests mypyc narrows a value by: under
+`type(m) is _JsMap` it reads `m._entries` from the native struct, without it `CPyObject_GetAttr`
+(checked in the C mypy 2.4.1's mypyc writes for a two-function module: `((M *)m)->__entries` with
+the test, `CPyObject_GetAttr(m, '_entries')` without). Every generated function is unannotated, so
+mypy does not check its body and a value's only static type is what such a test narrows it to; a
+local annotation is refused there (`annotation-unchecked`) unless the build's mypy configuration
+changes, which J90-P7 fixed. So J91-2 keeps every type test and drops only what a fact answers
+beyond it:
+
+| Expansion | J91-1 | J91-2 |
+|---|---|---|
+| `m.get(k)` / `m.has(k)` / `m.set(k, v)`, `m` a proven Map | no receiver test | `type(m) is _JsMap` (`has` still has no Set arm) |
+| `xs[i]` / `xs[i] = v`, `i` an index | `i < len(xs)` | `type(i) is int and i < len(xs)` |
+| the same, `i` a safe int (not an index) | `0 <= i < len(xs)` | `type(i) is int and 0 <= i < len(xs)` (as unproven) |
+| `xs[i] = v` / `xs.push(x)` as a value, `xs` a proven list | no list test | `type(xs) is list` |
+| `===` / `!==`, a side a proven safe int | no test on that side | `type(x) is int` |
+| `a + b`, `a` or `b` an index | no test on it | `type(x) is int` |
+
+A type test the fact proves always passes, so each fast arm runs where it ran; where it would not
+pass the helper answers, as everywhere. Pure cost: about 0.5 ms of `derive` (3.14); compiled, the
+cold build and compaction come back to main's (porting.md).
+
+**Measured and not taken** (3.14, `derive` of the 14-source build inside the real refresh, best of
+4 per process, 6 interleaved processes per variant, hand-edited generated code;
+`/private/tmp/claude-501/j92/{mkexp.py,vdrive.py}`): a `Counter`-backed tally of `toks` into `tfs`
+(79.7 ms against 79.0 as generated and 77.5 for the same loop with no guards at all: 25k of 27k
+tokens are distinct, so `_count_elements` saves a dispatch per repeat and a second pass pays it per
+distinct term); a group-into helper (`_js_group_push(table, key, value)`, the get-or-set-and-push
+as one call: 79.5, the call costing what its tests save; the unguarded inline form is 78.0, which
+needs element facts of `words`' Maps); `shardOf`'s memo read and written inline (78.1 against 78.6:
+three helper calls per term, not worth a module-`let` Map fact); a one-time element check per
+`encodeSegments` call (7.89 ms against 5.25 for 8,285 calls: the check costs more than the guards on
+2.65 rows); a `sum`-based int scan in `_js_lift_values_same` (0.07 ms against 0.29 for the type scan
+of 47,161 items, but `sum` admits an `int` subclass the type scan refuses).
+
+Pinned in `tests/j92.rs`: `probe()` and `fuzz(3000)` of `tests/fixtures/j92_probe.ts` equal to what
+Node v26.13.0 printed (`fixtures/j92_probe.node.txt`, 51 lines): every N in [1, 13] of both
+algorithms over strings with lone lead and trail surrogates, a split pair, astral characters, U+FFFD,
+NUL and 300 characters, the chains not taken (14 digits, a slice from 1, radix 10, no radix, a slice
+of the input), rows shorter and longer than the pattern, empty, with holes, one name and a list
+pushed to while walked, each against a twin laundered through `opaque`; the compiled text holds
+each form where it applies and not where it does not. In Python: `hash_hex_int` against the general
+lowering (`_js_parse_int(_js_str_slice(hash_hex(...), 0, N), 16)`) over 3,000 seeded strings of
+lone, escaped and paired surrogates for every N and both algorithms, and over `None`, numbers,
+bools, `bytes`, `bytearray`, `memoryview`, a list, a dict, undefined, a BigInt, a Map and `str`
+subclasses (the same answer or exception); `_js_row` against `_js_rows` for each of 15 items JS
+cannot build (tuples, strings, dicts, a Map, `None`, `7`) and four patterns; the inline unpack
+against `_js_rows` over 3,000 seeded lists of them (81,144 checks, 0 differ).
+
+Mutations, each red in `cargo test --test j92 --test j91` (a scratch copy of both crates, one at a
+time, `/private/tmp/claude-501/j92/mut/run.py`, 13 of 13 red): 14 digits taken; any slice start;
+any radix; the adapter reading bytes for an odd count; the adapter hashing a `str` subclass or
+`bytes` as a `str`; any iterable unpacked in the loop; a list at least the pattern's length unpacked
+as it is; `_js_row` not slicing a longer list; a proven Map's receiver test dropped; an index store
+without its type test; `===` without a proven int's type test; `+` without an index's type test; a
+list read by an index without its type test.
+
+J91-1's mutations after this change: the nine whose code is still there (any assignment inside a
+counted loop, any start, any name as the bound, `.length` of any receiver, `new Set()` a Map,
+`===`'s unproven side without its range test, two safe ints added plainly, any proven number a key's
+own tag, any stride) are still red in `cargo test --test j91`; the three that mutated a test J91-2
+now always writes (an addend's, a list read's and a store's type tests) have no code left to mutate.

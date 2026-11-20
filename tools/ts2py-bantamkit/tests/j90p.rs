@@ -83,8 +83,10 @@ fn j90p_lowerings_are_taken_and_answer_like_node() {
         // J90-PF: `(a, b) => a - b`, the item its own key: `_js_sort_num`.
         "_js_sort_num([3, 1, 2, 10, -1], False, ",
         // Destructuring rows, and one name with its trailing comma.
-        "for name, n, _js_hole, d in _js_rows(rows, 4, (0, 1, 3)):",
-        "for first, in _js_rows(rows, 1, (0,)):",
+        // J91-2 (#341): `rows` is a proven list, so each item is unpacked in the loop (a list of
+        // exactly the pattern's length as it is, anything else through `_js_row`).
+        "    name, n, _js_hole, d = _js_r1 if type(_js_r1) is list and len(_js_r1) == 4 else _js_row(_js_r1, 4, (0, 1, 3))",
+        "    first, = _js_r2 if type(_js_r2) is list and len(_js_r2) == 1 else _js_row(_js_r2, 1, (0,))",
         // `typeof x === '...'` as the one type test.
         "isinstance(v, str)",
         "_js_is_number(v)",

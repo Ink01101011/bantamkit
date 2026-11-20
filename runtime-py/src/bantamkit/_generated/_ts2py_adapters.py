@@ -117,6 +117,7 @@ __all__ = [
     "gunzip_sync",
     "gzip_sync",
     "hash_hex",
+    "hash_hex_int",
     "homedir",
     "lifecycle_of",
     "link_sync",
@@ -1135,6 +1136,15 @@ def hash_hex(algorithm, data):
     if type(data) is str:
         return _HASHES[algorithm](_hash_bytes(data)).hexdigest()
     return Hash(algorithm).update(data, "utf8").digest("hex")
+
+
+def hash_hex_int(algorithm, data, digits):
+    if type(data) is str:
+        digest = _HASHES[algorithm](_hash_bytes(data))
+        if digits & 1:
+            return int(digest.hexdigest()[:digits], 16)
+        return int.from_bytes(digest.digest()[: digits >> 1], "big")
+    return int(hash_hex(algorithm, data)[:digits], 16)
 
 
 def create_hash(algorithm, *_):
