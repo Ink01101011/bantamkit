@@ -3676,6 +3676,121 @@ refresh was 13.93 against 13.42 here and 13.71 against 13.49 at n = 11. The open
 (4.60 against 5.03 on 3.12). Not yet isolated: the generated code mypyc compiles differs only where a
 guard was dropped or a counter is now a plain int `+`.
 
+### The pure build after J91-2 (#341: exact runtime helpers, and mypyc's narrowing)
+
+**Re-measured first** (`bench/drive.py` as J90-RR ran it, scratch HOME, n = 11 interleaved fresh
+processes per side, load 1.52 at the start and 5.0 at the end with the VM running; 78f8d10c against
+hand 9c6bc181; verdict against hand's range without its maximum). Really over: the hot build (3.12
++3.6%, 3.14 +4.4%), the full refresh (3.12 +4.9%, 3.14 +6.3%), the 3.14 open path (+2.6%) and the
+3.14 compaction (+3.1%). The 3.12 open path and compaction were inside hand's range.
+
+**What J91-2 built** (`tools/ts2py/RULES.md`, *J91-2 rules*): `hash_hex_int` for
+`parseInt(<hash chain>.slice(0, N), 16)` (the shard hash: `derive` 80.4 to 78.6 ms, 3.14, best of
+4 per process over 6 interleaved processes), a destructuring for-of over a proven list unpacked in
+the loop without `_js_rows`' generator (`encodeSegments`' 8,285 calls 5.25 to 4.42 ms), and type
+tests kept where J91-1's facts had dropped them (below). The other idioms were each built by hand in
+the generated `derive` and measured there first; none was faster (RULES.md, *Measured and not
+taken*): a `Counter` tally 79.7 against 79.0, a group-into helper 79.5, an inline `shardOf` memo
+-0.5 ms, a per-call element check in `encodeSegments` 7.89 against 5.25 ms.
+
+**The compiled regression J91-1 left: found and fixed.** J91-1's facts dropped `type(m) is _JsMap`,
+`type(xs) is list` and `type(i) is int` from the guarded expansions. Those are the tests mypyc
+narrows a value by. Every generated function is unannotated, so mypy does not check its body and a
+value's only static type is what such a test narrows it to. With the test, mypyc reads `m._entries`
+from the native struct; without it, mypyc does a generic `CPyObject_GetAttr`. This was checked in the
+C that mypy 2.4.1's mypyc writes for a two-function module. A local annotation would type the value
+too, but mypy refuses it in an unchecked function (`annotation-unchecked`), and the build's mypy
+configuration is J90-P7's. J91-2 keeps every type test and drops only range and sign tests. Pure
+cost: about 0.5 ms of `derive`. Compiled, n = 15 interleaved, load 1.49 at the start (main / J91-1
+/ J91-2, median [min..max] ms):
+
+| Path | 3.12 main | 3.12 J91-1 | 3.12 J91-2 | 3.14 main | 3.14 J91-1 | 3.14 J91-2 |
+|---|---|---|---|---|---|---|
+| cold build | 44.75 [42.3..46.2] | 45.59 [43.8..47.1] | 45.05 [43.6..45.9] | 49.39 [47.5..50.8] | 50.11 [49.0..51.3] | 49.74 [48.4..50.9] |
+| cold compact with keep | 32.55 | 32.79 | 32.55 | 34.89 | 35.17 | 34.93 |
+| cold query x20 | 12.48 | 12.73 | 12.52 | 12.88 | 13.00 | 12.84 |
+| hot open + query | 5.00 [4.2..5.4] | 5.19 | 5.17 [4.5..5.5] | 4.98 [4.4..5.3] | 5.06 | 5.11 [4.2..5.4] |
+| hot full refresh | 14.49 | 14.42 | 14.51 | 14.13 | 14.05 | 14.14 |
+
+The cold build's +0.8 / +0.7 ms is now +0.3 / +0.35, inside main's spread. Compaction and cold query
+are back to main. The open path and the full refresh were never apart beyond their spread: a 3.14
+run of n = 11 before the fix put main 4.96, J91-1 4.98 and the fix 5.03 on the open path, and J91-1
+13.42 against main 13.55 on the refresh.
+
+**Measured** (n = 11 interleaved, load 1.30 at the start and 2.46 at the end; hand = 9c6bc181, main
+= a9ae1ff7, J91-2 = 2a2284b6; comp = each tree's mypyc wheel; median [min..max] ms):
+
+| Path | 3.12 hand | 3.12 main | 3.12 J91-2 | comp main / J91-2 | verdict |
+|---|---|---|---|---|---|
+| import | 143.61 [125.4..182.3] | 101.15 | 100.17 | 109.43 / 108.52 | under |
+| hot cold build | 398.70 [393.5..437.6] | 410.73 [396.1..435.5] | 408.95 [401.9..465.2] | 362.60 / 360.79 | **over** (+2.6%) |
+| hot open + query | 4.56 [4.3..5.4] | 5.06 | 5.10 [4.8..5.3] | 4.66 / 5.32 | **over** |
+| hot held query x20 | 5.06 [4.8..5.4] | 5.23 | 5.18 | 3.58 / 3.67 | in |
+| hot full refresh | 14.64 [14.3..15.3] | 15.17 | 15.37 [14.4..16.7] | 14.48 / 14.42 | **over** (+5.0%) |
+| cold build | 84.21 [82.5..85.3] | 83.71 | 83.71 | 44.86 / 45.11 | in |
+| cold query x20 | 35.62 | 19.89 | 20.16 | 12.52 / 12.62 | under |
+| cold compact with keep | 51.03 [48.7..52.0] | 52.23 | 52.09 [51.6..76.6] | 32.51 / 32.71 | **over** (+2.1%) |
+| retention run | 1231.65 | 1197.69 | 1194.82 | 926.63 / 927.24 | under |
+| tier lines x5 | 1406.78 | 767.70 | 771.00 | 698.03 / 696.28 | under |
+| first `memory_save` | 30.90 | 29.19 | 29.07 | 23.05 / 22.80 | under |
+| #204 bar recall p50 | 8.01 | 7.42 | 7.49 | 7.43 / 7.45 | under |
+
+| Path | 3.14 hand | 3.14 main | 3.14 J91-2 | comp main / J91-2 | verdict |
+|---|---|---|---|---|---|
+| import | 120.15 [114.3..201.0] | 94.84 | 91.85 | 103.66 / 100.34 | under |
+| hot cold build | 381.99 [378.1..391.0] | 399.67 [396.7..407.4] | 398.07 [393.2..400.1] | 359.45 / 359.14 | **over** (+4.2%) |
+| hot open + query | 4.80 [4.4..5.0] | 5.09 | 5.01 [4.8..5.2] | 4.52 / 4.89 | **over** (+4.5%) |
+| hot held query x20 | 5.06 [4.7..5.4] | 5.12 | 5.06 | 3.68 / 3.79 | in |
+| hot full refresh | 14.13 [13.4..15.3] | 15.25 | 15.17 [14.8..15.6] | 14.11 / 14.01 | **over** (+7.3%) |
+| cold build | 79.18 [78.0..90.4] | 78.96 | 78.55 | 49.74 / 49.35 | in |
+| cold query x20 | 29.72 | 19.81 | 19.83 | 13.03 / 12.90 | under |
+| cold compact with keep | 48.59 [47.9..50.6] | 50.11 | 49.90 [49.6..50.6] | 34.78 / 34.73 | **over** (+2.7%) |
+| retention run | 1169.35 | 1160.75 | 1154.17 | 929.47 / 929.34 | under |
+| tier lines x5 | 1505.50 | 745.34 | 745.60 | 705.66 / 706.16 | under |
+| first `memory_save` | 30.24 | 28.78 | 28.49 | 23.21 / 22.90 | under |
+| #204 bar recall p50 | 7.55 | 7.24 | 7.24 | 7.49 / 7.54 | under |
+
+The compiled open path (4.66 / 5.32 and 4.52 / 4.89 in this run) is not a regression: at n = 15 (the
+table above) its three trees lie within each other's spread. Node is unchanged (no TypeScript
+changed; n = 11, main / J91-2 dist: 14-source build 217.71 / 218.83, open 4.22 / 4.17, refresh
+14.04 / 14.18, cold build 32.64 / 32.76, compaction 30.31 / 30.49).
+
+**Not closed: the floor.** J91-2 moved `derive` about 1.5 ms (3.14, best of 4 per process: J91-1
+79.8, J91-2 78.1). That is under 0.5% of the hot build, which is still over hand by 2.6% (3.12) and
+4.2% (3.14). Where the rest of `derive`'s gap is (3.14; the generated `derive` edited by hand, one
+change at a time, `/private/tmp/claude-501/j92/{ideal.py,mkexp.py}`):
+
+- every guard and helper of the loops removed: 77.3 to 69.6 ms (the per-field work over
+  `FIELD_BOOST`, an imported array no fact reaches, 2.5 of it);
+- `_js_lifted`'s shape scan: 3.1 ms of `dumpIndex`'s 9.3 over 448 tables, a type scan of every
+  item;
+- `encodeSegments`' guarded compares: 4.4 ms against 1.8 for the same loop on plain ints.
+
+A tight exact-JS `derive` with element facts assumed is 55-58 ms, against hand's 66-68. So the gap is
+element facts (what `tokenizeV2` returns, what `tfs` and `words` hold, what an imported const array
+is), not C helpers. Hand's C helpers do not beat plain Python here:
+
+- `Counter.update` runs `_count_elements` in C ([Lib/collections/__init__.py](https://github.com/python/cpython/blob/main/Lib/collections/__init__.py)).
+  Its loop still does a hash-keyed dict lookup and a generic `PyNumber_Add` per element
+  ([Modules/_collectionsmodule.c](https://github.com/python/cpython/blob/main/Modules/_collectionsmodule.c)).
+  With 25k of 27k tokens distinct, the saving is one interpreter dispatch per repeat, and building
+  the rows pays it back per distinct term (measured above).
+- The adaptive interpreter already specializes the plain loop's attribute and subscript operations
+  per instruction ([PEP 659](https://peps.python.org/pep-0659/)).
+
+The compiled wheel is the build where those operations are C. mypyc compiles operations on `Any`
+values to generic ones; the docs give the reason: "Operations on erased types use generic
+operations that work with arbitrary objects"
+([using type annotations](https://mypyc.readthedocs.io/en/latest/using_type_annotations.html)).
+Typed native-class attribute access is listed as fast
+([performance tips](https://mypyc.readthedocs.io/en/latest/performance_tips_and_tricks.html)).
+mypy does not check the bodies of unannotated functions without `--check-untyped-defs`
+([command line](https://mypy.readthedocs.io/en/stable/command_line.html),
+[annotation-unchecked](https://mypy.readthedocs.io/en/stable/error_code_list.html)).
+
+The full refresh and the open path were not profiled into `derive`: neither rebuilds. Parse (6 ms
+over hand on the build) is `extract_refs` and the YAML read, shared with hand.
+
 ## Concurrency
 
 Measured, not assumed: 12 pipelined saves all land in order; a recall behind a save **sees**
