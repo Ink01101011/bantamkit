@@ -1280,14 +1280,12 @@ fact from an earlier read never applies; an optimistic fact never does), and dro
 | `xs[i] = v` | `type(xs) is list`; `type(i) is int`; `0 <=` | `xs` proven a list; `i` a safe int; an index |
 | `xs.push(x)` as a value | `type(xs) is list` | `xs` proven a list |
 
-**Respelled** (`runtime-ts/src/storage/hotindex.ts`, `derive`): the per-field loop is bounded by
-`flens.length` (the per-field count tuple, as long as FIELD_BOOST) instead of `FIELD_BOOST.length`
-(an imported constant ts2py proves nothing about), so `fi` is counted and `k = fi + 1` a safe int.
-
 **Measured and not taken** (docs/porting.md, *The pure build after J91-1*): element facts of a
 container a function fills itself (`tfs`'s rows, `rows`' Maps) and of what a function returns
-(`tokenizeV2`'s `str`s), whose bound in `derive` is under 1.3 ms of a 14-source build; and a
-`shardHash` without `shardOf`'s memo for `derive`, which moved nothing.
+(`tokenizeV2`'s `str`s), whose bound in `derive` is under 1.3 ms of a 14-source build; a
+`shardHash` without `shardOf`'s memo for `derive`, which moved nothing; and bounding `derive`'s
+per-field loop by `flens.length` (so `fi` is counted), reverted: Node's `cold query x20` measured
+0.5 ms slower after it, three runs (n = 9, 11, 15).
 
 Pinned in `tools/ts2py-bantamkit/tests/j91.rs`: `probe()` and `fuzz(3000)` of
 `tests/fixtures/j91_probe.ts` equal to what Node v26.13.0 printed (`fixtures/j91_probe.node.txt`):
