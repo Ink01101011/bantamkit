@@ -179,6 +179,13 @@ fn facts_answer_like_node() {
     assert!(set_num.contains(&key_test("w")), "{set_num}");
     let miss = function(probe, "map_miss");
     assert!(miss.contains("_js_truthy(name)"), "{miss}");
+    // A Map made from entries holds them (J91-R F1): its `get` may answer the `5` put in, so
+    // `r` (`get ?? []`) is not proven a list and `.length` stays `_js_len`, as in its twin.
+    for name in ["map_made", "map_made_guarded"] {
+        let body = function(probe, name);
+        assert!(body.contains("_show(_js_len(r))"), "{name}\n{body}");
+        assert!(!body.contains("_show(len(r))"), "{name}\n{body}");
+    }
     // The `str` contract: `pyNfkcLower`'s answer is a `str` (its UTF-16 view hoisted, sliced as
     // one); `pyStrip`'s row has no contract.
     let adapter = function(probe, "adapter_fast");
@@ -215,8 +222,8 @@ fn facts_answer_like_node() {
         ],
     );
     std::fs::remove_dir_all(&dir).unwrap();
-    // 78 probe lines; no fuzz case where the fast and the general twin differ.
-    assert!(out.trim().starts_with("78 0:"), "{out}");
+    // 80 probe lines; no fuzz case where the fast and the general twin differ.
+    assert!(out.trim().starts_with("80 0:"), "{out}");
 }
 
 const TWINS: &str = r#"

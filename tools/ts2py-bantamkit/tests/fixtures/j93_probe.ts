@@ -201,6 +201,23 @@ export function mapMiss(xs: any[]): string {
   return `${hit ? 'hit' : 'nohit'}/${miss ? 'miss' : 'nomiss'}/${n}/${name ? 'name' : 'noname'}`;
 }
 
+/**
+ * A Map made from entries holds them, though nothing was `set`: its `get` may answer the `5` put
+ * in, so `?? []` is no list and `.length` is `undefined` (J91-R F1: not read as a Map made empty).
+ */
+export function mapMade(): string {
+  const mm = new Map<string, any>([['a', 5]]);
+  const r = mm.get('a') ?? [];
+  return show(r.length);
+}
+
+/** `mapMade`, its entries laundered through `opaque`. */
+export function mapMadeGuarded(): string {
+  const mm = new Map<string, any>(opaque([['a', 5]]));
+  const r = mm.get('a') ?? [];
+  return show(r.length);
+}
+
 /** A Set filled by `add` of `str`s, and one made from a `g` match: its items are `str`s. */
 export function setFast(text: string, xs: any[]): string {
   const m = table();
@@ -382,6 +399,8 @@ export function probe(): string[] {
   out.push(`mapBoolKey:${mapBoolKey()}`);
   out.push(`mapMiss:${mapMiss(xs)}`);
   out.push(`mapMissEmpty:${mapMiss([])}`);
+  out.push(`mapMade:${mapMade()}`);
+  out.push(`mapMadeGuarded:${mapMadeGuarded()}`);
   out.push(`setNum:${setNum()}`);
   for (const t of TEXTS) {
     out.push(`set:${show(t)}:${setFast(t, xs)}`);

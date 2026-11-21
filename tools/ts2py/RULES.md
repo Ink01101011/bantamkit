@@ -1493,3 +1493,18 @@ pushes `s.slice(runAt, end)` (the one unit `s[runAt]` is, `end - runAt === 1`, b
 without the `undefined` an index may answer), and `derive`'s encoded tables iterate `[key, r]`, not
 `[t, r]` (Python has one `t` per function, and the token loop's `t` is proven a `str`, which those
 keys are not). And `write` reads each family's prints once, not per shard.
+
+Mutations, each red in `cargo test --test j93` (a scratch copy of both crates, one at a time,
+`/private/tmp/claude-501/j91rf/mut/run20.py`, 20 of 20 red): every read a sealed use; a nested
+function's reader never stopping a sealed `return`; a sealed `return` from any function; a sealed
+closure called from anywhere; what `push` / `set` / `add` puts in never met; `Seal::Use` for any
+method; a pushed value's contents kept (not shallow); any item `add`ed to a Set kept; `new
+Set(list)` of any list's items `str`s; a Map's `get` never `undefined`; a `[[rebound]]` name's
+returns taken; a function's typed body's returns alone; the `str` contract for any adapter; the
+`str` adapter calling its argument's own `lower`; any regex's match a list of `str`s; `a ?? b`
+proving `a`'s facts alone; a narrowing past an assignment; `-` before a run not a JSON scan
+candidate; a candidate run not walked. And (J91-R F1) a `new Map(entries)` read as a Map made
+empty (`elem` vacuous, so a sealed Map none of whose entries was `set` answers `undefined`):
+`const mm = new Map([['a', 5]]); const r = mm.get('a') ?? []; r.length` would be `len(r)`, a
+TypeError where Node answers `undefined`; pinned by `mapMade` and its `opaque` twin
+`mapMadeGuarded` (both answer `o:undefined` in Node and Python, and `.length` stays `_js_len`).
