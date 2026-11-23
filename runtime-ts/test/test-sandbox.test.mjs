@@ -84,3 +84,14 @@ test('under the runner (marker set) the guard leaves the environment exactly as 
   const seen = guarded(env);
   for (const [k, v] of Object.entries(env)) assert.equal(seen[k], v, k);
 });
+
+test('this process runs under a scratch HOME inside the sandbox marker (red on a leak, #339)', () => {
+  const marker = process.env.BANTAMKIT_TEST_SANDBOX;
+  assert.ok(marker, 'no sandbox marker: neither the runner nor _sandbox.mjs sandboxed this run');
+  const root = fs.realpathSync(marker);
+  // realpath both sides: macOS tmp is /private/var behind /var.
+  for (const [name, dir] of [['os.homedir()', os.homedir()], ['HOME', process.env.HOME], ['USERPROFILE', process.env.USERPROFILE]]) {
+    const real = fs.realpathSync(dir);
+    assert.ok(real.startsWith(root + path.sep), `${name} ${real} is outside the sandbox ${root}`);
+  }
+});

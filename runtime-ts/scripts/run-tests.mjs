@@ -7,7 +7,7 @@
  * the reporter are all Node's own.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,12 +38,19 @@ if (files.length === 0) {
 const reporter = process.env.CI ? ['--test-reporter=tap'] : [];
 
 /**
- * Every store's hot index (#204) lands in one temp dir for the run, never in the operator's
- * `~/.bantamkit/index/`: `MemoryStore.index()` honours `BANTAMKIT_INDEX_DIR` on both runtimes
- * (`runtime-py/tests/conftest.py` sets it per node). A test that wants the home location
- * deletes it itself.
+ * One scratch root for the whole run, the same shape `test/_sandbox.mjs` builds for a file
+ * run directly: `<root>/home` becomes HOME and USERPROFILE (Windows reads the second), and
+ * `<root>/index` becomes `BANTAMKIT_INDEX_DIR` (#204: `MemoryStore.index()` honours it on
+ * both runtimes; `runtime-py/tests/conftest.py` sets it per node). Without HOME a test that
+ * sets no home of its own wrote the operator's real `~/.bantamkit/usage` (#339: one run added
+ * 90 `<store-id>.jsonl` files). A test that wants its own home still sets it itself. The root
+ * is removed on exit, child failure included.
  */
-const indexDir = mkdtempSync(join(tmpdir(), 'bk-hot-index-'));
+const scratch = mkdtempSync(join(tmpdir(), 'bk-test-sandbox-'));
+const home = join(scratch, 'home');
+const indexDir = join(scratch, 'index');
+mkdirSync(home);
+mkdirSync(indexDir);
 const status =
   spawnSync(process.execPath, ['--test', ...reporter, ...files], {
     stdio: 'inherit',
@@ -54,6 +61,8 @@ const status =
     // a file run directly with `node --test` has no marker and sandboxes itself.
     env: {
       ...process.env,
+      HOME: home,
+      USERPROFILE: home,
       BANTAMKIT_INDEX_DIR: indexDir,
       BANTAMKIT_RETENTION: 'off',
       // #205 Amendment A3: the daily skill audit wakes the same child on its own switch.
@@ -63,8 +72,8 @@ const status =
       BANTAMKIT_SKILL_AUTO: 'off',
       BANTAMKIT_LLM_URL: '',
       BANTAMKIT_LLM_MODEL: '',
-      BANTAMKIT_TEST_SANDBOX: indexDir,
+      BANTAMKIT_TEST_SANDBOX: scratch,
     },
   }).status ?? 1;
-rmSync(indexDir, { recursive: true, force: true });
+rmSync(scratch, { recursive: true, force: true });
 process.exit(status);

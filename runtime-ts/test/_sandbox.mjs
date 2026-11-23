@@ -1,9 +1,10 @@
 /**
  * The per-file sandbox (#204, J69-9 F5). Every `*.test.mjs` imports this FIRST.
  *
- * `npm test` goes through `scripts/run-tests.mjs`, which hands every file one scratch
- * `BANTAMKIT_INDEX_DIR` and `BANTAMKIT_RETENTION=off` and marks the run with
- * `SANDBOX_ENV`. A file run directly — `node --test runtime-ts/test/<file>` — gets none of
+ * `npm test` goes through `scripts/run-tests.mjs`, which builds one scratch root
+ * (`home/` and `index/`, the same shape as below), hands every file HOME and USERPROFILE =
+ * that home, `BANTAMKIT_INDEX_DIR` = that index and `BANTAMKIT_RETENTION=off`, and marks the
+ * run with `SANDBOX_ENV` = the root (#339: the runner once left HOME alone). A file run directly — `node --test runtime-ts/test/<file>` — gets none of
  * that: the operator's HOME, no index override, Retention armed. An in-process store then
  * writes the real `~/.bantamkit/index/` and `cold/`, and a spawned server or SessionStart
  * could start the detached Retention child against real data.
