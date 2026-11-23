@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -7,6 +8,48 @@ import bantamkit
 from bantamkit.client import Message, Response, ToolCall, Usage
 from bantamkit.memory.layers import MEMORY_DIR_ENV
 from bantamkit.storage.hotindex import INDEX_DIR_ENV
+
+#: #339: the operator's home, captured at import -- before any fixture or monkeypatch moves
+#: HOME. In normal use it is the real home; a measurement run points HOME at a fake one and
+#: this is that fake. `HOME` first, then `USERPROFILE`, the order `Path.home()` uses.
+OPERATOR_HOME = Path(
+    os.environ.get("HOME") or os.environ.get("USERPROFILE") or os.path.expanduser("~")
+)
+#: The two directories a test must never add a name to. Read-only: only ever listed.
+GUARDED_UNDER_HOME = (".bantamkit/index", ".bantamkit/usage")
+
+
+def operator_home_names(home: Path = OPERATOR_HOME) -> set[str]:
+    """Every file name under the guarded directories of `home`, relative to `home`."""
+    names: set[str] = set()
+    for rel in GUARDED_UNDER_HOME:
+        base = home / rel
+        if not base.is_dir():
+            continue
+        for dirpath, _dirs, files in os.walk(base):
+            for f in files:
+                names.add(os.path.relpath(os.path.join(dirpath, f), home).replace(os.sep, "/"))
+    return names
+
+
+_NAMES_AT_START = operator_home_names()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """#339: red if the session added a name under the operator's `.bantamkit/index` or `usage`.
+
+    New NAMES, not bytes: a live MCP server appends to existing ledgers while a suite runs.
+    Never writes; it lists. The run exits 1 and names each leaked file.
+    """
+    new = sorted(operator_home_names() - _NAMES_AT_START)
+    if new:
+        listed = "\n  ".join(new[:50])
+        sys.stderr.write(
+            f"\nOPERATOR HOME LEAK (#339): this session added {len(new)} name(s) "
+            f"under {OPERATOR_HOME}:\n  {listed}\n"
+        )
+        session.exitstatus = 1
+
 
 #: The one mark that opts out of `_no_ambient_memory_pin` below. Spelled once, here,
 #: because a marker name duplicated between a fixture and the node it exempts is how the

@@ -39,8 +39,8 @@
  * ctx = { python, repoRoot, runtimeTs, scratch, runPython(scriptPath, payload) }
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -500,10 +500,55 @@ function clip(s, n = 400) {
  * resolves symlinks but PRESERVES the 8.3 name; only the `.native` binding expands it.
  */
 const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-conformance-')));
+
+// #339: THE OPERATOR'S HOME, captured before anything below moves it. A nested run (the
+// `instructions` suite re-runs this file) inherits the outer run's variable, so it still names the
+// operator and not the outer run's scratch. Read-only from here on: the guard at the bottom lists
+// names under it, `ts2py-codec` copies stores out of it, and nothing writes to it.
+const operatorHome = process.env.BANTAMKIT_CONFORMANCE_OPERATOR_HOME || process.env.HOME || process.env.USERPROFILE || homedir();
+process.env.BANTAMKIT_CONFORMANCE_OPERATOR_HOME = operatorHome;
+const GUARDED_UNDER_HOME = ['.bantamkit/index', '.bantamkit/usage'];
+function operatorHomeNames() {
+  const names = new Set();
+  const walk = (dir, rel) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.isDirectory()) walk(join(dir, e.name), `${rel}/${e.name}`);
+      else names.add(`${rel}/${e.name}`);
+    }
+  };
+  for (const rel of GUARDED_UNDER_HOME) walk(join(operatorHome, ...rel.split('/')), rel);
+  return names;
+}
+const operatorNamesAtStart = operatorHomeNames();
+// The cargo toolchain lives under the operator's home (`~/.cargo/bin`, rustup's `~/.rustup`), and
+// the `ts2py` suites find it there. Pin it by absolute path BEFORE HOME moves, or they go red
+// with `spawnSync cargo ENOENT` the moment the scratch home hides it.
+{
+  const cargoBin = join(operatorHome, '.cargo', 'bin', process.platform === 'win32' ? 'cargo.exe' : 'cargo');
+  if (!process.env.TS2PY_CARGO && existsSync(cargoBin)) process.env.TS2PY_CARGO = cargoBin;
+  if (!process.env.CARGO_HOME && existsSync(join(operatorHome, '.cargo'))) process.env.CARGO_HOME = join(operatorHome, '.cargo');
+  if (!process.env.RUSTUP_HOME && existsSync(join(operatorHome, '.rustup'))) process.env.RUSTUP_HOME = join(operatorHome, '.rustup');
+}
+// Every runtime a suite spawns, both sides, inherits a scratch HOME and USERPROFILE (memory save
+// and recall append to `<home>/.bantamkit/usage/`; npm and pip fill their caches there), removed
+// with `scratch` on exit. #339: `hooks.seedStore` spawned the reference with no `env` and wrote
+// 24 usage ledgers into the operator's home per `--all`. A suite that needs a particular home
+// sets its own on the child (hooks, install, storage-* do).
+const scratchHome = join(scratch, 'home');
+mkdirSync(scratchHome, { recursive: true });
+process.env.HOME = scratchHome;
+process.env.USERPROFILE = scratchHome;
 // Every store a suite makes keeps its hot index (#204) in this run's scratch, never in the
 // operator's `~/.bantamkit/index/`: both runtimes honour `BANTAMKIT_INDEX_DIR`, and every
-// reference child inherits `process.env` (`runPython`). A suite that pins it sets its own.
-if (!process.env.BANTAMKIT_INDEX_DIR) process.env.BANTAMKIT_INDEX_DIR = join(scratch, 'hot-index');
+// reference child inherits `process.env` (`runPython`). Forced, not defaulted (#339): a caller's
+// exported value would be the operator's real index. A suite that pins it sets its own.
+process.env.BANTAMKIT_INDEX_DIR = join(scratch, 'hot-index');
 // No suite's SessionStart or server start spawns the detached Retention child (#204, J69-6): it
 // deletes under the HOME and archives `.shiftwork` jobs under the cwd it is given, and a suite
 // may run with the checkout as its cwd. `storage-retention` turns it back on per call.
@@ -607,6 +652,15 @@ try {
 }
 
 for (const n of notes) console.log(`  note: ${n}`);
+
+// #339 GUARD, read-only: the run must not have added a NAME under the operator's index or usage
+// directories. Names, not bytes: a live MCP server appends to ledgers that already exist.
+const leakedNames = [...operatorHomeNames()].filter((n) => !operatorNamesAtStart.has(n)).sort();
+if (leakedNames.length > 0) {
+  console.error(`conformance: OPERATOR HOME LEAK (#339): this run added ${leakedNames.length} name(s) under ${operatorHome}:`);
+  for (const n of leakedNames.slice(0, 50)) console.error(`  ${n}`);
+  process.exit(1);
+}
 
 // The --require-* flags are NON-VACUITY gates, not decoration: a suite that produced no
 // case of the demanded kind fails the flag. Otherwise `--require-byte-identical` would

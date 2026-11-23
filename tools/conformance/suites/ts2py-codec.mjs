@@ -470,7 +470,8 @@ function copyPinned(src, dest) {
 
 /** Class (a): copies of the real stores. Returns [] and a reason when there is nothing to read. */
 function realInputs(bed) {
-  const home = homedir();
+  // The operator's home, not the run's scratch HOME (#339): this class copies the real stores out, read-only.
+  const home = process.env.BANTAMKIT_CONFORMANCE_OPERATOR_HOME || homedir();
   const sources = [];
   for (const [label, root] of [
     ['repo-store', join(repoRoot, '.bantamkit', 'memory')],
