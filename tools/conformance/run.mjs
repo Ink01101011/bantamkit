@@ -502,10 +502,20 @@ function clip(s, n = 400) {
 const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-conformance-')));
 
 // #339: THE OPERATOR'S HOME, captured before anything below moves it. A nested run (the
-// `instructions` suite re-runs this file) inherits the outer run's variable, so it still names the
-// operator and not the outer run's scratch. Read-only from here on: the guard at the bottom lists
-// names under it, `ts2py-codec` copies stores out of it, and nothing writes to it.
-const operatorHome = process.env.BANTAMKIT_CONFORMANCE_OPERATOR_HOME || process.env.HOME || process.env.USERPROFILE || homedir();
+// `instructions` suite re-runs this file) must still name the operator and not the outer run's
+// scratch, so the outer run hands it down in BANTAMKIT_CONFORMANCE_OPERATOR_HOME together with the
+// scratch home it set (BANTAMKIT_CONFORMANCE_SCRATCH_HOME). The handoff is TRUSTED only when this
+// process's own HOME is that exported scratch home: a nested run inherits exactly that HOME. A stale
+// operator variable in an operator's shell (no matching scratch HOME) is ignored and HOME is
+// captured instead, or the guard below would list names under a directory the run never touches and
+// pass blind. Read-only from here on: the guard lists names under it, `ts2py-codec` copies stores
+// out of it, and nothing writes to it.
+const ownHome = process.env.HOME || process.env.USERPROFILE || homedir();
+const handoffTrusted =
+  !!process.env.BANTAMKIT_CONFORMANCE_OPERATOR_HOME &&
+  !!process.env.BANTAMKIT_CONFORMANCE_SCRATCH_HOME &&
+  process.env.BANTAMKIT_CONFORMANCE_SCRATCH_HOME === ownHome;
+const operatorHome = handoffTrusted ? process.env.BANTAMKIT_CONFORMANCE_OPERATOR_HOME : ownHome;
 process.env.BANTAMKIT_CONFORMANCE_OPERATOR_HOME = operatorHome;
 const GUARDED_UNDER_HOME = ['.bantamkit/index', '.bantamkit/usage'];
 function operatorHomeNames() {
@@ -544,6 +554,7 @@ const scratchHome = join(scratch, 'home');
 mkdirSync(scratchHome, { recursive: true });
 process.env.HOME = scratchHome;
 process.env.USERPROFILE = scratchHome;
+process.env.BANTAMKIT_CONFORMANCE_SCRATCH_HOME = scratchHome;
 // Every store a suite makes keeps its hot index (#204) in this run's scratch, never in the
 // operator's `~/.bantamkit/index/`: both runtimes honour `BANTAMKIT_INDEX_DIR`, and every
 // reference child inherits `process.env` (`runPython`). Forced, not defaulted (#339): a caller's

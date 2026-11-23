@@ -73,12 +73,13 @@ const REPO_CLAUDE_MD = join(repoRoot, 'CLAUDE.md');
  * The user-level file is read when it exists, because it is delivered to every session on the
  * machine that runs this gate — row 51 was found there. `BANTAMKIT_INSTRUCTIONS_USER_CLAUDE_MD`
  * names another path, or, set empty, turns the check off. A runner with no such file gets a
- * note, not a failure.
+ * note, not a failure. The operator's home, not the run's scratch HOME (#339): run.mjs hands it
+ * down in `BANTAMKIT_CONFORMANCE_OPERATOR_HOME`.
  */
 const USER_CLAUDE_MD =
   process.env.BANTAMKIT_INSTRUCTIONS_USER_CLAUDE_MD !== undefined
     ? process.env.BANTAMKIT_INSTRUCTIONS_USER_CLAUDE_MD
-    : join(homedir(), '.claude', 'CLAUDE.md');
+    : join(process.env.BANTAMKIT_CONFORMANCE_OPERATOR_HOME || homedir(), '.claude', 'CLAUDE.md');
 
 const SIDES = ['py', 'node'];
 const SESSION_TIMEOUT_MS = 60_000;
@@ -869,6 +870,68 @@ export async function run(ctx) {
     if (!/`queries` to `memory_save`/.test(mq)) resolves.push('skill does not name `memory_save`\'s `queries`');
     else if (!Object.prototype.hasOwnProperty.call(S.tools.memory_save?.inputSchema?.properties ?? {}, 'queries')) resolves.push('parameter:memory_save.queries');
     push(N('a', 'q207', 'memory-queries-skill-names-memory_queries-and-memory_save.queries'), [], resolves);
+  }
+
+  // ============================================================ (e) #339 the leak guard's operator-home handoff
+
+  // `run.mjs` captures the operator's home and watches it for new names (the leak guard). An
+  // exported BANTAMKIT_CONFORMANCE_OPERATOR_HOME must not move that watch unless the run is nested
+  // (its own HOME is the scratch home the outer run exported). The probe copies run.mjs next to one
+  // suite that writes a ledger under a home, and mutes the copy's HOME override so the write lands
+  // in the HOME the run STARTED with, the way J92-R's mutation did. Under the pre-fix logic the
+  // stale variable made the guard watch an empty directory: exit 0 and a leaked file.
+  if (process.platform !== 'win32') {
+    const probeRoot = join(ctx.scratch, 'instructions-guard');
+    const confDir = join(probeRoot, 'tools', 'conformance');
+    mkdirSync(join(confDir, 'suites'), { recursive: true });
+    const src = readFileSync(join(here, 'run.mjs'), 'utf8');
+    const muted = src.replace('process.env.HOME = scratchHome;', '').replace('process.env.USERPROFILE = scratchHome;', '');
+    writeFileSync(join(confDir, 'run.mjs'), muted);
+    writeFileSync(
+      join(confDir, 'suites', 'leakprobe.mjs'),
+      `import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+export const name = 'leakprobe';
+export const summary = 'writes one usage ledger under the home named by LEAK_VAR';
+export async function run() {
+  const dir = join(process.env[process.env.LEAK_VAR], '.bantamkit', 'usage');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'leak-probe.jsonl'), '{}\\n');
+  return { cases: [], notes: [] };
+}
+`,
+    );
+    const mk = (n) => {
+      const d = join(probeRoot, n);
+      mkdirSync(d, { recursive: true });
+      return d;
+    };
+    const probe = (what, env) => {
+      const r = spawnSync(process.execPath, [join(confDir, 'run.mjs'), '--suite', 'leakprobe', '--python', ctx.python], {
+        cwd: probeRoot,
+        env: { PATH: process.env.PATH, ...env },
+        encoding: 'utf8',
+        timeout: 120_000,
+      });
+      push(`e/guard-handoff/${what}`, 'exit 1 with the leak report', `exit ${r.status}${/OPERATOR HOME LEAK/.test(r.stderr ?? '') ? ' with the leak report' : ''}`, 'string');
+    };
+    const started = mk('started-home');
+    probe('leak-into-the-started-home-is-caught', { HOME: started, USERPROFILE: started, LEAK_VAR: 'HOME' });
+    const started2 = mk('started-home-2');
+    probe('stale-exported-operator-home-does-not-blind-the-guard', {
+      HOME: started2,
+      USERPROFILE: started2,
+      LEAK_VAR: 'HOME',
+      BANTAMKIT_CONFORMANCE_OPERATOR_HOME: mk('stale-empty-home'),
+    });
+    const outerScratch = mk('outer-scratch-home');
+    probe('nested-run-honours-the-handed-down-operator-home', {
+      HOME: outerScratch,
+      USERPROFILE: outerScratch,
+      BANTAMKIT_CONFORMANCE_SCRATCH_HOME: outerScratch,
+      BANTAMKIT_CONFORMANCE_OPERATOR_HOME: mk('operator-handed-down'),
+      LEAK_VAR: 'BANTAMKIT_CONFORMANCE_OPERATOR_HOME',
+    });
   }
 
   // ============================================================ (d) CLAUDE.md commands, from a throwaway worktree
