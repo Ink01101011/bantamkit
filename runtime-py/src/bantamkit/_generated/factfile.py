@@ -126,7 +126,7 @@ VALID_OUTCOMES: _JsAny = ["error", "success"]
 def lifecycle_of(meta):
     raw = _js_get(meta, "metadata")
     nested = raw if raw is not None and _js_typeof(raw) == "object" and _js_strict_eq(_js_get_prototype_of(raw), _JS_OBJECT_PROTOTYPE) else {}
-    def nn(v):
+    def nn(v, *_js_extra):
         return None if v is _JS_UNDEFINED else v
     type_ = nn(_js_get(meta, "type")) if _js_get(meta, "type") is not _JS_UNDEFINED else nn(_js_get(nested, "type"))
     outcome = nn(_js_get(meta, "outcome"))
@@ -162,7 +162,7 @@ def _fact_of_parsed(parsed):
     for key in ["name", "description", "type"]:
         if not _js_in("type", meta) and _js_get(alias, "type") is None if key == "type" else not _js_in(key, meta):
             raise FactParseError("formatFact: the frontmatter has no '" + key + "' key, and a fact must carry name, description and type")
-    def one(key):
+    def one(key, *_js_extra):
         return _js_get(meta, key)
     return {"name": one("name"), "description": one("description"), "type": _js_get(alias, "type"), "outcome": _js_get(alias, "outcome"), "status": _js_get(alias, "status"), "created": None if _js_get(meta, "created") is _JS_UNDEFINED else one("created"), "last_recalled": None if _js_get(meta, "last_recalled") is _JS_UNDEFINED else one("last_recalled"), "links": py_list(_js_get(meta, "links")), **_js_spread({"keywords": [*_js_get(meta, "keywords")]} if isinstance(_js_get(meta, "keywords"), list) and _js_every_string(_js_get(meta, "keywords")) else {}), **_js_spread({"extra": extra_of(meta)} if len(extra_of(meta)) > 0 else {}), "body": body}
 
@@ -514,9 +514,9 @@ def _column(front, pos):
 def _scan_block_scalar__typed(front, pos):
     _jsu_front = _js_code_units(front)
     folded = (_jsu_front[pos] if type(pos) is int and 0 <= pos < len(_jsu_front) else _js_str_at(front, pos)) == ">"
-    def bad(why):
+    def bad(why, *_js_extra):
         return FactParseError("while scanning a block scalar, " + _js_str(why) + ": " + _js_str(_line__typed(front, pos)))
-    def digit(c):
+    def digit(c, *_js_extra):
         return c is not _JS_UNDEFINED and _js_ge(c, "0") and _js_le(c, "9")
     i = _js_num(pos + 1)
     chomping = None
@@ -550,7 +550,7 @@ def _scan_block_scalar__typed(front, pos):
         raise _js_throw(bad("expected a comment or a line break, but found " + _js_str(_js_json_stringify(_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)))))
     if i < len(_jsu_front):
         i = _js_num(i + 1)
-    def scan_breaks(indent):
+    def scan_breaks(indent, *_js_extra):
         nonlocal i
         chunks = []
         while _js_lt(_column__typed(front, i), indent) and (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == " ":
@@ -621,9 +621,9 @@ def _scan_block_scalar(front, pos):
     if type(front) is str and _js_is_double(pos):
         return _scan_block_scalar__typed(front, pos)
     folded = _js_get(front, pos) == ">"
-    def bad(why):
+    def bad(why, *_js_extra):
         return FactParseError("while scanning a block scalar, " + _js_str(why) + ": " + _js_str(_line(front, pos)))
-    def digit(c):
+    def digit(c, *_js_extra):
         return c is not _JS_UNDEFINED and _js_ge(c, "0") and _js_le(c, "9")
     i = _js_add(pos, 1)
     chomping = None
@@ -657,7 +657,7 @@ def _scan_block_scalar(front, pos):
         raise _js_throw(bad("expected a comment or a line break, but found " + _js_str(_js_json_stringify(_js_get(front, i)))))
     if _js_lt(i, _js_len(front)):
         i = _js_add(i, 1)
-    def scan_breaks(indent):
+    def scan_breaks(indent, *_js_extra):
         nonlocal i
         chunks = []
         while _js_lt(_column(front, i), indent) and _js_get(front, i) == " ":
@@ -728,11 +728,11 @@ def _scan_flow_sequence__typed(front, pos):
     _jsu_front = _js_code_units(front)
     eol = _js_units_index_of(_jsu_front, "\n", pos)
     end = len(_jsu_front) if eol == -1 else eol
-    def refuse(why):
+    def refuse(why, *_js_extra):
         raise FactParseError("a flow sequence " + _js_str(why) + " is outside this codec's language: " + _js_str(_line__typed(front, pos)))
     items = []
     i = _js_num(pos + 1)
-    def skip_spaces():
+    def skip_spaces(*_js_extra):
         nonlocal i
         while (_jsu_front[i] if type(i) is int and 0 <= i < len(_jsu_front) else _js_str_at(front, i)) == " ":
             i = _js_num(i + 1)
@@ -810,11 +810,11 @@ def _scan_flow_sequence(front, pos):
         return _scan_flow_sequence__typed(front, pos)
     eol = _js_m_indexOf(front, "\n", pos)
     end = _js_len(front) if eol == -1 else eol
-    def refuse(why):
+    def refuse(why, *_js_extra):
         raise FactParseError("a flow sequence " + _js_str(why) + " is outside this codec's language: " + _js_str(_line(front, pos)))
     items = []
     i = _js_add(pos, 1)
-    def skip_spaces():
+    def skip_spaces(*_js_extra):
         nonlocal i
         while _js_get(front, i) == " ":
             i = _js_add(i, 1)
@@ -1145,7 +1145,7 @@ def _scan_block_sequence(front, pos):
 def today_local(now=_JS_UNDEFINED):
     if now is _JS_UNDEFINED:
         now = Date()
-    def pad(n, w=_JS_UNDEFINED):
+    def pad(n, w=_JS_UNDEFINED, *_js_extra):
         if w is _JS_UNDEFINED:
             w = 2
         return _js_m_padStart(_js_str(n), w, "0")

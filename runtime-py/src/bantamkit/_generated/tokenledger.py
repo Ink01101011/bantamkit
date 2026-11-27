@@ -111,7 +111,7 @@ _decode_line__typed = _decode_line
 
 def walk(base):
     found = []
-    def visit(directory, prefix):
+    def visit(directory, prefix, *_js_extra):
         names = _JS_UNDEFINED
         _js_caught3 = None
         try:
@@ -201,7 +201,7 @@ def _read__typed(root, options=_JS_UNDEFINED):
     totals = {"input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0}
     seen_requests = _JsSet()
     lines = 0
-    def omit(subject, site):
+    def omit(subject, site, *_js_extra):
         seen = _js_coalesce_value(_js_m_get(counts, subject), 0)
         if seen == 0:
             _js_m_set(sites, subject, site)
@@ -318,7 +318,7 @@ def read(root, options=_JS_UNDEFINED):
     totals = {"input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 0}
     seen_requests = _JsSet()
     lines = 0
-    def omit(subject, site):
+    def omit(subject, site, *_js_extra):
         seen = _js_coalesce_value(_js_m_get(counts, subject), 0)
         if seen == 0:
             _js_m_set(sites, subject, site)
@@ -417,7 +417,7 @@ def as_dict(ledger):
     totals = {}
     for cls in TOKEN_CLASSES:
         _js_put(totals, cls, _js_get(_js_get(ledger, "totals"), cls))
-    def _js_fn10(s=_JS_UNDEFINED, *_):
+    def _js_fn10(s=_JS_UNDEFINED, *_js_extra):
         row = {"session": _js_get(s, "session"), "cwd": _js_get(s, "cwd"), "first": _js_get(s, "first"), "last": _js_get(s, "last"), "requests": _js_get(s, "requests"), "sidechain_requests": _js_get(s, "sidechain_requests")}
         for cls in TOKEN_CLASSES:
             _js_put(row, cls, _js_get(s, cls))

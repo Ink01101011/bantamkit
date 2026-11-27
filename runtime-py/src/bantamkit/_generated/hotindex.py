@@ -1255,8 +1255,8 @@ def _js_method_HotIndex_write(self, before):
     _js_caught12 = None
     try:
         mkdir_sync(path_dirname(self.path), {"recursive": True})
-        def _js_fn13(*_):
-            def _js_fn14(b=_JS_UNDEFINED, *_):
+        def _js_fn13(*_js_extra):
+            def _js_fn14(b=_JS_UNDEFINED, *_js_extra):
                 return self.writesName(b)
             remove_stale_temps(path_dirname(self.path), _js_fn14)
             for _js_r9 in texts:
@@ -1363,7 +1363,7 @@ def _columns(docs, data):
     types = _js_sort_unique([_js_get(_js_m_get(docs, n), "type") for n in names], cmp_codepoint)
     code = _JsMap(_js_m_map(types, lambda t, i, *_: [t, i]))
     cols = {"name": names, "file": [], "length": [], "type": [], "types": types, "stale": []}
-    def _js_fn23(name=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
+    def _js_fn23(name=_JS_UNDEFINED, i=_JS_UNDEFINED, *_js_extra):
         d = _js_m_get(docs, name)
         l = _js_m_get(_js_get(data, "lens"), name) if raw is None else _js_get(raw, name)
         _js_m_push(_js_get(cols, "file"), "" if _js_get(d, "file") == _js_str(name) + ".md" else _js_get(d, "file"))

@@ -136,7 +136,7 @@ def _py_re_text(value):
 def sorted_names(values):
     if _js_every_string(values):
         return _js_sort_lex([*values], ((lambda a, *_: a, False, True),), lambda a, b, *_: cmp_codepoint(a, b))
-    def lt(x, y):
+    def lt(x, y, *_js_extra):
         return False if py_equal_value(x, y) else py_compare_lt(x, y)
     a = [*values]
     n = len(a)
@@ -224,7 +224,7 @@ def _iso_from_ordinal__typed(ordinal):
             break
         remaining = _js_num(remaining - _js_num(size))
         month = _js_num(month + 1)
-    def pad(n, w):
+    def pad(n, w, *_js_extra):
         return _js_m_padStart(_js_str(n), w, "0")
     return _js_str(pad(year, 4)) + "-" + _js_str(pad(month, 2)) + "-" + _js_str(pad(remaining, 2))
 
@@ -251,7 +251,7 @@ def _iso_from_ordinal(ordinal):
             break
         remaining = _js_num(_js_num(remaining) - _js_num(size))
         month = _js_num(month + 1)
-    def pad(n, w):
+    def pad(n, w, *_js_extra):
         return _js_m_padStart(_js_str(n), w, "0")
     return _js_str(pad(year, 4)) + "-" + _js_str(pad(month, 2)) + "-" + _js_str(pad(remaining, 2))
 
@@ -497,9 +497,9 @@ def _truthy(value):
 def _merge_bodies__typed(base_body, other_body, base_layer, other_layer, base_date, other_date):
     base_blocks = _split_blocks__typed(base_body)
     other_blocks = _split_blocks__typed(other_body)
-    def slots_of(blocks):
+    def slots_of(blocks, *_js_extra):
         slots = _JsMap()
-        def _js_fn2(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_):
+        def _js_fn2(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_js_extra):
             slot = claim_slot(block)
             if slot is not None and not _js_m_has(slots, slot[0]):
                 _js_m_set(slots, slot[0], [index, slot[1]])
@@ -526,7 +526,7 @@ def _merge_bodies__typed(base_body, other_body, base_layer, other_layer, base_da
             superseded.append({"subject": subject, "kept": collapse((base_blocks[base_index] if type(base_index) is int and 0 <= base_index < len(base_blocks) else _js_list_at(base_blocks, base_index))), "keptLayer": base_layer, "keptDate": base_date, "lost": collapse((other_blocks[other_index] if type(other_index) is int and 0 <= other_index < len(other_blocks) else _js_list_at(other_blocks, other_index))), "lostLayer": other_layer, "lostDate": other_date})
     seen = _JsSet()
     out = []
-    def _js_fn3(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_):
+    def _js_fn3(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_js_extra):
         if _js_m_has(drop_base, index):
             return _JS_UNDEFINED
         key = block_key(block)
@@ -537,7 +537,7 @@ def _merge_bodies__typed(base_body, other_body, base_layer, other_layer, base_da
         return _JS_UNDEFINED
     _js_m_forEach(base_blocks, _js_fn3)
     added = 0
-    def _js_fn4(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_):
+    def _js_fn4(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_js_extra):
         nonlocal added
         if _js_m_has(drop_other, index):
             return _JS_UNDEFINED
@@ -562,9 +562,9 @@ def merge_bodies(base_body, other_body, base_layer, other_layer, base_date, othe
         return _merge_bodies__typed(base_body, other_body, base_layer, other_layer, base_date, other_date)
     base_blocks = split_blocks(base_body)
     other_blocks = split_blocks(other_body)
-    def slots_of(blocks):
+    def slots_of(blocks, *_js_extra):
         slots = _JsMap()
-        def _js_fn5(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_):
+        def _js_fn5(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_js_extra):
             slot = claim_slot(block)
             if slot is not None and not _js_m_has(slots, slot[0]):
                 _js_m_set(slots, slot[0], [index, slot[1]])
@@ -591,7 +591,7 @@ def merge_bodies(base_body, other_body, base_layer, other_layer, base_date, othe
             superseded.append({"subject": subject, "kept": collapse((base_blocks[base_index] if type(base_index) is int and 0 <= base_index < len(base_blocks) else _js_list_at(base_blocks, base_index))), "keptLayer": base_layer, "keptDate": base_date, "lost": collapse((other_blocks[other_index] if type(other_index) is int and 0 <= other_index < len(other_blocks) else _js_list_at(other_blocks, other_index))), "lostLayer": other_layer, "lostDate": other_date})
     seen = _JsSet()
     out = []
-    def _js_fn6(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_):
+    def _js_fn6(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_js_extra):
         if _js_m_has(drop_base, index):
             return _JS_UNDEFINED
         key = block_key(block)
@@ -602,7 +602,7 @@ def merge_bodies(base_body, other_body, base_layer, other_layer, base_date, othe
         return _JS_UNDEFINED
     _js_m_forEach(base_blocks, _js_fn6)
     added = 0
-    def _js_fn7(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_):
+    def _js_fn7(block=_JS_UNDEFINED, index=_JS_UNDEFINED, *_js_extra):
         nonlocal added
         if _js_m_has(drop_other, index):
             return _JS_UNDEFINED
@@ -743,7 +743,7 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
             if _js_ge(score, DUPLICATE_JACCARD):
                 similar.append({"projectName": _js_get(here, "name"), "profileName": _js_get(there, "name"), "jaccard": score})
     _js_m_sort(similar, lambda a, b, *_: _js_or(_js_or(_js_num(_js_num(_js_get(b, "jaccard")) - _js_num(_js_get(a, "jaccard"))), lambda: cmp_codepoint(py_text(_js_get(a, "projectName")), py_text(_js_get(b, "projectName")))), lambda: cmp_codepoint(py_text(_js_get(a, "profileName")), py_text(_js_get(b, "profileName")))))
-    def bytes(text):
+    def bytes(text, *_js_extra):
         return buffer_byte_length(text, "utf8")
     index_before = bytes(_js_list_join([project_line(f) for f in _js_array("map", project_facts)], ""))
     index_after = bytes(_js_list_join([project_line(_js_coalesce_value(_js_m_get(planned, py_hash_key(_js_get(f, "name"))), f)) for f in _js_array("map", project_facts)], ""))
@@ -756,7 +756,7 @@ def dream(project, profile, dry_run=_JS_UNDEFINED):
     profile_sizes = _JsMap()
     for fact in profile_facts:
         _js_m_set(profile_sizes, py_hash_key(_js_get(fact, "name")), _file_size(profile_path(_js_get(fact, "name"))))
-    def sum(values):
+    def sum(values, *_js_extra):
         total = 0
         for v in values:
             total = _js_add(total, v)

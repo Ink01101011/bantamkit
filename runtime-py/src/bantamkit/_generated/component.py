@@ -829,7 +829,7 @@ def _js_method_Memory_recallFile(self, file, k=_JS_UNDEFINED, query=_JS_UNDEFINE
     budget = self.k if k is None else _js_max(k, self.k)
     ignored = "" if query is None else "\n" + _js_str(QUERY_IGNORED)
     base = {"budget": budget, "layers": _js_len(self.layers), "reached": 0, "returned": 0, "candidates": 0}
-    def said(text):
+    def said(text, *_js_extra):
         at = _js_m_indexOf(text, "\n")
         reply = _js_add(text, ignored) if at < 0 else _js_add(_js_add(_js_m_slice(text, 0, at), ignored), _js_m_slice(text, at))
         return {"reply": reply, "status": "none", "source": None, "unreadable": 0, "lookup": None, "skipped": [], "headers": [], "via": None, **_js_spread(base)}
@@ -869,7 +869,7 @@ def _js_method_Memory_viaOf(self, picked, context):
         return None
     graph = _js_get(context, "graph")
     found = _JsMap()
-    def weigh(n):
+    def weigh(n, *_js_extra):
         for label, store in _js_rows(self.layers, 2, (0, 1)):
             f = _JS_UNDEFINED
             _js_caught18 = None
@@ -913,7 +913,7 @@ def _js_method_Memory_pooled(self, query, budget, min_ratio, context=_JS_UNDEFIN
     reached = 0
     unreadable = 0
     candidates = 0
-    def readable(e):
+    def readable(e, *_js_extra):
         return _js_instanceof(e, BantamError) or _js_instanceof(e, PyOSError) or _js_instanceof(e, PyUnicodeDecodeError)
     shadow = _JsSet()
     self.offer = None
@@ -962,7 +962,7 @@ def _js_method_Memory_pooled(self, query, budget, min_ratio, context=_JS_UNDEFIN
         if _js_caught21 is not None:
             if not _js_instanceof(_js_caught21, PyOSError):
                 raise _js_caught21
-    def repool(i):
+    def repool(i, *_js_extra):
         _js_caught22 = None
         try:
             store = _js_list_at(stores, i)
@@ -984,11 +984,11 @@ def _js_method_Memory_pooled(self, query, budget, min_ratio, context=_JS_UNDEFIN
     rows = None
     if every_row:
         scorer = QueryScorer(query)
-        def _js_fn24(i=_JS_UNDEFINED, p=_JS_UNDEFINED, *_):
+        def _js_fn24(i=_JS_UNDEFINED, p=_JS_UNDEFINED, *_js_extra):
             return [_js_coalesce_value(_js_m_get(_js_list_at(sides, i), n), None) for n in _js_array("map", _js_get(p, "names"))]
         rows = _js_fn24
     weights = None if context is None else _context_weights(context)
-    def _js_fn25(*_):
+    def _js_fn25(*_js_extra):
         return _js_invoke(ledger, "weights", now)
     hits = pick_hits(stores, pools, q, budget, min_ratio, _js_fn25, repool, True, weights, scorer, rows)
     skipped = []

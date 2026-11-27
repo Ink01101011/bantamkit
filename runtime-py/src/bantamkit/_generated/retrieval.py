@@ -130,13 +130,13 @@ def _tokenize_v2__typed(text):
     out = []
     word_at = -1
     run_at = -1
-    def flush_word(end):
+    def flush_word(end, *_js_extra):
         nonlocal word_at
         if word_at >= 0:
             out.append(_js_units_slice(_jsu_s, word_at, end))
             word_at = -1
         return _JS_UNDEFINED
-    def flush_run(end):
+    def flush_run(end, *_js_extra):
         nonlocal run_at
         if run_at >= 0:
             if _js_num(_js_num(end) - run_at) == 1:
@@ -186,13 +186,13 @@ def tokenize_v2(text):
     out = []
     word_at = -1
     run_at = -1
-    def flush_word(end):
+    def flush_word(end, *_js_extra):
         nonlocal word_at
         if word_at >= 0:
             out.append(_js_units_slice(_jsu_s, word_at, end))
             word_at = -1
         return _JS_UNDEFINED
-    def flush_run(end):
+    def flush_run(end, *_js_extra):
         nonlocal run_at
         if run_at >= 0:
             if _js_num(_js_num(end) - run_at) == 1:
@@ -498,7 +498,7 @@ def _bm25_rows__typed(query, rows):
     lengths = _js_m_map(rows, lambda *_: 0)
     total = 0
     row = 0
-    def hit(k, c):
+    def hit(k, c, *_js_extra):
         _js_m_push(_js_list_at(hits, k), [row, c])
         return _JS_UNDEFINED
     i = 0
@@ -549,7 +549,7 @@ def bm25_rows(query, rows):
     lengths = _js_m_map(rows, lambda *_: 0)
     total = 0
     row = 0
-    def hit(k, c):
+    def hit(k, c, *_js_extra):
         _js_m_push(_js_list_at(hits, k), [row, c])
         return _JS_UNDEFINED
     i = 0

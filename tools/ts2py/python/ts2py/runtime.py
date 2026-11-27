@@ -444,7 +444,7 @@ def _js_index_key(key):
 
 
 def _js_get(obj, key):
-    """`obj[key]` / `obj.key`: a missing key reads as `undefined`, never raises."""
+    """`obj[key]` / `obj.key`: missing keys read as `undefined`; nullish receivers throw."""
     # J90-P: a plain object (`dict`) read by a `str` key, the general path's dict branch for
     # exactly that pair of types, ahead of every other test.
     if type(obj) is dict and type(key) is str:
@@ -491,7 +491,7 @@ def _js_get(obj, key):
             raise _js_method_value(key)
         return _JS_UNDEFINED
     if obj is None or obj is _JS_UNDEFINED:
-        raise TypeError(f"Cannot read properties of {_js_str(obj)} (reading '{_js_str(key)}')")
+        raise _JsTypeError(f"Cannot read properties of {_js_str(obj)} (reading '{_js_str(key)}')")
     if isinstance(obj, _JS_BYTES):
         # J88-2: a Buffer (`bytes`, `bytearray` or a `memoryview` sharing one): `length` and an
         # index in range are the byte; anything else is outside the subset.

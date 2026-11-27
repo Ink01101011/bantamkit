@@ -554,7 +554,7 @@ def check_queries(queries):
         raise MemoryValidationError("queries must be a list of strings")
     if len(queries) > MAX_QUERIES:
         raise MemoryValidationError("queries: at most " + _js_str(MAX_QUERIES) + " per fact, got " + _js_str(len(queries)))
-    def _js_fn16(x=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
+    def _js_fn16(x=_JS_UNDEFINED, i=_JS_UNDEFINED, *_js_extra):
         n = _cps(x)
         if n > MAX_QUERY_CHARS:
             raise MemoryValidationError("queries: each at most " + _js_str(MAX_QUERY_CHARS) + " characters; query " + _js_str(_js_add(i, 1)) + " has " + _js_str(n))
@@ -583,7 +583,7 @@ def _write_entries__typed(p, entries):
         _js_caught18 = _js_catch(_js_error18)
     if _js_caught18 is not None:
         raise _js_throw(_write_failed(_js_caught18, path_dirname(p)))
-    def _js_fn19(*_):
+    def _js_fn19(*_js_extra):
         doc = _js_coalesce(_doc_of__typed(p), lambda: _JsMap([["v", {"t": "int", "v": _js_bigint(SIDECAR_VERSION)}], ["facts", {"t": "dict", "v": _JsMap()}]]))
         facts = _JsMap()
         for name, held in _js_rows(_js_get(_js_dispatch(doc, "get", _js_m_get, "facts"), "v"), 2, (0, 1)):
@@ -633,7 +633,7 @@ def write_entries(p, entries):
         _js_caught22 = _js_catch(_js_error22)
     if _js_caught22 is not None:
         raise _js_throw(_write_failed(_js_caught22, path_dirname(p)))
-    def _js_fn23(*_):
+    def _js_fn23(*_js_extra):
         doc = _js_coalesce(_doc_of(p), lambda: _JsMap([["v", {"t": "int", "v": _js_bigint(SIDECAR_VERSION)}], ["facts", {"t": "dict", "v": _JsMap()}]]))
         facts = _JsMap()
         for name, held in _js_rows(_js_get(_js_dispatch(doc, "get", _js_m_get, "facts"), "v"), 2, (0, 1)):

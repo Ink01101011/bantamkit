@@ -425,7 +425,7 @@ class UsageLedger(_JsObject):
 
 
 def _js_method_UsageLedger_foldInto(self, seg, now):
-    def _js_fn3(pairs=_JS_UNDEFINED, *_):
+    def _js_fn3(pairs=_JS_UNDEFINED, *_js_extra):
         return reduce_usage(pairs, now)
     _js_invoke(seg, "foldLines", None, _js_fn3)
     return _JS_UNDEFINED

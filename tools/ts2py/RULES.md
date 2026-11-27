@@ -1508,3 +1508,23 @@ empty (`elem` vacuous, so a sealed Map none of whose entries was `set` answers `
 `const mm = new Map([['a', 5]]); const r = mm.get('a') ?? []; r.length` would be `len(r)`, a
 TypeError where Node answers `undefined`; pinned by `mapMade` and its `opaque` twin
 `mapMadeGuarded` (both answer `o:undefined` in Node and Python, and `.length` stays `_js_len`).
+
+## Nullish reads and extra arrow arguments (#345)
+
+`_js_get` raises `_JsTypeError` for `null` and `undefined` receivers, retaining the JS error
+message. This makes the caught value an instance of the compiled `TypeError` and `Error`
+classes, with their `name` and `message` properties. Other unsupported property reads keep
+their existing refusal errors.
+
+Every lowered nested arrow accepts surplus positional arguments, including an arrow bound
+to a local `const`. Python evaluates all call arguments before the function runs, preserving
+the side effects of arguments that JS ignores. The rest binding uses the reserved `_js`
+prefix so a source parameter named `_` cannot collide. The existing `loose` distinction for
+omitted parameters is unchanged.
+
+`tests/try_semantics.rs` compiles `fixtures/try_semantics.ts` and compares its answers directly
+with Node. It covers 35 static/computed reads (nullish receivers and ordinary controls), plus
+128 seeded rounds of zero-, one-, and two-parameter arrows, defaults, aliases, loose arrows,
+the `_` parameter, and extra arguments with side effects. Removing either fix independently
+makes its corresponding test fail. Regenerated modules differ only in these nested-arrow
+signatures and the runtime's nullish-read exception class; the TypeScript sources are unchanged.

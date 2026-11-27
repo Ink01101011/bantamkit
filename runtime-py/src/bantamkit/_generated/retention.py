@@ -301,7 +301,7 @@ _prune_ledgers__typed = _prune_ledgers
 
 def hook_log_reducer(rows):
     days = _JsMap()
-    def bump(c, k, n):
+    def bump(c, k, n, *_js_extra):
         _js_m_set(c, k, _js_add(_js_coalesce_value(_js_m_get(c, k), 0), n))
         return _JS_UNDEFINED
     for row in rows:
@@ -326,7 +326,7 @@ def hook_log_reducer(rows):
         if isinstance(tool, str):
             key = key + "/" + tool
         bump(c, key, 1)
-    def _js_fn9(day=_JS_UNDEFINED, *_):
+    def _js_fn9(day=_JS_UNDEFINED, *_js_extra):
         c = _js_m_get(days, day)
         counts = {}
         for k in _js_m_sort([*_js_m_keys(c)], cmp_codepoint):
@@ -427,7 +427,7 @@ def _old_touch(p, cutoff):
 
 
 def _fold_usage(seg, cutoff):
-    def _js_fn15(pairs=_JS_UNDEFINED, *_):
+    def _js_fn15(pairs=_JS_UNDEFINED, *_js_extra):
         return reduce_usage(pairs, cutoff)
     _js_invoke(seg, "foldLines", cutoff, _js_fn15)
     return _JS_UNDEFINED
@@ -728,7 +728,7 @@ def _archive_jobs(root, now_ns, report):
     if _js_caught38 is not None:
         return added
     arch_dir = path_join(sw, "archive")
-    def _js_fn39(b=_JS_UNDEFINED, *_):
+    def _js_fn39(b=_JS_UNDEFINED, *_js_extra):
         return (b.endswith(".json.gz") if type(b) is str else _js_m_endsWith(b, ".json.gz"))
     for n in remove_stale_temps(arch_dir, _js_fn39):
         _js_m_push(_js_get(report, "deleted"), path_join(arch_dir, n))
@@ -959,10 +959,10 @@ _is_dir__typed = _is_dir
 
 def _keep_under(dir, sub):
     if sub is None:
-        def _js_fn57(d=_JS_UNDEFINED, *_):
+        def _js_fn57(d=_JS_UNDEFINED, *_js_extra):
             return _is_file(path_join(dir, _js_get(d, "file")))
         return _js_fn57
-    def _js_fn58(d=_JS_UNDEFINED, *_):
+    def _js_fn58(d=_JS_UNDEFINED, *_js_extra):
         return _is_file(path_join(dir, sub, _js_get(d, "file")))
     return _js_fn58
 
@@ -1031,7 +1031,7 @@ def _run_retention__typed(home, roots, now):
     now_ms = parse_now(now)
     now_ns = _js_mul(_js_bigint(now_ms), _JsBigInt(1000000))
     state_dir = path_dirname(_state_path__typed(home))
-    def _js_fn61(b=_JS_UNDEFINED, *_):
+    def _js_fn61(b=_JS_UNDEFINED, *_js_extra):
         return b == STATE_NAME
     for n in remove_stale_temps(state_dir, _js_fn61):
         _js_m_push(_js_get(report, "deleted"), path_join(state_dir, n))
@@ -1061,7 +1061,7 @@ def run_retention(home, roots, now):
     now_ms = parse_now(now)
     now_ns = _js_mul(_js_bigint(now_ms), _JsBigInt(1000000))
     state_dir = path_dirname(state_path(home))
-    def _js_fn63(b=_JS_UNDEFINED, *_):
+    def _js_fn63(b=_JS_UNDEFINED, *_js_extra):
         return b == STATE_NAME
     for n in remove_stale_temps(state_dir, _js_fn63):
         _js_m_push(_js_get(report, "deleted"), path_join(state_dir, n))
@@ -1242,7 +1242,7 @@ def _child_sweep__typed(argv, now=_JS_UNDEFINED):
     stamp = _js_coalesce(now, lambda: now_stamp())
     _js_caught75 = None
     try:
-        def _js_fn76(held=_JS_UNDEFINED, *_):
+        def _js_fn76(held=_JS_UNDEFINED, *_js_extra):
             if not _js_truthy(held) or not due(home, stamp):
                 return False
             _write_state(home, {"ran_at": stamp})
@@ -1281,7 +1281,7 @@ def child_sweep(argv, now=_JS_UNDEFINED):
     stamp = _js_coalesce(now, lambda: now_stamp())
     _js_caught78 = None
     try:
-        def _js_fn79(held=_JS_UNDEFINED, *_):
+        def _js_fn79(held=_JS_UNDEFINED, *_js_extra):
             if not _js_truthy(held) or not due(home, stamp):
                 return False
             _write_state(home, {"ran_at": stamp})

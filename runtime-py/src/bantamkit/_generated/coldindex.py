@@ -408,7 +408,7 @@ def _js_method_ColdIndex_query(self, terms):
 
 
 def _js_method_ColdIndex_addDocs(self, docs):
-    def _js_fn6(*_):
+    def _js_fn6(*_js_extra):
         self.sweepTemps()
         manifest = self.manifest()
         id_ = _next_id(manifest)
@@ -420,7 +420,7 @@ def _js_method_ColdIndex_addDocs(self, docs):
 def _js_method_ColdIndex_compact(self, keep=_JS_UNDEFINED):
     if keep is _JS_UNDEFINED:
         keep = None
-    def _js_fn7(*_):
+    def _js_fn7(*_js_extra):
         self.sweepTemps()
         manifest = self.manifest()
         old = [_js_get(s, "id") for s in _js_array("map", _js_get(manifest, "segments"))]

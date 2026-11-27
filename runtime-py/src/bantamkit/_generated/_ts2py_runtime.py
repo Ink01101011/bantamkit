@@ -423,7 +423,7 @@ def _js_get(obj, key):
             raise _js_method_value(key)
         return _JS_UNDEFINED
     if obj is None or obj is _JS_UNDEFINED:
-        raise TypeError(f"Cannot read properties of {_js_str(obj)} (reading '{_js_str(key)}')")
+        raise _JsTypeError(f"Cannot read properties of {_js_str(obj)} (reading '{_js_str(key)}')")
     if isinstance(obj, _JS_BYTES):
         if key == "length":
             return len(obj)

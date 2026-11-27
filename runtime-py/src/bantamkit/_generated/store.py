@@ -338,7 +338,7 @@ def all_names(pool):
 
 def pool_without(pool, drop):
     keep = []
-    def _js_fn2(name=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
+    def _js_fn2(name=_JS_UNDEFINED, i=_JS_UNDEFINED, *_js_extra):
         if not _js_m_has(drop, name):
             keep.append(i)
         return _JS_UNDEFINED
@@ -347,7 +347,7 @@ def pool_without(pool, drop):
         return pool
     new_id = _JsMap(_js_m_map(keep, lambda old, i, *_: [old, i]))
     total = _js_get(pool, "total")
-    def _js_fn3(name=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
+    def _js_fn3(name=_JS_UNDEFINED, i=_JS_UNDEFINED, *_js_extra):
         nonlocal total
         if _js_m_has(drop, name):
             total = _js_num(_js_num(total) - _js_num(_js_get(_js_get(pool, "lengths"), i)))
@@ -487,13 +487,13 @@ def _pool_of__typed(facts, q, every_row=_JS_UNDEFINED):
     type_names = _js_sort_unique([_js_get(r, "type") for r in held], cmp_codepoint)
     code = _JsMap(_js_m_map(type_names, lambda t, i, *_: [t, i]))
     segs = _JsMap([[t, []] for t in q])
-    def _js_fn5(r=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
+    def _js_fn5(r=_JS_UNDEFINED, i=_JS_UNDEFINED, *_js_extra):
         for t, w in _js_rows(_js_get(r, "mine"), 2, (0, 1)):
             _js_m_push((segs._entries.get(t, _JS_UNDEFINED) if type(segs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(segs, t)), i, 1, w)
         return _JS_UNDEFINED
     _js_m_forEach(held, _js_fn5)
     stale_ids = []
-    def _js_fn6(r=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
+    def _js_fn6(r=_JS_UNDEFINED, i=_JS_UNDEFINED, *_js_extra):
         if _js_truthy(_js_get(r, "stale")):
             stale_ids.append(i)
         return _JS_UNDEFINED
@@ -527,13 +527,13 @@ def pool_of(facts, q, every_row=_JS_UNDEFINED):
     type_names = _js_sort_unique([_js_get(r, "type") for r in held], cmp_codepoint)
     code = _JsMap(_js_m_map(type_names, lambda t, i, *_: [t, i]))
     segs = _JsMap([[t, []] for t in _js_array("map", q)])
-    def _js_fn7(r=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
+    def _js_fn7(r=_JS_UNDEFINED, i=_JS_UNDEFINED, *_js_extra):
         for t, w in _js_rows(_js_get(r, "mine"), 2, (0, 1)):
             _js_m_push((segs._entries.get(t, _JS_UNDEFINED) if type(segs) is _JsMap and (type(t) is str or type(t) is int and -9007199254740992 <= t <= 9007199254740992) else _js_m_get(segs, t)), i, 1, w)
         return _JS_UNDEFINED
     _js_m_forEach(held, _js_fn7)
     stale_ids = []
-    def _js_fn8(r=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
+    def _js_fn8(r=_JS_UNDEFINED, i=_JS_UNDEFINED, *_js_extra):
         if _js_truthy(_js_get(r, "stale")):
             stale_ids.append(i)
         return _JS_UNDEFINED
@@ -549,12 +549,12 @@ def pooled_ranking(pools, q, ratio, usage, context=_JS_UNDEFINED, scorer=_JS_UND
     if rows is _JS_UNDEFINED:
         rows = None
     live = []
-    def _js_fn9(p=_JS_UNDEFINED, i=_JS_UNDEFINED, *_):
+    def _js_fn9(p=_JS_UNDEFINED, i=_JS_UNDEFINED, *_js_extra):
         if p is not None:
             live.append([i, p])
         return _JS_UNDEFINED
     _js_m_forEach(pools, _js_fn9)
-    def any_hit():
+    def any_hit(*_js_extra):
         return _js_m_some(live, lambda _js_arg10, *_: (lambda _, p: any(_js_gt(_js_coalesce_value(_js_opt_get(_js_m_get(_js_get(p, "segs"), t), "length"), 0), 0) for t in _js_array("some", q)))(*_js_destructure(_js_arg10, 2)))
     if not _js_truthy(_js_get(scorer, "dense")) and not _js_truthy(any_hit()):
         return
@@ -631,7 +631,7 @@ def _pick_hits__typed(stores, pools, q, k, ratio, usage, repool, dedupe=_JS_UNDE
     if rows is _JS_UNDEFINED:
         rows = None
     memo = None
-    def weights():
+    def weights(*_js_extra):
         nonlocal memo
         if memo is None:
             memo = usage()
@@ -672,7 +672,7 @@ def pick_hits(stores, pools, q, k, ratio, usage, repool, dedupe=_JS_UNDEFINED, c
     if rows is _JS_UNDEFINED:
         rows = None
     memo = None
-    def weights():
+    def weights(*_js_extra):
         nonlocal memo
         if memo is None:
             memo = usage()
@@ -820,7 +820,7 @@ def py_compare_lt(a, b):
 def _sort_scored__typed(scored):
     if all(isinstance(_js_get(s, "name"), str) for s in scored):
         return _js_sort_lex([*scored], ((lambda a, *_: _js_get(a, "score"), True, False), (lambda a, *_: _js_get(a, "name"), False, True),), lambda a, b, *_: _js_or(_js_num(_js_num(_js_get(b, "score")) - _js_num(_js_get(a, "score"))), lambda: cmp_codepoint(_js_get(a, "name"), _js_get(b, "name"))))
-    def lt(x, y):
+    def lt(x, y, *_js_extra):
         return _js_gt(_js_get(x, "score"), _js_get(y, "score")) if not _js_strict_eq(_js_get(x, "score"), _js_get(y, "score")) else False if py_equal_value(_js_get(x, "name"), _js_get(y, "name")) else py_compare_lt(_js_get(x, "name"), _js_get(y, "name"))
     a = [*scored]
     n = len(a)
@@ -863,7 +863,7 @@ def sort_scored(scored):
         return _sort_scored__typed(scored)
     if all(isinstance(_js_get(s, "name"), str) for s in _js_array("every", scored)):
         return _js_sort_lex([*scored], ((lambda a, *_: _js_get(a, "score"), True, False), (lambda a, *_: _js_get(a, "name"), False, True),), lambda a, b, *_: _js_or(_js_num(_js_num(_js_get(b, "score")) - _js_num(_js_get(a, "score"))), lambda: cmp_codepoint(_js_get(a, "name"), _js_get(b, "name"))))
-    def lt(x, y):
+    def lt(x, y, *_js_extra):
         return _js_gt(_js_get(x, "score"), _js_get(y, "score")) if not _js_strict_eq(_js_get(x, "score"), _js_get(y, "score")) else False if py_equal_value(_js_get(x, "name"), _js_get(y, "name")) else py_compare_lt(_js_get(x, "name"), _js_get(y, "name"))
     a = [*scored]
     n = len(a)
@@ -1428,7 +1428,7 @@ def _js_method_MemoryStore___init__(self, root, options=_JS_UNDEFINED, *_):
     self.root = py_join(root)
     self.indexBudget = _js_coalesce_value(_js_get(options, "indexBudget"), DEFAULT_INDEX_BUDGET)
     self.k = _js_coalesce_value(_js_get(options, "k"), 3)
-    def _js_fn12(*_):
+    def _js_fn12(*_js_extra):
         return today_local()
     self.today = _js_coalesce(_js_get(options, "today"), lambda: _js_fn12)
     self.now = _js_coalesce_value(_js_get(options, "now"), utc_now)
@@ -1545,14 +1545,14 @@ def _js_method_MemoryStore_recall(self, query, k=_JS_UNDEFINED, stamp=_JS_UNDEFI
     limit = _js_coalesce(k, lambda: self.k)
     q = query_terms(query)
     ledger = self.usageLedger()
-    def facts_pool():
+    def facts_pool(*_js_extra):
         got = self.candidates(skipped)
         if outcome is not None:
             got = [f for f in _js_array("filter", got) if _js_strict_eq(_js_get(f, "outcome"), outcome)]
         return pool_of(got, q)
-    def _js_fn17(*_):
+    def _js_fn17(*_js_extra):
         return _js_invoke(ledger, "weights", self.now())
-    def _js_fn18(*_):
+    def _js_fn18(*_js_extra):
         return facts_pool()
     hits = _js_m_map(pick_hits([self], [self.pool(q, skipped) if outcome is None else facts_pool()], q, limit, min_ratio, _js_fn17, _js_fn18), lambda _js_arg19, *_: (lambda _, fact: fact)(*_js_destructure(_js_arg19, 2)))
     if _js_truthy(stamp):
@@ -1591,7 +1591,7 @@ def _js_method_MemoryStore_candidatesDone(self, older_than_days=_JS_UNDEFINED, t
         older_than_days = None
     today_s = _js_or(today, lambda: self.today())
     out = []
-    def ordinal(iso):
+    def ordinal(iso, *_js_extra):
         t = parse_ts(_js_str(iso) + "T00:00:00Z")
         return None if _js_number_is_nan(t) else _js_div(t, 86400000)
     sorted_ = _js_m_sort([*self.facts()], lambda a, b, *_: cmp_codepoint(py_text(_js_get(a, "name")), py_text(_js_get(b, "name"))))
@@ -1644,24 +1644,24 @@ def _js_method_MemoryStore_compact(self, reserve=_JS_UNDEFINED):
 
 def _js_method_MemoryStore_archived(self):
     archive = py_join(self.root, "archive")
-    def _js_fn29(name=_JS_UNDEFINED, *_):
+    def _js_fn29(name=_JS_UNDEFINED, *_js_extra):
         suffix = py_suffix(name)
         return name if suffix == "" else _js_m_slice(name, 0, _js_num(_js_num(_js_len(name)) - _js_num(_js_len(suffix))))
     return _js_m_sort(_js_m_map(self.listing(archive, _ARCHIVE_UNREADABLE), _js_fn29), cmp_codepoint)
 
 
 def _js_method_MemoryStore_internals(self):
-    def _js_fn32(*_):
+    def _js_fn32(*_js_extra):
         return self.facts()
-    def _js_fn33(name=_JS_UNDEFINED, *_):
+    def _js_fn33(name=_JS_UNDEFINED, *_js_extra):
         return self.factPath(name)
-    def _js_fn34(fact=_JS_UNDEFINED, *_):
+    def _js_fn34(fact=_JS_UNDEFINED, *_js_extra):
         return self.indexLine(fact)
-    def _js_fn35(fact=_JS_UNDEFINED, *_):
+    def _js_fn35(fact=_JS_UNDEFINED, *_js_extra):
         return self.writeFact(fact)
-    def _js_fn36(*_):
+    def _js_fn36(*_js_extra):
         return self.rebuildIndex()
-    def _js_fn37(*_):
+    def _js_fn37(*_js_extra):
         return self.afterWrite()
     return {"facts": _js_fn32, "factPath": _js_fn33, "indexLine": _js_fn34, "writeFact": _js_fn35, "rebuildIndex": _js_fn36, "afterWrite": _js_fn37}
 
@@ -1669,12 +1669,12 @@ def _js_method_MemoryStore_internals(self):
 def _js_method_MemoryStore_byEviction(self, facts, used=_JS_UNDEFINED):
     if used is _JS_UNDEFINED:
         used = _JsMap()
-    def rank(fact):
+    def rank(fact, *_js_extra):
         return 1 if any(py_equal_value(_js_get(fact, "type"), durable) for durable in DURABLE_TYPES) else 0
-    def key(fact):
+    def key(fact, *_js_extra):
         last = _js_m_get(used, _js_get(fact, "name")) if isinstance(_js_get(fact, "name"), str) else _JS_UNDEFINED
         return [last if _js_truthy(last) else _js_get(fact, "last_recalled") if _js_truthy(py_truthy(_js_get(fact, "last_recalled"))) else _js_get(fact, "created") if _js_truthy(py_truthy(_js_get(fact, "created"))) else "", _js_get(fact, "name")]
-    def _js_fn38(a=_JS_UNDEFINED, b=_JS_UNDEFINED, *_):
+    def _js_fn38(a=_JS_UNDEFINED, b=_JS_UNDEFINED, *_js_extra):
         left_rank = rank(a)
         right_rank = rank(b)
         if not _js_strict_eq(left_rank, right_rank):
@@ -1693,10 +1693,10 @@ def _js_method_MemoryStore_byEviction(self, facts, used=_JS_UNDEFINED):
 
 
 def _js_method_MemoryStore_readFact(self, path, findings=_JS_UNDEFINED):
-    def timestamp_text(value):
+    def timestamp_text(value, *_js_extra):
         return _js_get(value, "text") if _js_instanceof(value, PyScalar) and (_js_get(_js_get(value, "ord"), "kind") == "date" or _js_get(_js_get(value, "ord"), "kind") == "datetime") else value
     file = path_basename(path)
-    def malformed(reason):
+    def malformed(reason, *_js_extra):
         return MemoryValidationError("malformed fact file " + _js_str(file) + ": " + _js_str(reason))
     text = _JS_UNDEFINED
     _js_caught42 = None

@@ -140,7 +140,7 @@ One line per construct: TypeScript, its Python lowering, and the JS semantic tha
 | `const x = e` / `let x = e` / `let x;` | `x = e` / `x = _JS_UNDEFINED` | uninitialised `let` reads as `undefined` |
 | `const [a, , b] = e` (J86) | `a, _, b = _js_destructure(e, 3)` | through the iterator: a string gives code points, a short array `undefined`, `null` a TypeError |
 | `const { a, b: c } = e` (J86) | `a = _js_get(e, "a")` ... (`e` evaluated once) | a missing key is `undefined`; `null` / `undefined` a TypeError |
-| `const f = (...) => ...` inside a function (J86) | a nested `def f(...)`, with `nonlocal` for every enclosing local it assigns | the closure shares the enclosing bindings, as the arrow does; refused inside a loop (JS binds per iteration) |
+| `const f = (...) => ...` inside a function (J86) | a nested `def f(..., *_js_extra)`, with `nonlocal` for every enclosing local it assigns | the closure shares the enclosing bindings, as the arrow does; extra arguments are evaluated then ignored; refused inside a loop (JS binds per iteration) |
 | `x = e` (statement) | `x = e` | `x` must be a local (a module-level binding is a const or an import) |
 | `a = b = e` (J86) | `a = b = e` | one value, every target bound to it |
 | `x += e`, `x -= e`, `x *= e` (J86; `x` a local or `this.x`) | `x = <x + e>` as the binary operator lowers | `x` read before `e` is evaluated |

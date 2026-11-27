@@ -7951,8 +7951,8 @@ impl<'s> Lowerer<'s> {
         self.nested_def_with(name, a, indent, out, false);
     }
 
-    /// `loose` (J88-2, an arrow used as a value): every parameter defaults to `undefined` and
-    /// extra arguments are swallowed, as a JS function called with fewer or more does.
+    /// `loose` (J88-2, an arrow used as a value): every parameter defaults to `undefined`.
+    /// All arrows swallow extra arguments, including those bound to a local `const`.
     fn nested_def_with(
         &mut self,
         name: &str,
@@ -8011,14 +8011,13 @@ impl<'s> Lowerer<'s> {
         let (_, nonlocals) = self.defs.pop().expect("pushed above");
         self.rets.pop();
         self.pop_scope();
-        let mut signature = join_params(&names);
-        if loose {
-            signature = if signature.is_empty() {
-                "*_".to_string()
-            } else {
-                format!("{signature}, *_")
-            };
-        }
+        let params = join_params(&names);
+        // Use the reserved prefix so a source parameter named `_` cannot collide.
+        let signature = if params.is_empty() {
+            "*_js_extra".to_string()
+        } else {
+            format!("{params}, *_js_extra")
+        };
         out.push(format!("{}def {name}({signature}):", pad(indent)));
         if !nonlocals.is_empty() {
             let names: Vec<String> = nonlocals.iter().map(|n| py_name(n, false, false)).collect();

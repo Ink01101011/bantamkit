@@ -457,7 +457,7 @@ def _js_method_LogSegment_append(self, obj):
     _js_caught15 = None
     try:
         mkdir_sync(path_dirname(self.path), {"recursive": True})
-        def _js_fn16(held=_JS_UNDEFINED, *_):
+        def _js_fn16(held=_JS_UNDEFINED, *_js_extra):
             nonlocal data
             m = None if _js_truthy(held) else _mark(self.path)
             try:
@@ -492,21 +492,21 @@ def _js_method_LogSegment_append(self, obj):
 
 
 def _js_method_LogSegment_fold(self, older_than, reducer):
-    def _js_fn19(old=_JS_UNDEFINED, *_):
+    def _js_fn19(old=_JS_UNDEFINED, *_js_extra):
         return buffer_concat(_js_m_map(reducer(_js_m_map(old, lambda _js_arg20, *_: (lambda row: row)(*_js_destructure(_js_arg20, 1)))), lambda _js_a0=_JS_UNDEFINED, *_: dumps_line(_js_a0)))
     self.foldWith(older_than, _js_fn19)
     return _JS_UNDEFINED
 
 
 def _js_method_LogSegment_foldLines(self, older_than, reducer):
-    def _js_fn21(old=_JS_UNDEFINED, *_):
+    def _js_fn21(old=_JS_UNDEFINED, *_js_extra):
         return buffer_from(_js_list_join([_js_str(l) + "\n" for l in _js_array("map", reducer(old))], ""), "utf8")
     self.foldWith(older_than, _js_fn21)
     return _JS_UNDEFINED
 
 
 def _js_method_LogSegment_rewrite(self, build):
-    def _js_fn22(held=_JS_UNDEFINED, *_):
+    def _js_fn22(held=_JS_UNDEFINED, *_js_extra):
         return _js_and(held, lambda: rewrite_held(self.path, build, _js_coalesce_value(_js_get(self.lockOptions, "staleMs"), LOCK_STALE_MS), _js_coalesce_value(_js_get(self.lockOptions, "pollMs"), LOCK_POLL_MS)))
     return exclusive(self.path, _js_fn22, self.lockOptions)
 
@@ -516,7 +516,7 @@ def _js_method_LogSegment_foldWith(self, older_than, build):
         return _JS_UNDEFINED
     _js_caught23 = None
     try:
-        def _js_fn24(data=_JS_UNDEFINED, *_):
+        def _js_fn24(data=_JS_UNDEFINED, *_js_extra):
             old = []
             kept = []
             for line in _split(data):
@@ -546,7 +546,7 @@ def _js_method_LogSegment_rotate(self, max_bytes=_JS_UNDEFINED):
         return False
     _js_caught25 = None
     try:
-        def _js_fn26(data=_JS_UNDEFINED, *_):
+        def _js_fn26(data=_JS_UNDEFINED, *_js_extra):
             if _js_le(_js_len(data), max_bytes) or _js_strict_eq(_js_len(data), 0):
                 return None
             target = _js_str(self.path) + "." + _js_str(_js_add(_js_len(self.segments()), 1)) + ".gz"
