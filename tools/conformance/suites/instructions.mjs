@@ -880,7 +880,7 @@ export async function run(ctx) {
   // suite that writes a ledger under a home, and mutes the copy's HOME override so the write lands
   // in the HOME the run STARTED with, the way J92-R's mutation did. Under the pre-fix logic the
   // stale variable made the guard watch an empty directory: exit 0 and a leaked file.
-  if (process.platform !== 'win32') {
+  {
     const probeRoot = join(ctx.scratch, 'instructions-guard');
     const confDir = join(probeRoot, 'tools', 'conformance');
     mkdirSync(join(confDir, 'suites'), { recursive: true });
@@ -909,7 +909,7 @@ export async function run() {
     const probe = (what, env) => {
       const r = spawnSync(process.execPath, [join(confDir, 'run.mjs'), '--suite', 'leakprobe', '--python', ctx.python], {
         cwd: probeRoot,
-        env: { PATH: process.env.PATH, ...env },
+        env: { ...process.env, ...env },
         encoding: 'utf8',
         timeout: 120_000,
       });
@@ -917,6 +917,13 @@ export async function run() {
     };
     const started = mk('started-home');
     probe('leak-into-the-started-home-is-caught', { HOME: started, USERPROFILE: started, LEAK_VAR: 'HOME' });
+    const nativeHome = mk('native-home');
+    const otherHome = mk('other-home');
+    probe('native-home-precedence', {
+      HOME: process.platform === 'win32' ? otherHome : nativeHome,
+      USERPROFILE: process.platform === 'win32' ? nativeHome : otherHome,
+      LEAK_VAR: process.platform === 'win32' ? 'USERPROFILE' : 'HOME',
+    });
     const started2 = mk('started-home-2');
     probe('stale-exported-operator-home-does-not-blind-the-guard', {
       HOME: started2,

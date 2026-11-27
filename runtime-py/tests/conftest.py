@@ -9,12 +9,10 @@ from bantamkit.client import Message, Response, ToolCall, Usage
 from bantamkit.memory.layers import MEMORY_DIR_ENV
 from bantamkit.storage.hotindex import INDEX_DIR_ENV
 
-#: #339: the operator's home, captured at import -- before any fixture or monkeypatch moves
-#: HOME. In normal use it is the real home; a measurement run points HOME at a fake one and
-#: this is that fake. `HOME` first, then `USERPROFILE`, the order `Path.home()` uses.
-OPERATOR_HOME = Path(
-    os.environ.get("HOME") or os.environ.get("USERPROFILE") or os.path.expanduser("~")
-)
+#: #339: the operator's native home, captured at import -- before any fixture or monkeypatch
+#: moves it. Match the runtime's lookup: HOME on POSIX, USERPROFILE on Windows. A measurement
+#: run points both variables at a fake home, which is captured instead of the real one.
+OPERATOR_HOME = Path.home()
 #: The two directories a test must never add a name to. Read-only: only ever listed.
 GUARDED_UNDER_HOME = (".bantamkit/index", ".bantamkit/usage")
 

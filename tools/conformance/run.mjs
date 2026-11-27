@@ -505,12 +505,12 @@ const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), 'bk-conformance-'
 // `instructions` suite re-runs this file) must still name the operator and not the outer run's
 // scratch, so the outer run hands it down in BANTAMKIT_CONFORMANCE_OPERATOR_HOME together with the
 // scratch home it set (BANTAMKIT_CONFORMANCE_SCRATCH_HOME). The handoff is TRUSTED only when this
-// process's own HOME is that exported scratch home: a nested run inherits exactly that HOME. A stale
-// operator variable in an operator's shell (no matching scratch HOME) is ignored and HOME is
+// process's native home is that exported scratch home: a nested run inherits HOME and USERPROFILE.
+// A stale operator variable in an operator's shell (no matching scratch home) is ignored and homedir() is
 // captured instead, or the guard below would list names under a directory the run never touches and
 // pass blind. Read-only from here on: the guard lists names under it, `ts2py-codec` copies stores
 // out of it, and nothing writes to it.
-const ownHome = process.env.HOME || process.env.USERPROFILE || homedir();
+const ownHome = homedir();
 const handoffTrusted =
   !!process.env.BANTAMKIT_CONFORMANCE_OPERATOR_HOME &&
   !!process.env.BANTAMKIT_CONFORMANCE_SCRATCH_HOME &&
